@@ -1,0 +1,95 @@
+# =====================================================================================================================
+# infra/compose/observability/alerts/guardrails-slo.yml — WP07 guardrails SLO alert rules.
+#
+# Wired verbatim from Shared Core/guardrails/src/guardrails_service/core/slo.py (the single source of truth for the
+# guardrails hot-path SLOs). Latency p99 < 100ms / p999 < 250ms; audit/metering loss = persist-queue drops; the
+# limiter must not fail closed; Valkey is a soft dependency. Thresholds + `for:` windows match slo.py exactly.
+# =====================================================================================================================
+
+groups:
+  - name: guardrails-slo
+    rules:
+      - alert: GuardrailsCheckLatencyHigh
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(guardrails_check_duration_seconds_bucket[5m])) by (le, direction)) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          service: guardrails-service
+        annotations:
+          summary: "Guardrails p99 check latency > 100ms (direction={{ $labels.direction }})"
+          description: "p99 of guardrails_check_duration_seconds has exceeded the 100ms SLO for 10m."
+
+      - alert: GuardrailsCheckLatencyCritical
+        expr: |
+          histogram_quantile(0.999,
+            sum(rate(guardrails_check_duration_seconds_bucket[5m])) by (le)) > 0.25
+        for: 5m
+        labels:
+          severity: critical
+          service: guardrails-service
+        annotations:
+          summary: "Guardrails p999 check latency > 250ms"
+          description: "p999 of guardrails_check_duration_seconds has exceeded the 250ms SLO for 5m."
+
+      - alert: GuardrailsPersistQueueBacklog
+        expr: guardrails_persist_queue_backlog > 1000
+        for: 5m
+        labels:
+          severity: warning
+          service: guardrails-service
+        annotations:
+          summary: "Guardrails persistence queue backlog > 1000"
+          description: "The in-process violation/usage persistence queue is backing up (audit/metering risk)."
+
+      - alert: GuardrailsPersistQueueDropping
+        expr: rate(guardrails_persist_queue_dropped_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+          service: guardrails-service
+        annotations:
+          summary: "Guardrails dropping persistence items (audit/metering loss)"
+          description: "guardrails_persist_queue_dropped_total is increasing — the queue is full; metering/audit data is being lost."
+
+      - alert: GuardrailsViolationWriteFailing
+        expr: rate(guardrails_violation_write_failed_total[5m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+          service: guardrails-service
+        annotations:
+          summary: "Guardrails violation/outbox writes failing"
+          description: "guardrails_violation_write_failed_total is increasing (DB unreachable / write errors)."
+
+      - alert: GuardrailsRateLimitFailClosedSpike
+        expr: rate(guardrails_rate_limit_decisions_total{outcome="limited",dimension="none"}[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: guardrails-service
+        annotations:
+          summary: "Guardrails rate limiter failing closed"
+          description: "The limiter is rejecting on backend errors (dimension=none) rather than real overuse."
+
+      - alert: GuardrailsValkeyDown
+        expr: guardrails_valkey_up == 0
+        for: 15m
+        labels:
+          severity: info
+          service: guardrails-service
+        annotations:
+          summary: "Guardrails Valkey (soft dependency) down"
+          description: "guardrails_valkey_up has been 0 for 15m. Checks still run (fail-open); rate-limit/cache degraded."
+
+  - name: platform-availability
+    rules:
+      - alert: ServiceDown
+        expr: up{job=~"auth-service|llms-gateway|guardrails-service|xagent|rag|memory|tool-registry|tool-web-search|frontend-bff"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "CypherX service {{ $labels.job }} is down (scrape failing)"
+          description: "Prometheus could not scrape {{ $labels.job }} for 2m."

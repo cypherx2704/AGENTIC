@@ -1,0 +1,3 @@
+# Provisioned demo credentials (contain a live worker API key) — never commit.
+demo_credentials.json
+__pycache__/

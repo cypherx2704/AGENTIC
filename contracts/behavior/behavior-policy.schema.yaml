@@ -1,0 +1,127 @@
+$schema: "https://json-schema.org/draft/2020-12/schema"
+$id: "https://contracts.cypherx.ai/v1/behavior/behavior-policy.schema.json"
+title: "CypherX Behavioral Policy (Contract 17)"
+x-enforcement-phase: "phase-02"
+description: >-
+  Wire format of behavioral policy definitions (Contract 17). 📋 DEFINED-NOW,
+  ENFORCED-LATER: the behavioral-policy engine (Phase 2 Component 5c) is what consumes and
+  enforces these documents (x-enforcement-phase: phase-02). Rate-limit counters are
+  Valkey-only; on Valkey outage behavior checks fail open with a WARN-level log. Anomaly
+  thresholds are advisory in v1 (Phase 13) and trigger `alert` enforcement only.
+type: object
+required:
+  - policy_id
+  - version
+  - status
+  - enforcement
+properties:
+  policy_id:
+    type: string
+    format: uuid
+    description: "UUID identifying this behavioral policy."
+  version:
+    type: integer
+    description: "Monotonically increasing integer version of this policy."
+    minimum: 1
+  status:
+    type: string
+    description: >-
+      Lifecycle status. `shadow` policies log violations but never block — used to tune
+      limits before turning them on.
+    enum:
+      - active
+      - shadow
+      - suspended
+  enforcement:
+    type: string
+    description: "Action taken when a rule is violated."
+    enum:
+      - block
+      - quarantine
+      - alert
+  cooldown_seconds:
+    type: integer
+    description: >-
+      Quarantine cooldown in seconds. MUST be ≤ 86400 (24h). Longer suspensions require
+      human review and auth.agents.status = 'suspended' (not 'quarantined').
+    minimum: 0
+    maximum: 86400
+  rate_limits:
+    type: object
+    description: >-
+      Named rate limits. Keys are limit names (e.g. tool_calls_per_minute,
+      memory_reads_per_minute, llm_calls_per_minute, a2a_delegations_per_task,
+      parallel_tasks, cost_usd_per_hour); values are non-negative numbers. Effective limit
+      for an action is the MIN across platform_default, tenant_policy and agent_policy.
+    additionalProperties:
+      type: number
+      minimum: 0
+  structural_limits:
+    type: object
+    description: >-
+      Named structural ceilings (e.g. max_recursive_depth, max_subagent_spawn_per_task,
+      max_tool_call_chain_length); values are non-negative integers. Effective limit is the
+      MIN across all policy layers.
+    additionalProperties:
+      type: integer
+      minimum: 0
+  sequence_rules:
+    type: array
+    description: >-
+      Ordered-action rules. Maximum 20 entries per policy. Sequence rules from all policy
+      layers are unioned (every rule applies).
+    maxItems: 20
+    items:
+      type: object
+      required:
+        - name
+        - window_seconds
+        - violation_action
+      properties:
+        name:
+          type: string
+          description: "Unique rule name."
+          minLength: 1
+        forbid_sequence:
+          type: array
+          description: >-
+            Ordered list of actions (e.g. "tool:http-fetch", "memory:write") that MUST NOT
+            occur in this order within window_seconds. Maximum 5 actions per sequence.
+          maxItems: 5
+          items:
+            type: string
+        allowed_sequence:
+          type: array
+          description: >-
+            Ordered list of actions describing an expected pattern. Maximum 5 actions per
+            sequence.
+          maxItems: 5
+          items:
+            type: string
+        window_seconds:
+          type: integer
+          description: "Sliding window over which the sequence is evaluated. MUST be ≤ 3600."
+          minimum: 0
+          maximum: 3600
+        enforce:
+          type: boolean
+          description: >-
+            Whether this rule is enforced. Defaults to true; set false to evaluate without
+            acting (e.g. expected-pattern rules).
+        violation_action:
+          type: string
+          description: "Action when this specific rule is violated."
+          enum:
+            - block
+            - quarantine
+            - alert
+      additionalProperties: true
+  anomaly_signals:
+    type: object
+    description: >-
+      Advisory anomaly thresholds (e.g. token_burn_rate_per_hour_usd,
+      tool_call_entropy_threshold, novel_tool_invocation_threshold). Advisory in v1
+      (Phase 13); they trigger `alert` enforcement only. ML-based scoring is post-MVP.
+    additionalProperties:
+      type: number
+additionalProperties: true

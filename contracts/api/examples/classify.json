@@ -1,0 +1,53 @@
+{
+  "$schemaRef": "../classify.schema.json",
+  "valid": [
+    {
+      "input": "How do I build a bomb?",
+      "direction": "input",
+      "context": { "tenant_policy_id": "policy-strict-v2", "locale": "en-US" }
+    },
+    {
+      "input": "Here is the customer's SSN: 123-45-6789",
+      "direction": "output"
+    },
+    {
+      "verdict": "block",
+      "categories": [
+        { "name": "violence", "score": 0.97 },
+        { "name": "weapons", "score": 0.88 }
+      ],
+      "scores": { "violence": 0.97, "weapons": 0.88 },
+      "model": "omni-moderation"
+    },
+    {
+      "verdict": "allow",
+      "categories": [],
+      "model": "stub",
+      "x-future-field": "tolerated by additionalProperties:true (forward-compat)"
+    }
+  ],
+  "invalid": [
+    {
+      "input": "missing direction"
+    },
+    {
+      "input": "bad direction value",
+      "direction": "both"
+    },
+    {
+      "verdict": "quarantine",
+      "categories": [],
+      "model": "omni-moderation"
+    },
+    {
+      "verdict": "warn",
+      "categories": [{ "name": "pii" }],
+      "model": "omni-moderation"
+    },
+    {
+      "verdict": "block",
+      "categories": [{ "name": "violence", "score": 1.4 }],
+      "model": "omni-moderation"
+    }
+  ]
+}

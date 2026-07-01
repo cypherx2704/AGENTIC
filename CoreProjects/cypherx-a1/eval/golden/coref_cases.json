@@ -1,0 +1,18 @@
+{
+  "description": "Labeled coreference pairs for the type-aware resolver (kg.resolution.are_coreferent). Each case: two same-kind surface forms + whether they should resolve to one entity.",
+  "cases": [
+    {"kind": "person", "a": "J. Smith", "b": "John Smith", "coreferent": true, "note": "initial vs full given name"},
+    {"kind": "person", "a": "John Smith", "b": "Smith, John", "coreferent": true, "note": "Last, First ordering"},
+    {"kind": "person", "a": "Dr. John Smith", "b": "John Smith", "coreferent": true, "note": "honorific stripped"},
+    {"kind": "person", "a": "John Smith Jr.", "b": "John Smith", "coreferent": true, "note": "suffix stripped"},
+    {"kind": "person", "a": "Alice Ng", "b": "alice ng", "coreferent": true, "note": "case-insensitive"},
+    {"kind": "person", "a": "John Smith", "b": "Jane Smith", "coreferent": false, "note": "different given name, same surname"},
+    {"kind": "person", "a": "John Smith", "b": "John Doe", "coreferent": false, "note": "different surname"},
+    {"kind": "person", "a": "J. Smith", "b": "Jane Smith", "coreferent": true, "note": "J is an initial of Jane (conservative true-merge by design)"},
+    {"kind": "person", "a": "Bob Reyes", "b": "Robert Reyes", "coreferent": false, "note": "nickname is NOT auto-merged (no nickname table; conservative)"},
+    {"kind": "service", "a": "auth-service", "b": "auth-service", "coreferent": true, "note": "keyed kind exact match"},
+    {"kind": "service", "a": "auth-service", "b": "auth-service-v2", "coreferent": false, "note": "keyed kind must NOT fuzzy-merge"},
+    {"kind": "repo", "a": "acme/payments", "b": "acme/payments", "coreferent": true, "note": "repo key exact"},
+    {"kind": "repo", "a": "acme/payments", "b": "acme/payments-old", "coreferent": false, "note": "repo key must not fuzzy-merge"}
+  ]
+}

@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.cypherx.ai/v1/api/rerank.schema.json",
+  "title": "CypherX Rerank API (Contract 2.x)",
+  "description": "Request/response contract for the cross-encoder reranking endpoint exposed by the RAG/SharedCore reranker. Given a query and a set of candidate documents, the reranker returns the candidates scored and ordered by relevance. Forward-compatible: every object sets additionalProperties:true and requires only validation-mandatory fields, so later phases may add optional fields (e.g. return_documents, max_chunks_per_doc) without a breaking v2. The RAG_RERANK_ENABLED flag defaults off; when off, callers never reach this endpoint and the dense pipeline behaviour is unchanged.",
+  "oneOf": [
+    { "$ref": "#/$defs/request" },
+    { "$ref": "#/$defs/response" }
+  ],
+  "$defs": {
+    "request": {
+      "title": "Rerank Request",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["model", "query", "documents"],
+      "properties": {
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Reranker model identifier (e.g. `bge-reranker-base`, `cohere-rerank-3`, or the `mock` reranker used in keyless local dev)."
+        },
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The search query the documents are scored against."
+        },
+        "documents": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Candidate documents to rerank. Order is the caller's input order; results reference documents by their `index` in this array.",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["text"],
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Optional caller-supplied identifier for the document. Echoed back in the matching result when provided."
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1,
+                "description": "The document text scored against the query."
+              }
+            }
+          }
+        },
+        "top_n": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Optional. Return only the top N results by score. When omitted, all documents are returned ranked."
+        }
+      }
+    },
+    "response": {
+      "title": "Rerank Response",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["results", "model"],
+      "properties": {
+        "results": {
+          "type": "array",
+          "description": "Reranked candidates ordered by descending relevance score. Each entry points back at a request document by its `index`.",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["index", "score"],
+            "properties": {
+              "index": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Zero-based position of the scored document in the request `documents` array."
+              },
+              "id": {
+                "type": "string",
+                "description": "The caller-supplied document id, echoed when the request document carried one."
+              },
+              "score": {
+                "type": "number",
+                "description": "Relevance score assigned by the reranker. Higher is more relevant; absolute range is model-specific."
+              }
+            }
+          }
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The reranker model that produced these scores."
+        },
+        "usage": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Optional usage accounting for the rerank call (e.g. search units consumed), used for Contract 19 metering.",
+          "properties": {
+            "total_tokens": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Total tokens processed across query + documents, when the model reports it."
+            },
+            "search_units": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Billable search units consumed by the rerank call, when applicable."
+            }
+          }
+        }
+      }
+    }
+  }
+}

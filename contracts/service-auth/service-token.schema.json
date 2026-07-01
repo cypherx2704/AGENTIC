@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.cypherx.ai/v1/service-auth/service-token.schema.json",
+  "title": "CypherX Service-to-Service Token Claims (Contract 12)",
+  "description": "Claims of a short-lived service token used by internal (and external, via client_credentials) services to authenticate inter-service calls. Same JWT shape for internal (sub=svc:<name>) and external (sub=svc-ext:<client_id>) callers; they are distinguished at the service_acl layer, not the token-validation layer. Forward-compatibility: additionalProperties is true and only validation-mandatory claims are required.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["iss", "sub", "aud", "iat", "exp", "jti", "service_name", "scopes"],
+  "properties": {
+    "iss": {
+      "type": "string",
+      "format": "uri",
+      "description": "Issuer. Resolves to the deployment's AUTH_ISSUER_URL (e.g. https://auth.cypherx.ai)."
+    },
+    "sub": {
+      "type": "string",
+      "pattern": "^(svc|svc-ext):.+$",
+      "description": "Subject. 'svc:<service-name>' for internal in-cluster services (bootstrap-secret or, from Phase 13, SPIFFE). 'svc-ext:<client_id>' for external callers via OAuth2 client_credentials."
+    },
+    "aud": {
+      "description": "Audience. Either an array of target service names, or the literal string \"*\" (any internal service). First cycle issues aud=[\"*\"]; Phase 13 narrows to per-target after SPIFFE migration.",
+      "oneOf": [
+        {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1
+        },
+        {
+          "type": "string",
+          "const": "*"
+        }
+      ]
+    },
+    "iat": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Issued-at (NumericDate, seconds since Unix epoch)."
+    },
+    "exp": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Expiry (NumericDate). Internal service tokens are 5-minute-lived; external client_credentials tokens have TTL ≤ 1 hour."
+    },
+    "jti": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique token id (UUID)."
+    },
+    "service_name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Logical name of the calling service (e.g. xagent, llms, guardrails).",
+      "examples": ["xagent"]
+    },
+    "service_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Semantic version of the calling service (e.g. 1.0.0)."
+    },
+    "tenant_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The tenant whose request is being processed (Contract 13). Optional on tokens minted for platform-internal operations not tied to a tenant."
+    },
+    "on_behalf_of": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The agent UUID whose work this call serves (for audit). When forwarding an agent request, this MUST match the agent_id in the forwarded agent JWT (X-Forwarded-Agent-JWT) — downstream services MUST verify the match."
+    },
+    "scopes": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Granted internal scopes (e.g. internal:read, internal:write).",
+      "examples": [["internal:read", "internal:write"]]
+    }
+  }
+}

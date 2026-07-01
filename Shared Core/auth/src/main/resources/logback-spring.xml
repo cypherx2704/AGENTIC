@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Contract 6: structured JSON logs to stdout, one object per line. No plain-text logs in prod. -->
+<configuration>
+  <springProperty scope="context" name="appName" source="spring.application.name" defaultValue="auth-service"/>
+  <springProperty scope="context" name="env" source="cypherx.auth.environment" defaultValue="local"/>
+  <springProperty scope="context" name="appVersion" source="cypherx.auth.version" defaultValue="0.1.0"/>
+
+  <!-- Secret-redaction config (Phase 2 checklist: "Secret redaction policy enforced in logger
+       middleware + CI test"). Canonical values live in application.yaml (cypherx.auth.logging.*,
+       env-overridable); the defaultValue copies below are the documented last-resort fallback for
+       logback initialisation phases where the Spring Environment is not available yet. -->
+  <springProperty scope="context" name="redactionFieldNames"
+                  source="cypherx.auth.logging.redaction-field-names"
+                  defaultValue="password,passwd,secret,client_secret,api_key,apiKey,token,access_token,refresh_token,authorization,credential,credentials"/>
+  <springProperty scope="context" name="redactionValuePattern"
+                  source="cypherx.auth.logging.redaction-value-pattern"
+                  defaultValue="(?i)\b(password|passwd|secret|client[-_]?secret|api[-_]?key|apikey|access[-_]?token|refresh[-_]?token|token|authorization|credentials?)\b[&quot;']?\s*[=:]\s*[&quot;']?(?:bearer\s+)?[^\s&quot;',;]+"/>
+  <springProperty scope="context" name="redactionBearerPattern"
+                  source="cypherx.auth.logging.redaction-bearer-pattern"
+                  defaultValue="(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+"/>
+
+  <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+      <timeZone>UTC</timeZone>
+      <!-- Map/drop default fields to the Contract 6 names. -->
+      <fieldNames>
+        <timestamp>timestamp</timestamp>
+        <level>level</level>
+        <message>message</message>
+        <logger>logger</logger>
+        <thread>[ignore]</thread>
+        <levelValue>[ignore]</levelValue>
+        <version>[ignore]</version>
+      </fieldNames>
+      <!-- Contract 6 static fields. -->
+      <customFields>{"service":"${appName}","version":"${appVersion}","environment":"${env}"}</customFields>
+      <!-- Contract 6 / Contract 8 contextual fields come from the MDC (set by the trace filter). -->
+      <includeMdcKeyName>trace_id</includeMdcKeyName>
+      <includeMdcKeyName>span_id</includeMdcKeyName>
+      <includeMdcKeyName>request_id</includeMdcKeyName>
+      <includeMdcKeyName>tenant_id</includeMdcKeyName>
+      <includeMdcKeyName>agent_id</includeMdcKeyName>
+      <includeMdcKeyName>duration_ms</includeMdcKeyName>
+      <!-- Secret redaction: mask secret-named JSON fields AND secret-shaped fragments inside any
+           string value (message text, structured arguments, MDC). A deliberately-logged secret
+           must never reach stdout in the clear — see SecretRedactionLogTest. -->
+      <jsonGeneratorDecorator class="net.logstash.logback.mask.MaskingJsonGeneratorDecorator">
+        <defaultMask>[REDACTED]</defaultMask>
+        <paths>${redactionFieldNames}</paths>
+        <valueMask>
+          <value>${redactionValuePattern}</value>
+          <mask>$1=[REDACTED]</mask>
+        </valueMask>
+        <value>${redactionBearerPattern}</value>
+      </jsonGeneratorDecorator>
+    </encoder>
+  </appender>
+
+  <root level="INFO">
+    <appender-ref ref="JSON"/>
+  </root>
+</configuration>

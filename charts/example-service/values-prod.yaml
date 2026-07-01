@@ -1,0 +1,34 @@
+# example-service production overrides. Layer on top of values.yaml:
+#   helm template ex . -f values.yaml -f values-prod.yaml
+# Prod = larger, multi-AZ spread, manual-leaning autoscaling ceilings.
+
+cypherx-service:
+  environment: prod
+  replicaCount: 3
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 1Gi
+
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 65
+    targetMemoryUtilizationPercentage: 75
+
+  pdb:
+    enabled: true
+    minAvailable: 2
+
+  doppler:
+    runtimeConfig: shared-core.example.prod
+    ddlConfig: db.example.ddl.prod
+
+  # Prod sampling/log posture (Contract 6: DEBUG never in prod by default).
+  observability:
+    logLevel: INFO

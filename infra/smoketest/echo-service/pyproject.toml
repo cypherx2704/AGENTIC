@@ -1,0 +1,46 @@
+[project]
+name = "echo-service"
+version = "0.1.0"
+description = "CypherX Phase 1 infrastructure smoke-test echo-service (Component 21)."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+authors = [{ name = "CypherX Platform Team", email = "platform@cypherx.ai" }]
+
+# Pinned, minimal runtime deps. Every dependency here is exercised by one of the
+# Component 21 smoke-test assertions:
+#   fastapi/uvicorn       -> GET /echo, /livez, /readyz (assertions 1, 8)
+#   prometheus-client     -> /metrics scraped by Prometheus (assertion 6)
+#   aiokafka              -> produce ONE Contract 5 envelope on startup (assertion 5)
+#   asyncpg               -> SELECT 1 via PgBouncer, RLS probe (assertions 7, readiness)
+#   redis (asyncio)       -> Valkey PING (readiness)
+#   opentelemetry-*       -> W3C trace propagation + OTLP export (assertions 1, 4)
+dependencies = [
+  "fastapi==0.115.6",
+  "uvicorn[standard]==0.34.0",
+  "prometheus-client==0.21.1",
+  "aiokafka==0.12.0",
+  "asyncpg==0.30.0",
+  "redis==5.2.1",
+  "opentelemetry-api==1.29.0",
+  "opentelemetry-sdk==1.29.0",
+  "opentelemetry-exporter-otlp-proto-grpc==1.29.0",
+  "opentelemetry-instrumentation-fastapi==0.50b0",
+  "opentelemetry-instrumentation-asgi==0.50b0",
+]
+
+[project.optional-dependencies]
+# SASL/SCRAM-SHA-512 auth for MSK (Component 5). Optional so the local/dev
+# Redpanda path (Component 17c) can run plaintext without the extra wheel.
+kafka-sasl = ["gssapi==1.9.0"]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["echo_service"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

@@ -1,0 +1,8 @@
+# Helm
+**/charts/*.tgz
+**/Chart.lock
+*.tgz
+.helm/
+# OS / tooling
+.DS_Store
+node_modules/

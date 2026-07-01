@@ -1,0 +1,159 @@
+# =============================================================================
+# infra-ci.yml — Component 18 (infra side of GitHub Actions Base Workflows).
+# =============================================================================
+# Validates the Terraform/Terragrunt IaC in THIS repo (cypherx-infra) on every
+# PR. It NEVER applies — apply is a gated, role-assumed action run out of band by
+# a human/operator using TerraformInfraRole (or TerraformIAMRole for the iam/
+# stack). CI only proves the code is well-formed, valid, lint-clean, and shows a
+# read-only plan so reviewers see the diff.
+#
+# Gates:
+#   1. terraform fmt -check -recursive  (whole repo; 2-space, aligned =)
+#   2. terraform validate               (per module/addon dir, init -backend=false)
+#   3. tflint                           (per module/addon dir)
+#   4. terragrunt plan on PR            (read-only; OIDC -> GitHubActionsRole; NO apply)
+#
+# The contracts/ schema validation is a SEPARATE repo's CI — see
+# .github/workflows/schema-validate.yml (note-only) in this directory.
+# =============================================================================
+name: infra-ci
+
+on:
+  pull_request:
+    paths:
+      - "modules/**"
+      - "k8s-addons/**"
+      - "environments/**"
+      - ".github/workflows/infra-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "modules/**"
+      - "k8s-addons/**"
+      - "environments/**"
+
+# OIDC for the read-only plan against remote state. contents:read to checkout.
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  TF_VERSION: "1.9.8"
+  TFLINT_VERSION: "v0.53.0"
+  TERRAGRUNT_VERSION: "v0.66.9"
+  AWS_REGION: "us-east-1"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # fmt — single fast gate over the whole repo. fmt drift fails the PR.
+  # ---------------------------------------------------------------------------
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - name: terraform fmt -check
+        run: terraform fmt -check -recursive -diff
+
+  # ---------------------------------------------------------------------------
+  # validate + tflint — fan out across every leaf module/addon dir.
+  # A dir is a "leaf" if it contains a versions.tf (every module dir does, per
+  # the authoring convention). We init with -backend=false so validate needs no
+  # AWS creds and no remote state.
+  # ---------------------------------------------------------------------------
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      dirs: ${{ steps.find.outputs.dirs }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: find
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Every Terraform leaf has a versions.tf (modules/* and k8s-addons/*).
+          # environments/ is Terragrunt (no standalone TF), validated in the plan job.
+          mapfile -t DIRS < <(git ls-files 'modules/**/versions.tf' 'k8s-addons/**/versions.tf' \
+            | xargs -r -n1 dirname | sort -u)
+          printf '%s\n' "${DIRS[@]}"
+          echo "dirs=$(printf '%s\n' "${DIRS[@]}" | jq -R . | jq -cs .)" >> "$GITHUB_OUTPUT"
+
+  validate:
+    runs-on: ubuntu-latest
+    needs: discover
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: ${{ fromJSON(needs.discover.outputs.dirs) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: terraform init (no backend) + validate
+        working-directory: ${{ matrix.dir }}
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+
+      - name: Setup TFLint
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: ${{ env.TFLINT_VERSION }}
+      - name: tflint
+        working-directory: ${{ matrix.dir }}
+        run: |
+          tflint --init
+          tflint --format compact
+
+  # ---------------------------------------------------------------------------
+  # plan — read-only terragrunt plan on PR only. Assumes the dev
+  # GitHubActionsRole via OIDC (S3 state READ + EKS describe; CANNOT apply, CANNOT
+  # touch IAM — Component 1). Posts the plan as a job summary for reviewers.
+  #
+  # NOTE: this is `plan`, never `apply`. Apply is performed out-of-band by an
+  # operator assuming TerraformInfraRole / TerraformIAMRole (the latter for the
+  # iam/ stack, which also needs the CODEOWNERS second approver).
+  # ---------------------------------------------------------------------------
+  plan:
+    runs-on: ubuntu-latest
+    needs: [fmt, validate]
+    if: github.event_name == 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        stack: [vpc, dns, ecr]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Install Terragrunt
+        run: |
+          curl -fsSL -o /usr/local/bin/terragrunt \
+            "https://github.com/gruntwork-io/terragrunt/releases/download/${TERRAGRUNT_VERSION}/terragrunt_linux_amd64"
+          chmod +x /usr/local/bin/terragrunt
+
+      - name: Configure AWS credentials (OIDC, read-only)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          # Dev plan uses the dev GitHubActionsRole (state READ + eks:Describe only).
+          role-to-assume: arn:aws:iam::111111111111:role/cypherx-dev-github-actions
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-infra-plan-${{ github.run_id }}
+
+      - name: terragrunt plan (read-only)
+        working-directory: environments/dev/${{ matrix.stack }}
+        run: |
+          terragrunt plan -input=false -lock=false -no-color | tee plan.txt
+          {
+            echo "### terragrunt plan — dev/${{ matrix.stack }}";
+            echo '```';
+            tail -c 60000 plan.txt;
+            echo '```';
+          } >> "$GITHUB_STEP_SUMMARY"

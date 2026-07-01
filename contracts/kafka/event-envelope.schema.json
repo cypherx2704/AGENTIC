@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.cypherx.ai/v1/kafka/event-envelope.json",
+  "title": "Kafka Event Envelope",
+  "description": "Contract 5 — Every Kafka event produced by any CypherX service MUST use this envelope. The `payload` is event-type-specific (see contracts/kafka/events/*.schema.json). Forward-compatible: unknown top-level fields are tolerated (additionalProperties:true) so producers on a newer envelope version do not break older consumers.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "event_id",
+    "event_type",
+    "schema_version",
+    "produced_at",
+    "tenant_id",
+    "producer_service",
+    "partition_key",
+    "payload"
+  ],
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Globally unique identifier of this event (UUID v4). Used for idempotent consumer de-duplication."
+    },
+    "event_type": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Fully-qualified event type, e.g. `cypherx.agent.task.completed`. Mirrors the topic naming convention `cypherx.<domain>.<entity>.<event-type>`. See contracts/kafka/topics.md."
+    },
+    "schema_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "description": "Semantic version of the payload schema for this event_type, e.g. `1.0.0`. Consumers use this to select the correct payload decoder."
+    },
+    "produced_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 UTC timestamp (millisecond precision) at which the producer emitted this event."
+    },
+    "trace_id": {
+      "type": "string",
+      "description": "Distributed-tracing correlation id (UUID) propagated across services. Optional but strongly recommended on every event (Contract 8)."
+    },
+    "tenant_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Isolation-boundary UUID (Contract 13). Present on every tenant-scoped event. For platform-owned events this is the well-known platform tenant UUID."
+    },
+    "producer_service": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Logical name of the service that produced this event, e.g. `xagent`, `llms-gateway`, `auth`."
+    },
+    "producer_version": {
+      "type": "string",
+      "description": "Semantic version of the producing service build, e.g. `1.0.0`. Optional; aids debugging of producer-specific regressions."
+    },
+    "partition_key": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Kafka partition key. MUST default to `tenant_id` for tenant-scoped events to guarantee per-tenant ordering. Event types needing stronger ordering (e.g. per-agent) may override with `agent_id`, but MUST document the override in contracts/kafka/topics.md."
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Event-type-specific body. Validated against the matching schema under contracts/kafka/events/. Forward-compatible: tolerates unknown fields."
+    }
+  }
+}

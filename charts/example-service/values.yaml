@@ -1,0 +1,73 @@
+# example-service: values-only consumer of the cypherx-service base chart.
+# Everything under `cypherx-service:` is forwarded to the subchart. A real
+# service repo (e.g. auth-service) copies this file and changes the values.
+#
+# This example mirrors the Phase 1 echo-service: it owns a Postgres schema, runs
+# Atlas migrations, and lives in the shared-core namespace (Istio-injected).
+
+cypherx-service:
+  # --- identity ---
+  service: example-service
+  environment: dev
+  replicaCount: 2
+
+  image:
+    repository: 000000000000.dkr.ecr.us-east-1.amazonaws.com/cypherx/example-service
+    tag: "1.0.0"
+    pullPolicy: IfNotPresent
+
+  # --- scheduling (Phase 1 Component 5 node-role labels) ---
+  nodeRole: core
+
+  # --- database wiring (Contract 13 + 14) ---
+  database:
+    enabled: true
+    pgbouncerHost: pgbouncer.data.svc.cluster.local
+    pgbouncerPort: 6432
+    name: cypherx_platform
+    schema: example
+    runtimeUser: example_user      # *_user — least-privilege runtime role
+    ddlUser: example_ddl           # *_ddl  — Atlas migration role (CREATEROLE)
+    sslmode: disable
+
+  # --- Doppler secret wiring (Component 11/20) ---
+  doppler:
+    enabled: true
+    project: cypherx-platform
+    tokenSecretName: doppler-token-secret
+    runtimeConfig: shared-core.example      # holds db/example/runtime_password
+    ddlConfig: db.example.ddl               # holds db/example/ddl_password
+
+  # --- Atlas migration Job (Contract 14) ---
+  migration:
+    enabled: true
+    image:
+      repository: arigaio/atlas
+      tag: "0.31.0"
+    migrationsDir: /migrations
+
+  # --- autoscaling / availability ---
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 8
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+
+  pdb:
+    enabled: true
+    minAvailable: 1
+
+  # --- observability ---
+  serviceMonitor:
+    enabled: true
+
+  # --- network ---
+  networkPolicy:
+    enabled: true
+    ingressNamespace: ingress
+    observabilityNamespace: observability
+
+  # --- istio ---
+  istio:
+    sidecarInject: true

@@ -1,0 +1,41 @@
+{
+  "$schemaRef": "../api-key-acl.schema.json",
+  "valid": [
+    {
+      "api_key_id": "11111111-2222-4333-8444-555555555555",
+      "tenant_id": "3f9a7c2e-1b4d-4e8a-9c6f-7a2b3c4d5e6f",
+      "resource_type": "kb",
+      "resource_id": "kb-marketing-2026",
+      "permissions": ["read", "query"]
+    },
+    {
+      "api_key_id": "11111111-2222-4333-8444-555555555555",
+      "tenant_id": "3f9a7c2e-1b4d-4e8a-9c6f-7a2b3c4d5e6f",
+      "resource_type": "model",
+      "resource_id": "*",
+      "permissions": ["invoke"]
+    }
+  ],
+  "invalid": [
+    {
+      "api_key_id": "11111111-2222-4333-8444-555555555555",
+      "tenant_id": "3f9a7c2e-1b4d-4e8a-9c6f-7a2b3c4d5e6f",
+      "resource_type": "kb",
+      "permissions": ["read"]
+    },
+    {
+      "api_key_id": "not-a-uuid",
+      "tenant_id": "3f9a7c2e-1b4d-4e8a-9c6f-7a2b3c4d5e6f",
+      "resource_type": "kb",
+      "resource_id": "kb-1",
+      "permissions": ["read"]
+    },
+    {
+      "api_key_id": "11111111-2222-4333-8444-555555555555",
+      "tenant_id": "3f9a7c2e-1b4d-4e8a-9c6f-7a2b3c4d5e6f",
+      "resource_type": "kb",
+      "resource_id": "kb-1",
+      "permissions": []
+    }
+  ]
+}

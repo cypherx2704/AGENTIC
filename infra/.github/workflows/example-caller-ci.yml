@@ -1,0 +1,47 @@
+# =============================================================================
+# example-caller-ci.yml — Component 18 reference caller.
+# =============================================================================
+# This is the EXACT shape of the `.github/workflows/ci.yml` that lives in each
+# service repo (e.g. cypherx-ai/auth-service). It is intentionally thin: all
+# pipeline logic lives in the reusable workflow so services cannot drift.
+#
+# Copy this into a service repo, change `service` / `language`, and wire the
+# environment + account id (dev account shown). The reusable workflow handles
+# lint -> test -> build -> Trivy -> ECR push -> gitops PR.
+#
+# Triggers (Component 18): pull_request, push to main, push of a v* release tag.
+# =============================================================================
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+# OIDC token + checkout. The reusable workflow declares the same minimal scopes;
+# `permissions` must be granted at the caller level for `workflow_call` to inherit.
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  ci:
+    uses: cypherx-ai/cypherx-infra/.github/workflows/reusable-service-ci.yml@main
+    with:
+      # ECR repo short name -> pushes to cypherx/auth-service (Component 5 list).
+      service: auth-service
+      language: go
+      # Dev account/role for first-cycle. staging/prod callers set these to the
+      # staging/prod account ids and environment, gated by GitHub Environments.
+      environment: dev
+      aws_region: us-east-1
+      aws_account_id: "111111111111"
+      dockerfile: Dockerfile
+      build_context: .
+      gitops_repo: cypherx-ai/cypherx-gitops
+      # Platform policy: fail the build on CRITICAL CVEs only (Component 18).
+      trivy_severity: CRITICAL
+    # No `secrets:` block — there are NO long-lived secrets. AWS access is via
+    # OIDC; the gitops-bot key is fetched from Secrets Manager inside the
+    # reusable workflow (see infra/ci/README.md).

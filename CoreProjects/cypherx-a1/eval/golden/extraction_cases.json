@@ -1,0 +1,41 @@
+{
+  "description": "Labeled extractor completions for schema-guided extraction + confidence-floor QA. Each case is a raw LLM JSON `content` string plus, per proposed edge (matched by target_key+rel), labels: in_schema (relation is valid under DEFAULT_SCHEMA) and below_floor (confidence < floor=0.6).",
+  "floor": 0.6,
+  "cases": [
+    {
+      "name": "all_in_schema",
+      "content": "{\"edges\":[{\"rel\":\"depends_on\",\"target_kind\":\"service\",\"target_key\":\"auth-service\",\"confidence\":0.9,\"evidence\":\"validates tokens via auth-service\"},{\"rel\":\"caused\",\"target_kind\":\"incident\",\"target_key\":\"acme/payments#issue-5\",\"confidence\":0.8,\"evidence\":\"retries fail on 429\"}]}",
+      "labels": [
+        {"rel": "depends_on", "target_key": "auth-service", "in_schema": true, "below_floor": false},
+        {"rel": "caused", "target_key": "acme/payments#issue-5", "in_schema": true, "below_floor": false}
+      ]
+    },
+    {
+      "name": "hallucinated_relation",
+      "content": "{\"edges\":[{\"rel\":\"depends_on\",\"target_kind\":\"service\",\"target_key\":\"auth-service\",\"confidence\":0.9},{\"rel\":\"likes\",\"target_kind\":\"service\",\"target_key\":\"payments-db\",\"confidence\":0.95},{\"rel\":\"is_friends_with\",\"target_kind\":\"person\",\"target_key\":\"bob@acme.io\",\"confidence\":0.9}]}",
+      "note": "'likes' and 'is_friends_with' are not in the ontology and must be rejected; only depends_on survives.",
+      "labels": [
+        {"rel": "depends_on", "target_key": "auth-service", "in_schema": true, "below_floor": false}
+      ]
+    },
+    {
+      "name": "below_floor_mixed",
+      "content": "{\"edges\":[{\"rel\":\"expert_in\",\"target_kind\":\"service\",\"target_key\":\"auth-service\",\"confidence\":0.95},{\"rel\":\"depends_on\",\"target_kind\":\"service\",\"target_key\":\"flaky-svc\",\"confidence\":0.30}]}",
+      "labels": [
+        {"rel": "expert_in", "target_key": "auth-service", "in_schema": true, "below_floor": false},
+        {"rel": "depends_on", "target_key": "flaky-svc", "in_schema": true, "below_floor": true}
+      ]
+    },
+    {
+      "name": "off_schema_target_kind",
+      "content": "{\"edges\":[{\"rel\":\"depends_on\",\"target_kind\":\"capability\",\"target_key\":\"payments-expertise\",\"confidence\":0.9}]}",
+      "note": "'capability' is a valid entity kind but NOT a permitted depends_on target in the extraction schema -> rejected.",
+      "labels": []
+    },
+    {
+      "name": "garbage",
+      "content": "not json at all",
+      "labels": []
+    }
+  ]
+}

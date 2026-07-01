@@ -1,0 +1,15 @@
+-- =====================================================================================
+-- xAgent agent-runtime — first-cycle seed (Phase 9A). PostgreSQL 16.
+--
+-- No platform-level seed data is required for the agent-runtime first cycle:
+--   * agents are created per-tenant at runtime via POST /v1/agents/{agent_id}/runtime
+--     (Component 1 step 2) — there are no platform-default agent rows.
+--   * tasks / task_steps are runtime-only.
+--   * outbox is a runtime publish queue.
+--   * model aliases / pricing live in the llms schema (Phase 3), not here.
+--
+-- This file is an intentional no-op kept for migration-sequence parity with the other
+-- services (Contract 14). Idempotent by construction.
+-- =====================================================================================
+
+-- (no-op)

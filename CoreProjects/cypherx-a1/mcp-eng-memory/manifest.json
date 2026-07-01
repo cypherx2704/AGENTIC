@@ -1,0 +1,140 @@
+{
+  "schema_version": "1.0.0",
+  "protocol_version": "mcp/1.0",
+  "name": "mcp-eng-memory",
+  "display_name": "Engineering Memory",
+  "version": "1.0.0",
+  "description": "Read-only, source-cited queries over an organisation's autonomous engineering memory (who built what, who owns what, what breaks if changed, why something was decided).",
+  "author": "CypherX Platform",
+  "category": "engineering-knowledge",
+  "tags": ["engineering-memory", "knowledge-graph", "code-ownership", "impact-analysis"],
+  "auth_required": true,
+  "required_scopes": ["tool:invoke", "tool:mcp-eng-memory:invoke"],
+  "health_endpoint": "/livez",
+  "metrics_endpoint": "/metrics",
+  "tools": [
+    {
+      "name": "who_owns",
+      "description": "Find the owners/maintainers of a repo, service, feature, or file path, with evidence.",
+      "idempotent": true,
+      "timeout_seconds": 20,
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "target": {"type": "string", "minLength": 1, "description": "Repo (owner/name), service name, feature, or file path."}
+        },
+        "required": ["target"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "items": {"type": "array"},
+          "citations": {"type": "array"}
+        }
+      }
+    },
+    {
+      "name": "why_built",
+      "description": "Explain why a feature/change exists, citing the PRs, decisions, RFCs, or tickets behind it.",
+      "idempotent": true,
+      "timeout_seconds": 20,
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "feature": {"type": "string", "minLength": 1, "description": "Feature name, change description, or keyword."}
+        },
+        "required": ["feature"]
+      }
+    },
+    {
+      "name": "what_breaks_if_changed",
+      "description": "Reverse-dependency blast radius: what services/repos depend on the target, and who owns them.",
+      "idempotent": true,
+      "timeout_seconds": 25,
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "target": {"type": "string", "minLength": 1, "description": "Service/repo/symbol/file to assess."},
+          "max_hops": {"type": "integer", "minimum": 1, "maximum": 6, "default": 3}
+        },
+        "required": ["target"]
+      }
+    },
+    {
+      "name": "experts_on",
+      "description": "Rank the people with the strongest authored/reviewed/expert signal on a topic, with evidence.",
+      "idempotent": true,
+      "timeout_seconds": 20,
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "topic": {"type": "string", "minLength": 1}
+        },
+        "required": ["topic"]
+      }
+    },
+    {
+      "name": "graph_neighbors",
+      "description": "Typed neighbours of an entity in the knowledge graph (incoming + outgoing relationships).",
+      "idempotent": true,
+      "timeout_seconds": 20,
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "target": {"type": "string", "minLength": 1},
+          "max_hops": {"type": "integer", "minimum": 1, "maximum": 4, "default": 2}
+        },
+        "required": ["target"]
+      }
+    },
+    {
+      "name": "what_changed",
+      "description": "Time-ordered 'what changed, who worked on it, when' for a repo or person, with source citations.",
+      "idempotent": true,
+      "timeout_seconds": 25,
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "target": {"type": "string", "minLength": 1, "description": "Repo (owner/name) or person."},
+          "since": {"type": "string", "maxLength": 40, "description": "ISO 8601 lower bound (optional)."},
+          "until": {"type": "string", "maxLength": 40, "description": "ISO 8601 upper bound (optional)."}
+        },
+        "required": ["target"]
+      }
+    },
+    {
+      "name": "incident_root_cause",
+      "description": "Summarise the likely root cause + remediation for an incident, grounded in cited evidence (LLM).",
+      "idempotent": true,
+      "timeout_seconds": 60,
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "incident": {"type": "string", "minLength": 1, "description": "Incident id, title, or description."}
+        },
+        "required": ["incident"]
+      }
+    },
+    {
+      "name": "how_does_x_work",
+      "description": "Explain how a subsystem/feature works, grounded in the engineering memory with citations (LLM).",
+      "idempotent": true,
+      "timeout_seconds": 60,
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "topic": {"type": "string", "minLength": 1}
+        },
+        "required": ["topic"]
+      }
+    }
+  ]
+}

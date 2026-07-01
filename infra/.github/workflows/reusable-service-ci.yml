@@ -1,0 +1,380 @@
+# =============================================================================
+# reusable-service-ci.yml — Component 18 (GitHub Actions Base Workflows)
+# =============================================================================
+# A `workflow_call` reusable workflow that EVERY CypherX service repo invokes
+# from its own thin `ci.yml`. It encodes the platform-wide pipeline exactly once
+# so individual services cannot drift:
+#
+#   lint -> unit test -> docker build (multi-stage) -> Trivy scan (fail CRITICAL)
+#         -> push to ECR (tag convention; NEVER :latest)
+#         -> on push to main, open a gitops PR via the cypherx-gitops-bot App.
+#
+# AUTH MODEL (Component 1 + 18):
+#   - GitHub OIDC -> AWS `cypherx-<env>-github-actions` role (sts:AssumeRoleWithWebIdentity).
+#     NO long-lived AWS access keys are ever stored in GitHub Secrets.
+#   - The gitops-bot App private key is fetched at runtime from AWS Secrets
+#     Manager (cypherx/ci/*) — it is NOT a GitHub Secret either. See infra/ci/README.md.
+#
+# IMAGE TAG CONVENTION (Component 18 — do NOT change, deployments depend on it):
+#   - PR builds:    <service>:pr-<pr-number>-<git-sha7>   (lifecycle-expired after merge/close)
+#   - Main commits: <service>:sha-<git-sha7>              (immutable, kept forever)
+#   - Release tags: <service>:<semver>  e.g. v1.2.3       (kept forever)
+#   - :latest is FORBIDDEN in any image or deployment manifest.
+# =============================================================================
+name: reusable-service-ci
+
+on:
+  workflow_call:
+    inputs:
+      service:
+        description: "ECR repo short name under the cypherx/ prefix, e.g. auth-service -> cypherx/auth-service."
+        required: true
+        type: string
+      language:
+        description: "Service language: go | node | python. Selects the lint + unit-test toolchain."
+        required: true
+        type: string
+      environment:
+        description: "Which AWS account/role to target for ECR push. One of: dev | staging | prod."
+        required: false
+        default: "dev"
+        type: string
+      aws_region:
+        description: "AWS region (ECR + Secrets Manager are regional)."
+        required: false
+        default: "us-east-1"
+        type: string
+      aws_account_id:
+        description: "12-digit AWS account id that owns the ECR registry for `environment`."
+        required: true
+        type: string
+      dockerfile:
+        description: "Path to the multi-stage Dockerfile."
+        required: false
+        default: "Dockerfile"
+        type: string
+      build_context:
+        description: "Docker build context directory."
+        required: false
+        default: "."
+        type: string
+      gitops_repo:
+        description: "owner/name of the gitops repo the bot opens PRs against."
+        required: false
+        default: "cypherx-ai/cypherx-gitops"
+        type: string
+      trivy_severity:
+        description: "Severities Trivy fails on. Platform policy is CRITICAL only (Component 18)."
+        required: false
+        default: "CRITICAL"
+        type: string
+
+# OIDC needs `id-token: write`; `contents: read` to checkout. No other scopes —
+# the cross-repo gitops PR uses a short-lived App installation token, not GITHUB_TOKEN.
+permissions:
+  id-token: write
+  contents: read
+
+# One in-flight pipeline per ref; a newer push cancels the older PR build.
+concurrency:
+  group: ci-${{ inputs.service }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # cypherx/<service> is the ECR repo (Component 5). Registry host is account+region scoped.
+  ECR_REGISTRY: ${{ inputs.aws_account_id }}.dkr.ecr.${{ inputs.aws_region }}.amazonaws.com
+  ECR_REPOSITORY: cypherx/${{ inputs.service }}
+  GHA_ROLE_ARN: arn:aws:iam::${{ inputs.aws_account_id }}:role/cypherx-${{ inputs.environment }}-github-actions
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Lint — golangci-lint / eslint / ruff depending on `language`.
+  # ---------------------------------------------------------------------------
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint (Go)
+        if: inputs.language == 'go'
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.61
+
+      - name: Setup Node
+        if: inputs.language == 'node'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - name: Lint (Node / eslint)
+        if: inputs.language == 'node'
+        run: |
+          npm ci
+          npm run lint
+
+      - name: Setup Python
+        if: inputs.language == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Lint (Python / ruff)
+        if: inputs.language == 'python'
+        run: |
+          pip install ruff
+          ruff check .
+
+  # ---------------------------------------------------------------------------
+  # 2. Unit tests.
+  # ---------------------------------------------------------------------------
+  unit-test:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        if: inputs.language == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - name: Test (Go)
+        if: inputs.language == 'go'
+        run: go test ./... -race -count=1
+
+      - name: Setup Node
+        if: inputs.language == 'node'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - name: Test (Node)
+        if: inputs.language == 'node'
+        run: |
+          npm ci
+          npm test
+
+      - name: Setup Python
+        if: inputs.language == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Test (Python)
+        if: inputs.language == 'python'
+        run: |
+          pip install -e ".[test]" || pip install -r requirements-dev.txt
+          pytest -q
+
+  # ---------------------------------------------------------------------------
+  # 3-5. Build (multi-stage) -> Trivy scan (fail CRITICAL) -> push to ECR.
+  #
+  # Build happens BEFORE scan so we scan the exact image we would push. Push only
+  # runs after the scan passes AND only on push events (PR builds are scanned but
+  # pushed under the pr-* tag so reviewers can deploy them to dev — see tags below).
+  # ---------------------------------------------------------------------------
+  build-scan-push:
+    runs-on: ubuntu-latest
+    needs: unit-test
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+      image_ref: ${{ steps.meta.outputs.image_ref }}
+      pushed: ${{ steps.meta.outputs.pushed }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # ---- Compute the tag per the Component 18 convention --------------------
+      - name: Compute image tag
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHA7="${GITHUB_SHA::7}"
+          PUSHED="false"
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            # Release tag -> immutable semver tag (strip the leading refs/tags/).
+            TAG="${GITHUB_REF#refs/tags/}"
+            PUSHED="true"
+          elif [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            # PR build -> pr-<n>-<sha7>; lifecycle-expired after merge/close.
+            TAG="pr-${{ github.event.pull_request.number }}-${SHA7}"
+            PUSHED="true"
+          elif [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            # Main commit -> immutable sha-<sha7>, kept forever.
+            TAG="sha-${SHA7}"
+            PUSHED="true"
+          else
+            # Other branches: build + scan only, never pushed (no tag policy slot).
+            TAG="sha-${SHA7}"
+            PUSHED="false"
+          fi
+          # Guard: :latest is forbidden anywhere in this pipeline.
+          if [[ "${TAG}" == "latest" ]]; then
+            echo "::error:::latest is forbidden by Component 18 tag policy"; exit 1
+          fi
+          echo "image_tag=${TAG}"  >> "$GITHUB_OUTPUT"
+          echo "pushed=${PUSHED}"  >> "$GITHUB_OUTPUT"
+          echo "image_ref=${ECR_REGISTRY}/${ECR_REPOSITORY}:${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ---- Build the multi-stage image (load locally so Trivy scans the artifact)
+      - name: Build image (multi-stage, local)
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.build_context }}
+          file: ${{ inputs.dockerfile }}
+          load: true
+          push: false
+          tags: ${{ steps.meta.outputs.image_ref }}
+          provenance: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ---- Trivy scan: FAIL the pipeline on CRITICAL CVEs (Component 18 gate) --
+      - name: Trivy vulnerability scan (fail on ${{ inputs.trivy_severity }})
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ steps.meta.outputs.image_ref }}
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: "os,library"
+          severity: ${{ inputs.trivy_severity }}
+
+      # ---- OIDC -> GitHubActionsRole. No long-lived keys (Component 1 + 18) ----
+      - name: Configure AWS credentials (OIDC)
+        if: steps.meta.outputs.pushed == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.GHA_ROLE_ARN }}
+          aws-region: ${{ inputs.aws_region }}
+          role-session-name: gha-${{ inputs.service }}-${{ github.run_id }}
+
+      - name: Login to ECR
+        if: steps.meta.outputs.pushed == 'true'
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ---- Push (re-build with push:true; layers are cached so this is cheap) --
+      - name: Push image to ECR
+        if: steps.meta.outputs.pushed == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.build_context }}
+          file: ${{ inputs.dockerfile }}
+          push: true
+          tags: ${{ steps.meta.outputs.image_ref }}
+          provenance: false
+          cache-from: type=gha
+
+  # ---------------------------------------------------------------------------
+  # 6. On merge to main only: open a gitops PR with the new immutable image tag.
+  #    Uses the cypherx-gitops-bot GitHub App (short-lived installation token),
+  #    NOT a personal PAT (Component 18). The App private key is read from AWS
+  #    Secrets Manager (cypherx/ci/gitops-bot/*), itself reachable only via the
+  #    OIDC GitHubActionsRole scoped to cypherx/ci/*.
+  # ---------------------------------------------------------------------------
+  gitops-pr:
+    runs-on: ubuntu-latest
+    needs: build-scan-push
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.GHA_ROLE_ARN }}
+          aws-region: ${{ inputs.aws_region }}
+          role-session-name: gha-gitops-${{ inputs.service }}-${{ github.run_id }}
+
+      # The App credentials live in Secrets Manager, mirrored from Doppler
+      # ci/github_app_private_key (Component 18, 180-day rotation). We read them
+      # via the scoped cypherx/ci/* permission the GitHubActionsRole carries.
+      - name: Fetch gitops-bot App credentials from Secrets Manager
+        id: app_creds
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_ID="$(aws secretsmanager get-secret-value \
+            --secret-id cypherx/ci/gitops-bot/app_id \
+            --query SecretString --output text)"
+          PRIVATE_KEY="$(aws secretsmanager get-secret-value \
+            --secret-id cypherx/ci/gitops-bot/private_key \
+            --query SecretString --output text)"
+          echo "app_id=${APP_ID}" >> "$GITHUB_OUTPUT"
+          # Mask + pass the PEM to the next step via an env file (never logged).
+          {
+            echo "GITOPS_APP_PRIVATE_KEY<<__PEM__"
+            echo "${PRIVATE_KEY}"
+            echo "__PEM__"
+          } >> "$GITHUB_ENV"
+          echo "::add-mask::${PRIVATE_KEY}"
+
+      # Derive the bare repo name (owner/name -> name) for the App-token scope.
+      - name: Resolve gitops repo name
+        id: gitops_name
+        shell: bash
+        run: echo "name=${GITOPS_REPO##*/}" >> "$GITHUB_OUTPUT"
+        env:
+          GITOPS_REPO: ${{ inputs.gitops_repo }}
+
+      # Exchange the App private key for a short-lived installation token scoped
+      # to the gitops repo (contents:write, pull_requests:write).
+      - name: Mint gitops-bot installation token
+        id: bot_token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ steps.app_creds.outputs.app_id }}
+          private-key: ${{ env.GITOPS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.gitops_name.outputs.name }}
+
+      - name: Checkout gitops repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.gitops_repo }}
+          token: ${{ steps.bot_token.outputs.token }}
+          path: gitops
+
+      # Bump the image tag in the dev overlay for this service. Each phase adds
+      # the service's app dir under gitops/envs/dev/<ns>/<service>/; this writes
+      # the immutable sha-<sha7> tag the build just pushed.
+      - name: Bump image tag in dev overlay
+        shell: bash
+        run: |
+          set -euo pipefail
+          NEW_TAG="${{ needs.build-scan-push.outputs.image_tag }}"
+          SERVICE="${{ inputs.service }}"
+          # The overlay path is fixed by Component 19 (envs/<env>/<ns>/<service>/image.txt).
+          # The gitops repo's kustomize/Helm value reads this file; one line, the tag only.
+          TARGET="$(git -C gitops ls-files "envs/dev/**/${SERVICE}/image.txt" | head -n1)"
+          if [[ -z "${TARGET}" ]]; then
+            echo "::warning::no envs/dev overlay yet for ${SERVICE}; the service's app dir is added in its deploy phase. Skipping bump."
+            echo "skip=true" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          echo "${NEW_TAG}" > "gitops/${TARGET}"
+          echo "skip=false" >> "$GITHUB_ENV"
+
+      - name: Open / update gitops PR
+        if: env.skip != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.bot_token.outputs.token }}
+        run: |
+          set -euo pipefail
+          cd gitops
+          BRANCH="bot/${{ inputs.service }}-${{ needs.build-scan-push.outputs.image_tag }}"
+          git config user.name  "cypherx-gitops-bot[bot]"
+          git config user.email "cypherx-gitops-bot[bot]@users.noreply.github.com"
+          git checkout -b "${BRANCH}"
+          git add -A
+          git commit -m "deploy(${{ inputs.service }}): dev -> ${{ needs.build-scan-push.outputs.image_tag }}"
+          git push -u origin "${BRANCH}"
+          # dev/staging gitops PRs are auto-merged (ArgoCD then syncs); prod requires
+          # human approval in ArgoCD (Component 12). --merge --auto is dev policy.
+          gh pr create \
+            --title "deploy(${{ inputs.service }}): dev -> ${{ needs.build-scan-push.outputs.image_tag }}" \
+            --body "Automated by reusable-service-ci. Image: \`${{ needs.build-scan-push.outputs.image_ref }}\`. Source commit ${{ github.sha }}." \
+            --base main --head "${BRANCH}"
+          gh pr merge "${BRANCH}" --auto --squash || \
+            echo "::notice::auto-merge not enabled on gitops repo; PR left open for review."

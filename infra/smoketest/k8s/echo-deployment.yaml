@@ -1,0 +1,179 @@
+# Raw Deployment + Service + ServiceAccount for echo-service.
+#
+# PREFERRED path: deploy via the charts/cypherx-service base chart driven by
+# infra/smoketest/values.yaml (which renders an equivalent, contract-complete
+# set). This raw manifest is the Helm-less fallback the smoke-test script can
+# `kubectl apply` directly. Keep it in sync with smoketest/values.yaml.
+#
+# Image + KAFKA_BROKERS are placeholders the script substitutes before apply.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: echo
+  namespace: smoketest
+  labels:
+    app.kubernetes.io/name: echo
+    cypherx.ai/service: echo
+    cypherx.ai/purpose: infra-smoke-test
+automountServiceAccountToken: true
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: echo
+  namespace: smoketest
+  labels:
+    app.kubernetes.io/name: echo
+    app.kubernetes.io/instance: echo
+    cypherx.ai/service: echo
+    cypherx.ai/purpose: infra-smoke-test
+spec:
+  replicas: 1                       # assertion 8 scales 1 -> 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: echo
+      app.kubernetes.io/instance: echo
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: echo
+        app.kubernetes.io/instance: echo
+        cypherx.ai/service: echo
+      annotations:
+        sidecar.istio.io/inject: "true"   # assertion 1/4 (traceparent + spans)
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: /metrics
+    spec:
+      serviceAccountName: echo
+      # Schedule on the agent NodePool so a 1->3 scale can trigger Karpenter.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-role
+                    operator: In
+                    values: ["agent"]
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: echo
+          image: REPLACE_ME_ECR/cypherx/echo-service:REPLACE_ME_TAG
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: metrics
+              containerPort: 9090
+          env:
+            - name: SERVICE
+              value: echo
+            - name: VERSION
+              value: "0.1.0"
+            - name: ENVIRONMENT
+              value: dev
+            - name: LOG_LEVEL
+              value: INFO
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://tempo-distributor.observability.svc.cluster.local:4317
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: grpc
+            - name: OTEL_PROPAGATORS
+              value: tracecontext,baggage
+            # ---- Contract 13: Postgres via transaction-mode PgBouncer ----
+            - name: POSTGRES_HOST
+              value: pgbouncer.data.svc.cluster.local
+            - name: POSTGRES_PORT
+              value: "6432"
+            - name: POSTGRES_DB
+              value: cypherx_platform
+            - name: POSTGRES_SCHEMA
+              value: public
+            - name: POSTGRES_USER
+              value: smoketest_user
+            # ---- Valkey + Kafka (Component 5) ----
+            - name: VALKEY_HOST
+              value: valkey.data.svc.cluster.local
+            - name: VALKEY_PORT
+              value: "6379"
+            - name: VALKEY_TLS
+              value: "true"
+            - name: KAFKA_BROKERS
+              value: REPLACE_ME_KAFKA_BROKERS
+            - name: KAFKA_SMOKETEST_TOPIC
+              value: cypherx.smoketest.event
+            - name: KAFKA_SECURITY_PROTOCOL
+              value: SASL_SSL
+            - name: KAFKA_SASL_MECHANISM
+              value: SCRAM-SHA-512
+            - name: KAFKA_SASL_USERNAME
+              value: smoketest
+            # ---- Contract 5/13: the fake tenant the envelope is keyed on ----
+            - name: SMOKE_TENANT_ID
+              value: "00000000-0000-0000-0000-0000000000ff"
+          # Secrets (POSTGRES_PASSWORD, VALKEY_PASSWORD, KAFKA_SASL_PASSWORD,
+          # SMOKE_SECRET) come from the Doppler-synced Secret (assertion 9).
+          envFrom:
+            - secretRef:
+                name: echo-runtime
+          livenessProbe:                # Contract 7: never checks downstreams
+            httpGet:
+              path: /livez
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:               # Contract 7: DB + Valkey gate
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo
+  namespace: smoketest
+  labels:
+    app.kubernetes.io/name: echo
+    cypherx.ai/service: echo
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: echo
+    app.kubernetes.io/instance: echo
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+    - name: metrics
+      port: 9090
+      targetPort: metrics

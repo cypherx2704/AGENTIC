@@ -1,0 +1,16 @@
+# GitLab CI mirror of .github/workflows/contracts-ci.yml (service repos are GitLab-hosted today).
+# Keep both in sync until the platform settles on a single CI host (stack.md mandates GitHub Actions).
+stages: [validate]
+
+contracts:validate:
+  stage: validate
+  image: node:20-alpine
+  script:
+    - npm ci || npm install
+    - npm run check        # offline-safe structural + manifest check
+    - npm run validate     # Ajv draft 2020-12 compile + example assertions
+    - npm run lint:openapi
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH =~ /^feature\//

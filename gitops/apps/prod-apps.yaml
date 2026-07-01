@@ -1,0 +1,54 @@
+# =============================================================================
+# prod-apps.yaml — ArgoCD App-of-Apps ROOT for PROD (Component 19).
+# =============================================================================
+# ArgoCD watches `envs/prod/` and auto-CREATES the child Applications (so the
+# tree stays in sync with git), BUT each child syncs MANUALLY.
+#
+# Sync policy (prod): MANUAL APPROVAL REQUIRED (Component 12).
+#   - `syncPolicy.automated` is intentionally OMITTED here and MUST be omitted on
+#     every child app under envs/prod/. A human approves each sync in the ArgoCD
+#     UI (or via `argocd app sync`). This is the prod safety gate that the gitops
+#     CI bot relies on — the bot opens the prod PR but does NOT auto-merge it, and
+#     even after merge ArgoCD will not roll prod without a human pressing sync.
+#
+#   Do NOT add `automated:` to this file or to any envs/prod child. That would
+#   silently turn prod into continuous deploy and defeat the Component 12 gate.
+#
+# Apply ONCE per prod cluster at bootstrap:
+#   kubectl apply -n argocd -f apps/prod-apps.yaml
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cypherx-platform-prod
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.io
+  labels:
+    app.kubernetes.io/part-of: cypherx-platform
+    cypherx.ai/env: prod
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/cypherx-ai/cypherx-gitops.git
+    targetRevision: main
+    path: envs/prod
+    directory:
+      recurse: true
+      include: "{*.yaml,**/*.yaml}"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  # NOTE: NO `automated:` block. Prod child apps are created automatically (so the
+  # App-of-Apps tree matches git) but each one waits for a manual sync. We DO keep
+  # CreateNamespace so a human-approved first sync needs no manual ns prep.
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      - ApplyOutOfSyncOnly=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m

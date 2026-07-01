@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.cypherx.ai/v1/logging/log-format.json",
+  "title": "Structured Log Format",
+  "description": "Contract 6 — Every service MUST emit logs to stdout in this exact JSON format. No plain-text logs in production. Forward-compatible: unknown fields are tolerated (additionalProperties:true) so producers may add context without breaking log ingestion.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "timestamp",
+    "level",
+    "service",
+    "message"
+  ],
+  "properties": {
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 UTC timestamp with millisecond precision, e.g. `2026-05-22T10:00:00.000Z`."
+    },
+    "level": {
+      "type": "string",
+      "enum": ["DEBUG", "INFO", "WARN", "ERROR", "FATAL"],
+      "description": "Log severity. DEBUG = detailed flow (dev/staging only, never prod by default); INFO = normal operation milestones; WARN = recoverable issue (fallback/retry/quota approaching); ERROR = operation failed but service still running; FATAL = service cannot continue, log then exit."
+    },
+    "service": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Logical service name emitting the log line, e.g. `llms-gateway`."
+    },
+    "version": {
+      "type": "string",
+      "description": "Semantic version of the running service build, e.g. `1.2.3`."
+    },
+    "environment": {
+      "type": "string",
+      "description": "Deployment environment, e.g. `dev`, `staging`, `prod`."
+    },
+    "trace_id": {
+      "type": "string",
+      "description": "Distributed-tracing correlation id (UUID) for the request (Contract 8)."
+    },
+    "span_id": {
+      "type": "string",
+      "description": "Span id (UUID) within the trace (Contract 8)."
+    },
+    "request_id": {
+      "type": "string",
+      "description": "Per-request identifier (UUID)."
+    },
+    "tenant_id": {
+      "type": "string",
+      "description": "Isolation-boundary UUID for the request (Contract 13). Emitted on every tenant-scoped log line."
+    },
+    "agent_id": {
+      "type": "string",
+      "description": "Agent identifier (UUID) associated with the request, if any."
+    },
+    "message": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable log message."
+    },
+    "duration_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Operation duration in milliseconds, when the log line marks the end of a timed operation."
+    },
+    "extra": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Free-form structured context. Service-specific key/value pairs that do not belong to a standard field."
+    }
+  }
+}

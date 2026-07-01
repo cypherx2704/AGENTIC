@@ -1,0 +1,29 @@
+{{- if .Values.istio.virtualService.enabled }}
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: {{ include "cypherx-service.fullname" . }}
+  labels:
+    {{- include "cypherx-service.labels" . | nindent 4 }}
+spec:
+  hosts:
+    {{- if .Values.istio.virtualService.hosts }}
+    {{- toYaml .Values.istio.virtualService.hosts | nindent 4 }}
+    {{- else }}
+    - {{ include "cypherx-service.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+    {{- end }}
+  {{- with .Values.istio.virtualService.gateways }}
+  gateways:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  http:
+    {{- if .Values.istio.virtualService.http }}
+    {{- toYaml .Values.istio.virtualService.http | nindent 4 }}
+    {{- else }}
+    - route:
+        - destination:
+            host: {{ include "cypherx-service.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+            port:
+              number: {{ .Values.ports.http }}
+    {{- end }}
+{{- end }}

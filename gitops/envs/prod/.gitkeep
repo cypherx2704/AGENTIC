@@ -1,0 +1,6 @@
+# Intentionally empty at Phase 1 end (Component 19).
+# ArgoCD root app `cypherx-platform-prod` (apps/prod-apps.yaml) watches this dir.
+# Service teams add their app here in their deploy phase:
+#   envs/prod/<namespace>/<service>/
+# Child apps are auto-CREATED but MANUAL-SYNC (prod policy, Component 12).
+# Do NOT add a `syncPolicy.automated` block to any app under envs/prod/.

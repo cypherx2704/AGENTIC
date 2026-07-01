@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.cypherx.ai/v1/jwt/claims.schema.json",
+  "title": "CypherX JWT Claims (Contract 1)",
+  "description": "The CLAIMS object of every JWT issued by SharedCore/Auth. The JWT header (alg=RS256, typ=JWT, kid) is a separate structure and is NOT modelled here. iss and aud are deployment-configurable (resolved from AUTH_ISSUER_URL / AUTH_PLATFORM_AUDIENCE) — this schema describes shape, not literal values. Forward-compatibility (Contract 1 R-forward-compat): verifiers MUST NOT reject tokens that contain unrecognised optional claims, hence additionalProperties is true and only validation-mandatory claims are required.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["iss", "sub", "aud", "iat", "exp", "jti", "tenant_id", "agent_id"],
+  "properties": {
+    "iss": {
+      "type": "string",
+      "format": "uri",
+      "description": "Issuer. Resolves to the deployment's AUTH_ISSUER_URL (e.g. https://auth.cypherx.ai for CypherX cloud, operator-set for self-hosted/white-label). Verifiers MUST match against their configured AUTH_ISSUER_URL or one of the configured trusted issuers in federation mode — never a hardcoded literal."
+    },
+    "sub": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Subject — the agent_id (agent-uuid) the token was minted for."
+    },
+    "aud": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "minItems": 1,
+      "description": "Audience. Array of strings. MUST contain the configured AUTH_PLATFORM_AUDIENCE of the verifying deployment."
+    },
+    "iat": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Issued-at, seconds since the Unix epoch (NumericDate, RFC 7519)."
+    },
+    "exp": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Expiry, seconds since the Unix epoch (NumericDate). MUST be in the future (clock-skew tolerance ±60s). Token lifetime (exp - iat) MUST NOT exceed 1 hour (3600s) for agent tokens."
+    },
+    "jti": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique token id (UUID v4). Used for replay detection (TOKEN_REPLAYED)."
+    },
+    "tenant_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Org/isolation-boundary UUID (Contract 13). MUST be present and non-empty."
+    },
+    "agent_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Agent UUID. MUST be present and non-empty. Normally equals sub."
+    },
+    "agent_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Semantic version of the agent definition (e.g. 1.0.0)."
+    },
+    "api_key_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "UUID of the API key the token was exchanged from (Contract 18). Renamed from key_id to avoid confusion with the JWT header 'kid'. Present when the token originated from an API-key exchange."
+    },
+    "deployment_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Disambiguates tokens when a service trusts more than one issuer (e.g. cypherx-prod, acme-selfhosted). Used by regional gateways accepting both auth.cypherx.ai and a customer's self-hosted Auth via federation."
+    },
+    "scopes": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Granted scopes (e.g. llm:invoke, memory:read, memory:write, rag:query, tool:invoke, guardrails:check). The required scope for an action MUST be present.",
+      "examples": [["llm:invoke", "memory:read", "memory:write", "rag:query", "tool:invoke", "guardrails:check"]]
+    },
+    "plan": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Billing/entitlement plan of the tenant (e.g. free, pro, enterprise)."
+    },
+    "region": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Deployment region the token is scoped to (e.g. us-east-1)."
+    },
+    "cnf": {
+      "type": ["object", "null"],
+      "description": "RESERVED (⚡ reserved / 📋 enforced Phase 2 Component 3b). Token binding (RFC 7800): { \"x5t#S256\": \"<...>\" } for mTLS-bound, { \"jkt\": \"<...>\" } for DPoP-bound. May be null when unbound. Verifiers MUST accept its presence now; enforcement (TOKEN_BINDING_MISMATCH) turns on in Phase 2.",
+      "properties": {
+        "x5t#S256": { "type": "string", "description": "Base64url SHA-256 thumbprint of the mTLS client certificate." },
+        "jkt": { "type": "string", "description": "JWK SHA-256 thumbprint of the DPoP proof-of-possession key." }
+      },
+      "additionalProperties": true
+    },
+    "wkl_id": {
+      "type": ["string", "null"],
+      "description": "RESERVED (📋 enforced Phase 2 Component 8c). SPIFFE workload identity URI (e.g. spiffe://cypherx.prod/ns/xagent/sa/agent-runtime). May be null. Defined now for alignment; enforced later."
+    },
+    "behavior_policy_id": {
+      "type": ["string", "null"],
+      "description": "RESERVED (📋 enforced Phase 2 Component 5c). UUID of the behavioral envelope policy (Contract 17) applied to this agent. May be null. Defined now; enforced later."
+    },
+    "delegation_chain": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "RESERVED (📋 enforced Phase 2 Component 8d). A2A delegation chain (Contract 3). A2A tokens only. Defined now; enforced later."
+    },
+    "delegation_depth": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "RESERVED (📋 Phase 2). A2A delegation chain depth. A2A tokens only."
+    },
+    "delegation_root_task": {
+      "type": "string",
+      "description": "RESERVED (📋 Phase 2). Task id at the root of the A2A delegation chain. A2A tokens only."
+    },
+    "delegation_root_expiry": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "RESERVED (📋 Phase 2). NumericDate expiry of the root delegation. A2A tokens only."
+    },
+    "approval_context": {
+      "type": ["object", "string", "null"],
+      "description": "RESERVED (📋 enforced Phase 2 / Contract 16). Reference to a step-up approval grant. Present on action-call tokens only when an approval-required scope is invoked. Defined now; enforced later."
+    }
+  }
+}

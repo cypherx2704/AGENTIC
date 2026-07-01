@@ -1,0 +1,214 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cypherx-service.fullname" . }}
+  labels:
+    {{- include "cypherx-service.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "cypherx-service.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "cypherx-service.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        # Roll pods when configmap/secret wiring changes.
+        checksum/values: {{ toJson .Values | sha256sum }}
+        # Istio sidecar injection (Phase 1 Component 7). Namespace must be
+        # labelled istio-injection=enabled for this to take effect.
+        sidecar.istio.io/inject: {{ .Values.istio.sidecarInject | quote }}
+        {{- if .Values.serviceMonitor.enabled }}
+        # Prometheus discovers via ServiceMonitor; these are belt-and-suspenders.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.ports.metrics | quote }}
+        prometheus.io/path: {{ .Values.serviceMonitor.path | quote }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "cypherx-service.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- if .Values.affinity }}
+      affinity:
+        {{- toYaml .Values.affinity | nindent 8 }}
+      {{- else if .Values.nodeRole }}
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-role
+                    operator: In
+                    values:
+                      - {{ .Values.nodeRole | quote }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      topologySpreadConstraints:
+        {{- if .Values.topologySpreadConstraints }}
+        {{- toYaml .Values.topologySpreadConstraints | nindent 8 }}
+        {{- else }}
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "cypherx-service.podSelectorLabels" . | nindent 14 }}
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "cypherx-service.podSelectorLabels" . | nindent 14 }}
+        {{- end }}
+      containers:
+        - name: {{ .Values.service }}
+          image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.ports.http }}
+              protocol: TCP
+            - name: metrics
+              containerPort: {{ .Values.ports.metrics }}
+              protocol: TCP
+          env:
+            # ---- Contract 6: structured-log identity fields ----
+            - name: SERVICE
+              value: {{ .Values.service | quote }}
+            - name: VERSION
+              value: {{ include "cypherx-service.version" . | quote }}
+            - name: ENVIRONMENT
+              value: {{ .Values.environment | quote }}
+            - name: LOG_FORMAT
+              value: {{ .Values.observability.logFormat | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.observability.logLevel | quote }}
+            # ---- Contract 8: trace export + propagation ----
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.observability.otelEndpoint | quote }}
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: {{ .Values.observability.otelProtocol | quote }}
+            - name: OTEL_PROPAGATORS
+              value: {{ .Values.observability.otelPropagators | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: {{ .Values.service | quote }}
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "service.name={{ .Values.service }},service.version={{ include "cypherx-service.version" . }},deployment.environment={{ .Values.environment }}"
+            # ---- Downward API (pod identity for logs/traces) ----
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            {{- if .Values.database.enabled }}
+            # ---- Contract 13: DSN -> transaction-mode PgBouncer pooler ----
+            # Password comes from the Doppler-synced runtime Secret (key
+            # POSTGRES_PASSWORD); we assemble the DSN at runtime so the secret
+            # never appears in the manifest.
+            - name: POSTGRES_HOST
+              value: {{ .Values.database.pgbouncerHost | quote }}
+            - name: POSTGRES_PORT
+              value: {{ .Values.database.pgbouncerPort | quote }}
+            - name: POSTGRES_DB
+              value: {{ .Values.database.name | quote }}
+            - name: POSTGRES_SCHEMA
+              value: {{ .Values.database.schema | quote }}
+            - name: POSTGRES_USER
+              value: {{ .Values.database.runtimeUser | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cypherx-service.runtimeSecretName" . }}
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_DSN
+              value: "postgresql://{{ .Values.database.runtimeUser }}:$(POSTGRES_PASSWORD)@{{ .Values.database.pgbouncerHost }}:{{ .Values.database.pgbouncerPort }}/{{ .Values.database.name }}?sslmode={{ .Values.database.sslmode }}&search_path={{ .Values.database.schema }}{{ if .Values.database.extraParams }}&{{ .Values.database.extraParams }}{{ end }}"
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          envFrom:
+            {{- if .Values.doppler.enabled }}
+            # Service runtime secrets synced from Doppler (Component 11/20).
+            - secretRef:
+                name: {{ include "cypherx-service.runtimeSecretName" . }}
+            {{- end }}
+            {{- with .Values.extraEnvFrom }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          # ---- Contract 7: liveness must NOT depend on downstreams ----
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.liveness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          # ---- Contract 7: readiness DOES check downstreams ----
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.readiness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          {{- if .Values.probes.startup.enabled }}
+          startupProbe:
+            httpGet:
+              path: {{ .Values.probes.startup.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.probes.startup.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            {{- if .Values.writableTmp.enabled }}
+            - name: tmp
+              mountPath: {{ .Values.writableTmp.mountPath }}
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        {{- if .Values.writableTmp.enabled }}
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ .Values.writableTmp.sizeLimit }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}

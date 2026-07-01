@@ -1,0 +1,132 @@
+[
+  {
+    "fault": "BLOCKER (auth): ⚡ jti replay window ('every service rejects re-presented jti with 401 TOKEN_REPLAYED') is incompatible with 1-hour bearer agent JWTs reused on every request — implemented literally it breaks all four services after each token's first use.",
+    "decided_fix": "Rescope jti single-use semantics to one-time credentials only (future DPoP proofs, Component 10 approval tokens, optional service-token nonces). DELETE the 'every service replay window' item from the ⚡ checklist. Bearer kill-switch needs are covered by Component 3c jti revocation, which WILL be enforced verifier-side (WP03).",
+    "amends": "phase-02-auth.md Component 3b + ⚡ checklist line 1977"
+  },
+  {
+    "fault": "BLOCKER (llms): BYOK is ⚡ but hard-wired to AWS Secrets Manager + per-tenant KMS + IRSA, with a key_ref CHECK constraint admitting only 'doppler:' / 'secretsmanager:arn:aws:' — unimplementable in the actual compose/Neon runtime (no AWS, no Doppler).",
+    "decided_fix": "Replace with a pluggable, registry-driven secret backend: llms.secret_backends table replaces the literal CHECK; first-cycle backends = 'sealed:v1:<uuid>' (raw key AES-256-GCM envelope-encrypted in Postgres under an env-supplied KEK — same pattern Auth already uses for signing keys) and 'env:<VAR>' for platform keys. 'secretsmanager:' stays as an optional future backend.",
+    "amends": "phase-03-llms.md Component 8 + llms.providers DDL"
+  },
+  {
+    "fault": "BLOCKER (llms): UNIQUE(tenant_id, request_id) on usage_records + hot-path ON CONFLICT DO NOTHING + Contract-8 X-Request-ID forwarding (xAgent demonstrably forwards it) silently drops the billing row for any 2nd completion under one upstream request while still emitting both Kafka events — silent revenue loss + Postgres/Kafka divergence.",
+    "decided_fix": "Gateway mints a per-call llm_call_id UUID as the usage_records uniqueness key; request_id becomes a non-unique correlation column. Hot-path INSERT fails loudly on duplicates; only the billing-replay worker uses ON CONFLICT. Kafka payloads carry both ids. Callers change nothing.",
+    "amends": "phase-03-llms.md usage/outbox component; Shared Core/llms/db migration + db/outbox.py"
+  },
+  {
+    "fault": "BLOCKER (guardrails): Policy management CRUD is 📋 while the promoted ⚡ features (simulation, custom rules, append-only versioning, fail_mode_override paper trail, agent assignment) all hard-depend on it — no tenant can author the policies the ⚡ surface operates on.",
+    "decided_fix": "Promote to first cycle: POST /v1/policies (create), POST /v1/policies/{id} (append-only edit: new row, version+1, previous_policy_id, atomic agent_policies repoint), PUT /v1/agents/{agent_id}/policy (assignment), rule-reference + stream_mode validation at save, audit-logged fail_mode_override, scope tenant:admin. Rewrite the 📋 checklist to remove all promoted duplicates (simulation, custom rules, output-PII).",
+    "amends": "phase-04-guardrails.md Components 6/8 + ⚡/📋 checklists (lines 796-814)"
+  },
+  {
+    "fault": "BLOCKER (xagent): Exit criterion says 'all 10 cases of Contract 15' but Contract 15 defines 15 cases; cases 12/13 (Idempotency-Key on POST /v1/tasks) target xAgent yet appear in NO checklist anywhere — duplicate task submissions double LLM spend.",
+    "decided_fix": "Pin 9A gating to Contract-15 cases 1-10 explicitly, and ADD a ⚡ checklist item for Contract-9 idempotency on POST /v1/tasks (Valkey idem key, 24h TTL, Idempotent-Replayed header, 409 IDEMPOTENCY_KEY_CONFLICT, fail-closed 503 on Valkey outage). Cases 11-15 gate the enterprise wave (WP12/WP14).",
+    "amends": "phase-09-xagent.md lines 19/909 + first-cycle checklist; phase-00-contracts.md Contract 15"
+  },
+  {
+    "fault": "BLOCKER (xagent, LIVE BUG): caller-vs-target agent authorization is undefined; code persists body.agent_id while executing the JWT agent's config — task rows, Kafka events, and cost mis-attribute to an agent whose config never ran; body.agent_id is never validated to exist.",
+    "decided_fix": "First cycle: body.agent_id MUST equal jwt.agent_id; mismatch → 422 VALIDATION_ERROR. Cross-agent invocation arrives only via 9B A2A delegation tokens. Fix api/tasks.py + core/stages/load.py accordingly (WP02).",
+    "amends": "phase-09-xagent.md Component 2; xAgent/ax-1 api/tasks.py + core/stages/load.py"
+  },
+  {
+    "fault": "BLOCKER (frontend): the entire auth layer depends on deferred px0 SSO with no fallback — a first-cycle frontend built to plan cannot authenticate anyone; the prescribed agent:mint_on_behalf mint mode also doesn't exist in Auth.",
+    "decided_fix": "Add a first-cycle 'platform-credential login' strategy: operator submits tenant_id + admin agent API key; BFF validates via the built POST /v1/agents/{id}/token exchange, stores credentials server-side in the Valkey session, re-mints short-lived JWTs on demand. Keep the httpOnly-session + CSRF shell identical so px0 SSO slots in later behind the same /bff/me contract. agent:mint_on_behalf + phase-12 platform-migrations deferred to Phase 11.",
+    "amends": "phase-12-frontend.md Components 1/2"
+  },
+  {
+    "fault": "BLOCKER (cross-phase): xAgent MEMORY_WRITE publishes Kafka topic cypherx.memory.write.requested which Phase 6 never defines or consumes — memory writes would vanish into a void.",
+    "decided_fix": "Delete the topic. xAgent's MEMORY_WRITE stage calls POST /v1/memories directly (async fire-and-forget HTTP with service JWT + X-Forwarded-Agent-JWT), reusing Memory's validation + idempotency.",
+    "amends": "phase-09-xagent.md line 448 + phase-06-memory.md integration section"
+  },
+  {
+    "fault": "BLOCKER (cross-phase): Phases 5/6 hard-depend on LLMs surfaces that are deferred and verified absent (POST /v1/embeddings, GET /v1/models, Idempotency-Key replay, 'embed' alias + embedding pricing seeds) with no scheduling note.",
+    "decided_fix": "Name an explicit LLMs pre-work package (WP06 here) as a declared dependency of Phases 5/6: embeddings (256-item/25MiB caps, mock provider, usage+outbox), GET /v1/models with embedding_dim, embed alias + pricing seeds, Valkey idempotency replay. RAG/Memory builds may not start ahead of it.",
+    "amends": "phase-05-rag.md + phase-06-memory.md dependencies sections; phase-03 ⚡ checklist"
+  },
+  {
+    "fault": "MAJOR (auth): External onboarding (1c, ⚡) depends on nonexistent things: unspecified email provider, Turnstile/reputation feeds, an undefined auth.tenant_users table contradicting the agent-only model, a 7-day session JWT breaking the 1h cap, and a synthetic hardcoded-domain insert into the upstream_identity trust anchors.",
+    "decided_fix": "Split 1c. First cycle = signup/verify/resend with config-driven SMTP emitter (mailhog/mock locally) + pluggable captcha (mock provider) + velocity-only risk scoring; on verify, create tenant + issue the tenant's first agent + API key (NO tenant_users table, NO session JWT); drop the synthetic upstream_identity insert (signup_attempts.tenant_id already links). Reputation feeds + manual-review UI → Phase 13.",
+    "amends": "phase-02-auth.md Component 1c + Contract 20"
+  },
+  {
+    "fault": "MAJOR (auth): Component 11 px0 verification is ⚡ though px0 is deferred and unprovisionable; GET /v1/usage has no data source; three tables referenced with no DDL (rate_limit_config, tenant_step_up_policy, tenant_users); 5c scoped four contradictory ways.",
+    "decided_fix": "Component 11 → config-gated: empty upstream_identity = px0 verification disabled (current code behavior is correct); seed moves to Phase 11. /v1/usage → backed by a cypherx.llms.usage.recorded consumer + auth.tenant_usage_counters rollup (WP04). Add DDL+seed for auth.rate_limit_config; tenant_step_up_policy defers with Component 10; tenant_users deleted per the 1c fix. 5c authoritative staging: P2 = table + ONE shadow seed row; P10 = alert-only middleware; P13 = blocking/quarantine.",
+    "amends": "phase-02-auth.md Components 11, 1d, 4, 5c + migrations list + Audit Addendum #7"
+  },
+  {
+    "fault": "MAJOR (auth): tenant lifecycle events — the cross-service provisioning backbone — are published best-effort (log-and-drop) with no outbox, violating the ≤5s staleness SLA; webhooks are homed in a foreign 'platform' schema with no worker owner.",
+    "decided_fix": "Add an auth transactional outbox + relay (same pattern as the other three services) for tenant lifecycle, token.revoked, policy.changed. Webhooks move to auth.webhook_subscriptions + auth.webhook_deliveries with an auth-owned delivery worker as its own compose service; Contract 21 referenced only for signing/retry.",
+    "amends": "phase-02-auth.md Kafka events section + Component 1e + ⚡ checklist"
+  },
+  {
+    "fault": "MAJOR (llms): tenant plan tier (free/pro/enterprise) — the key for rate limits, cache toggles, budgets — is owned by deferred px0/platform-mgmt; nothing in Auth carries a plan field.",
+    "decided_fix": "Auth takes interim ownership: tenants.plan column (default 'free'), surfaced as a JWT claim AND via the limits endpoint; gateway caches it 60s in Valkey. Document the later migration to platform-mgmt.",
+    "amends": "phase-03-llms.md Component 5 + phase-02-auth.md tenant schema"
+  },
+  {
+    "fault": "MAJOR (llms): plan-mandated hardcoding (per-model caps 'hard-coded in the adaptor map', seed-mirroring literal maps) violates the nothing-hardcoded rule and has ALREADY drifted (missing embed/code/vision aliases, opus-4-7 vs 4-8 model id).",
+    "decided_fix": "Pull llms.model_capabilities (max_tokens, modalities, provider) into Phase 3 now; DB is the single authority for aliases/pricing/capabilities with startup-blocking load + 60s periodic refresh; in-code maps demoted to test fixtures; reconcile seeds (opus id, embed/code/vision aliases, embedding pricing).",
+    "amends": "phase-03-llms.md Components 2/5 + seed migrations"
+  },
+  {
+    "fault": "MAJOR (llms, scope contradictions): stream=true idempotency is unspecified (two ⚡ features collide); token-vs-request rate limiting stated three contradictory ways (token pre-check is impossible); /v1/usage + /v1/cost listed in BOTH ⚡ and 📋 checklists; llms.api_keys duplicates Auth's key ownership.",
+    "decided_fix": "Decisions: (a) streams — Idempotency-Key recorded but replay-exempt, header Idempotent-Replay: false; (b) rate limiting — requests_per_min pre-check + tokens_per_min as post-hoc window debit from actual usage, predictive limiting → 📋; (c) /v1/usage + /v1/cost are ⚡ (aggregation endpoints), dashboard extensions 📋 — delete the duplicate line; (d) LLMs stores ONLY llms.api_key_acls keyed by Auth's api_key_id, never a second api_keys table. Align spelling to Contract 2: IDEMPOTENCY_*.",
+    "amends": "phase-03-llms.md Components 5/6/8 + both checklists; phase-00-contracts.md Contract 9 header registry"
+  },
+  {
+    "fault": "MAJOR (guardrails): three referenced contract artifacts don't exist (jailbreak-leak-patterns.md, golden-suite.jsonl, guardrails-rule-cost.md); custom-rule 'semantic' type depends on deferred embeddings and 'chain' is undefined; non-UUID X-Request-ID lets external callers suppress their own violation + billing rows (fail-soft UUID-cast drop).",
+    "decided_fix": "Author all three artifacts in contracts/ as part of WP01 (golden suite seeded from existing test fixtures; rule-cost table matching rules.estimated_cost_usd_per_call). Custom rules first cycle = type regex (+ classifier-threshold); semantic gated on WP06 embeddings; 'chain' deleted. Trace middleware validates X-Request-ID as UUID, synthesizes UUIDv4 fallback with request_id_generated_fallback=true, CI test with junk header.",
+    "amends": "contracts/guardrails/* + contracts/billing/* (new); phase-04-guardrails.md Components 4/5d/8; guardrails core/trace.py"
+  },
+  {
+    "fault": "MAJOR (guardrails): 30/50ms (input) / 60/100ms (output) SLOs are unreconcilable with synchronous Neon round-trips (policy resolution + same-transaction violations/outbox writes on the response path); 'metering is NEVER sampled' collides with the shipped fail-soft inline writes.",
+    "decided_fix": "Specify: Valkey policy cache (60s) is MANDATORY on the hot path; violation/usage persistence moves to a post-response in-process queue draining to the outbox with bounded buffering + guardrails_persist_backlog metric and explicit overflow semantics; SLO is measured at decision-return, not after persistence.",
+    "amends": "phase-04-guardrails.md Components 3/4/5d + SLO section"
+  },
+  {
+    "fault": "MAJOR (guardrails): detoxify is 'FIRST CYCLE LOCKED' with no packaging story — torch adds ~2GB, checkpoint downloads at first use from GitHub, and the shipped code lazy-loads inside the first /readyz call (prod silently runs the keyword stub today).",
+    "decided_fix": "Two image targets: guardrails:slim (stub, dev/CI) and guardrails:ml (torch-cpu + checkpoint baked at build with pinned sha256, EAGER load in lifespan before readiness, CLASSIFIER_MODE=detoxify); threshold becomes env config; compose runs :ml for the prod profile.",
+    "amends": "phase-04-guardrails.md classifier section + Dockerfile + infra/compose"
+  },
+  {
+    "fault": "MAJOR (xagent): Auth /v1/authorize 'stateful checks' have no trigger/cadence/contract (code never calls it — suspended tenants execute until JWT expiry); timeout sweeper spec omits the outbox task.failed row, breaking its own atomicity invariant; runtime config is create-only (ON CONFLICT DO NOTHING silently returns old config), contradicting all-config-dynamic; user_id conflates agent identity with end-user identity; MCP client mislabeled ⚡ though all consumers are Phase 7.",
+    "decided_fix": "Specify: on task submission check a Valkey-cached authorize verdict (key tenant_id+agent_id, 60s TTL, action task:execute, fail-closed on deny, fail-open+alert on Auth outage). Sweeper marks timeout AND inserts the task.failed outbox row in ONE transaction. Add GET/PUT /v1/agents/{id}/runtime (bumps runtime_version) + status transitions. user_id: remove the JWT-sub fallback, column nullable until Phase 6 defines an explicit user_ref. MCP client relabeled 📋 (lands with TOOL_LOOP in WP12). Also codify: tasks.metadata JSONB column; redacted→passed step-status mapping; readiness gates Postgres+JWKS only (bless the code's divergence); DELETE-cancel semantics (202 pending/running, 409 terminal, 404 RLS, 503 on Valkey down, submitting agent or agent:admin only).",
+    "amends": "phase-09-xagent.md Components 2/3b/4/6 + lifecycle line 78 + checklist lines 891/903/907"
+  },
+  {
+    "fault": "MAJOR (frontend): the plan assumes six endpoints that exist nowhere (xAgent GET /v1/tasks list, Auth GET /v1/agents list + PATCH, xAgent runtime GET/PUT, Guardrails GET /v1/violations, LLMs GET /v1/usage + /v1/models), never mentions the X-Tenant-ID header the BFF must inject (no Kong exists), and specifies AWS/GitHub-Actions-only deployment for a GitLab/compose reality.",
+    "decided_fix": "Declare the six endpoints as named cross-phase dependencies and schedule them in the backend packages (WP04: Auth agent list/PATCH; WP05: llms usage/models; WP07: guardrails violations; WP08: xAgent task list + runtime GET/PUT). BFF downstream-header contract gains X-Tenant-ID (from session) + X-Request-ID. Add a compose/self-host deployment mode (SPA served by BFF container, env-driven URLs); CI re-targeted to GitLab CI; S3/CloudFront/Kong → full-enterprise. Model dropdown and memory_scope enum rendered from live APIs/code (incl. 'session'), audit path corrected to /v1/audit-log, cost banner = client-side worst-case from token_budget_per_task + actual cost post-run.",
+    "amends": "phase-12-frontend.md Components 2/3/4 + hosting/CI section"
+  },
+  {
+    "fault": "MAJOR (cross-phase, systemic): Phases 3-7 + 12 mandate AWS/K8s mechanisms absent from the actual runtime (SSE-KMS pre-sign conditions, Terragrunt-provisioned topics, IRSA, Istio, Kong, Doppler, Argo) and hardcode bucket names incl. a DB CHECK constraint on the s3:// prefix — violating the nothing-hardcoded rule at the schema layer.",
+    "decided_fix": "Add a 'compose-parity' subsection to each phase: S3_BUCKET/S3_ENDPOINT/S3_SSE_MODE ∈ {none,kms} fully env-driven; DROP the rag.documents bucket-prefix CHECK in favor of app-layer validation; ship an idempotent topics-init compose job (rpk topic create) as the Terragrunt stand-in; checklists split into 'service code' vs 'deploy-target' sections, deploy-target items conditional on the infra phase with documented compose equivalents.",
+    "amends": "phase-03/04/05/06/07/12 deployment sections + phase-05 rag.documents DDL"
+  },
+  {
+    "fault": "MAJOR (cross-phase): quota enforcement is triple-claimed (Phase-5/6 ⚡, Phase-5/6 📋, Phase-13 Domain 3); RAG/Memory metering specifies a live cross-schema join on llms.provider_pricing, violating the Contract-14 single-owner rule.",
+    "decided_fix": "Single owner: enforcement logic is ⚡ in Phases 5/6 (delete the 📋 duplicates); Phase-13 Domain 3 only TUNES thresholds/tiers. Metering events carry units + request_id ONLY; unit costs live in each service's own pricing table (rag.pricing/memory.pricing) maintained administratively; billing rollup de-duplicates on request_id (the rule Phase 6 already states in prose, made normative for both).",
+    "amends": "phase-05-rag.md + phase-06-memory.md Components 5d/7b + phase-13-hardening.md Domain 3"
+  },
+  {
+    "fault": "MAJOR (tools): registry.tenant_tools single FOR ALL RLS policy (no WITH CHECK) lets any tenant UPDATE/DELETE other tenants' marketplace tool rows (supply-chain attack: repoint endpoint_url); tool_capabilities has NO policy ('RLS inherited' is false); per-invocation outbox billing has no database to live in (tool servers are stateless).",
+    "decided_fix": "Split policies: FOR SELECT USING (tenant OR marketplace-active); FOR INSERT/UPDATE/DELETE USING + WITH CHECK (tenant_id = current); tool_capabilities gets its own policy. Metering: xAgent emits cypherx.tools.invocation.metered from its existing xagent.outbox (it records every tool call in task_steps and is the only first-cycle caller).",
+    "amends": "phase-07-tools.md schema/RLS section + metering component"
+  },
+  {
+    "fault": "MAJOR (memory): Components 2/2b still encode the pre-Round-2 'user scope = tenant-shared by design' — coding from them re-introduces the exact cross-end-user leak Round 2 fixed; sessions are agent_id-bound, breaking the principal abstraction; GDPR wipe requires a header external callers don't have; session_id has NO producer (Contract 3 task input lacks the field).",
+    "decided_fix": "Rewrite Components 2 step 1 and 2b step 2: user scope consults memory.tenant_config.user_scope_visibility, default principal_only (JWT-resolved principal must match). memory.sessions.agent_id → principal_type + principal_id with the standard resolution order. GDPR wipe derives requested_by from the JWT chain in either auth mode; column renamed requested_by_principal_id. Add optional input.session_id to Contract-3 task input + xagent.tasks column; MEMORY stages register sessions idempotently before first session-scope use. Renumber the duplicate 'Component 7b'.",
+    "amends": "phase-06-memory.md Components 2/2b/sessions/GDPR; phase-00-contracts.md Contract 3; phase-09-xagent.md task schema"
+  },
+  {
+    "fault": "MAJOR (rag): platform-skills KB bootstrap (direct SQL) omits the default kb_acls row its own enforcement requires — unreadable by everyone once ACLs ship; /readyz hard-requires the bootstrap which requires a live LLMs call, contradicting LLMs' soft-dep classification (circular cold start); the 'bootstrap-tenant consumer' checklist item has no design behind it.",
+    "decided_fix": "Bootstrap inserts the (tenant,'*') kb_acls row in the same transaction AND is lazy-with-retry: readiness requires only the bootstrap loop running, with env-pinned EMBEDDING_MODEL_RESOLVED/DIM fallback. Delete the bootstrap-tenant consumer; resolver treats missing tenant_backends as backend_type='pgvector' (write-through on first touch).",
+    "amends": "phase-05-rag.md Components 5c/5e/10 + ⚡ checklist lines 932/934"
+  },
+  {
+    "fault": "MINOR batch (folded as notes, fixed during WP01 doc pass + owning packages): OIDC discovery advertises 404 introspect/revoke endpoints (drop keys until shipped; document external client TTL ≤3600s as distinct from the 300s service cap); emergency key rotation gated on disabled Component 10 (interim gate: platform:admin + mounted emergency-token file); token mint does platform-scoped key_hash lookup, X-Tenant-ID optional; checklist service_acl edges aligned to Component 8b's 5-edge table; guardrails rules FK → app-side validation, block semantics stated as '200-always, caller mints 422', REDACTION_HMAC_KEY_PLATFORM standardized, operation enum dot-notation, output-max-length gets per-rule params {max_chars} DB-seeded; llms SSRF premise stale → URL pass-through default with config-gated fetcher; phase-09↔05 RAG query shape aligned to path-param form with top_k≤20 as client-side cap and a normative JSONB-containment filter grammar; phase-07 diagram paths fixed to /mcp/v1/invoke + /livez//readyz.",
+    "decided_fix": "All applied in the WP01 documentation pass; code-side halves land inside the owning work packages listed above.",
+    "amends": "phase-02/03/04/05/06/07/09 various sections"
+  }
+]

@@ -1,0 +1,107 @@
+{
+  "description": "Golden memory set for recall@k + helpfulness eval. Each memory has a deterministic bag-of-words embedding (computed by the runner from `content`). For every query a STALE, low-importance DISTRACTOR is engineered to have a HIGHER pure-cosine similarity than the truly-needed memory (it matches the query words more tightly), and the distractor is listed first so a stable cosine sort ranks it on top. The composite score (relevance + importance + recency) is what recovers the memory the user actually needs. recall@1 therefore directly measures the re-rank improvement.",
+  "memories": [
+    {
+      "id": "m-color-old",
+      "content": "user favorite color",
+      "type": "note",
+      "importance": 0.05,
+      "age_days": 400,
+      "note": "distractor: exact query phrasing -> highest cosine, but stale + trivial"
+    },
+    {
+      "id": "m-color-current",
+      "content": "user favorite color is teal as of this week",
+      "type": "preference",
+      "importance": 0.95,
+      "age_days": 2
+    },
+    {
+      "id": "m-allergy-old",
+      "content": "user peanut allergy",
+      "type": "note",
+      "importance": 0.05,
+      "age_days": 500,
+      "note": "distractor: exact phrasing of an outdated mention"
+    },
+    {
+      "id": "m-allergy-current",
+      "content": "user peanut allergy is now severe carry epipen",
+      "type": "fact",
+      "importance": 0.98,
+      "age_days": 5
+    },
+    {
+      "id": "m-city-old",
+      "content": "user lives city",
+      "type": "note",
+      "importance": 0.05,
+      "age_days": 600,
+      "note": "distractor: bare phrasing, no current value"
+    },
+    {
+      "id": "m-city-current",
+      "content": "user lives city berlin since last month",
+      "type": "fact",
+      "importance": 0.9,
+      "age_days": 10
+    },
+    {
+      "id": "m-deadline-old",
+      "content": "project apollo deadline",
+      "type": "note",
+      "importance": 0.05,
+      "age_days": 120,
+      "note": "distractor: stale, no actual date"
+    },
+    {
+      "id": "m-deadline-current",
+      "content": "project apollo deadline is this friday must ship",
+      "type": "fact",
+      "importance": 0.92,
+      "age_days": 1
+    },
+    {
+      "id": "m-pet-old",
+      "content": "user dog named",
+      "type": "note",
+      "importance": 0.05,
+      "age_days": 700,
+      "note": "distractor: stale bare phrasing"
+    },
+    {
+      "id": "m-pet-current",
+      "content": "user dog named biscuit a golden retriever",
+      "type": "fact",
+      "importance": 0.8,
+      "age_days": 14
+    }
+  ],
+  "queries": [
+    {
+      "query": "user favorite color",
+      "expected": "m-color-current",
+      "why": "stale exact-match distractor wins on cosine; composite recovers the current value"
+    },
+    {
+      "query": "user peanut allergy",
+      "expected": "m-allergy-current",
+      "why": "stale distractor wins on cosine; the severe current fact must surface"
+    },
+    {
+      "query": "user lives city",
+      "expected": "m-city-current",
+      "why": "stale distractor wins on cosine; the current city must surface"
+    },
+    {
+      "query": "project apollo deadline",
+      "expected": "m-deadline-current",
+      "why": "stale distractor wins on cosine; the actionable current deadline must surface"
+    },
+    {
+      "query": "user dog named",
+      "expected": "m-pet-current",
+      "why": "stale distractor wins on cosine; the current pet fact must surface"
+    }
+  ]
+}

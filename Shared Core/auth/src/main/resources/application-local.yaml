@@ -1,0 +1,34 @@
+# Local dev profile — points at the dev/local docker-compose stack (infra/dev/local).
+# Activate with: SPRING_PROFILES_ACTIVE=local
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/cypherx_platform?currentSchema=auth
+    username: auth_user
+    password: localdev          # CYPHERX_LOCAL_DB_PASSWORD in dev/local seed
+  kafka:
+    bootstrap-servers: localhost:9092
+  data:
+    redis:
+      url: redis://localhost:6379
+
+cypherx:
+  auth:
+    environment: local
+    issuer-url: http://localhost:8080
+    key-encryptor: local
+    # Dev-only AES-256 master key (base64 of EXACTLY 32 bytes). LOCAL ONLY — cloud uses KMS. Not a real secret.
+    local-master-key-b64: "dOTCWIvKNfbl3uEaPSKz9gLHU83+q1gePY/AMZJOqVE="
+    bootstrap-token: "local-bootstrap-token-change-me"
+    # Self-serve onboarding (WP04 Component 1c). Default mock/mock needs no infra. To exercise the
+    # real email path locally, run mailhog (smtp localhost:1025, UI :8025) and set
+    # ONBOARDING_EMAIL_PROVIDER=smtp — the smtp.* defaults already target mailhog.
+    onboarding:
+      email-provider: mock
+      captcha-provider: mock
+  # Per-service bootstrap secrets for POST /v1/service-tokens (local dev only; cloud uses Doppler).
+  # Map key = X-Service-Name (must match a service_acl caller_service).
+  service-auth:
+    bootstrap-secrets:
+      xagent: "local-dev-xagent-secret"
+      llms: "local-dev-llms-secret"
+      guardrails: "local-dev-guardrails-secret"

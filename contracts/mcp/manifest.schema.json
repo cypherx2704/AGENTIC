@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.cypherx.ai/v1/mcp/manifest.schema.json",
+  "title": "MCP Tool Manifest",
+  "description": "Contract 4 — MCP server manifest returned by every MCP server's `/manifest` endpoint. Naming: server `name` uses dash-case (tool-web-search); individual tool `name` uses snake_case (web_search) to match MCP's JSON-RPC method-name convention. Manifests target MCP protocol v1; `schema_version` is this contract's version, `protocol_version` is the MCP wire-protocol version. Scope granularity enforced before invocation: coarse `tool:invoke` (any tool), fine `tool:<server-name>:invoke` (specific server), wildcard `tool:*:invoke` (admin/platform only). Tool-declared `timeout_seconds` is the hard ceiling; effective per-call timeout = min(A2A_remaining, tool.timeout_seconds). Request-style schema: strict, but tolerates unknown OPTIONAL keys inside `input_schema`/`output_schema` (which are nested JSON Schemas).",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "description": "Semantic version of this contract schema, e.g. \"1.0.0\"."
+    },
+    "protocol_version": {
+      "type": "string",
+      "pattern": "^mcp/[0-9]+\\.[0-9]+$",
+      "description": "MCP wire-protocol version, e.g. \"mcp/1.0\"."
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "description": "MCP server name in dash-case, e.g. \"tool-web-search\"."
+    },
+    "display_name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable server name, e.g. \"Web Search\"."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "description": "Semantic version of the MCP server implementation, e.g. \"1.2.0\"."
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "description": "One-line description of what the server does."
+    },
+    "author": {
+      "type": "string",
+      "description": "Publishing author or team, e.g. \"CypherX Platform\"."
+    },
+    "category": {
+      "type": "string",
+      "description": "Server category, e.g. \"research\"."
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Free-form discovery tags."
+    },
+    "auth_required": {
+      "type": "boolean",
+      "description": "Whether a Bearer token is required to invoke this server's tools."
+    },
+    "required_scopes": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Scopes required to invoke this server, e.g. [\"tool:invoke\", \"tool:tool-web-search:invoke\"]."
+    },
+    "tools": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Tools exposed by this server.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9]*(_[a-z0-9]+)*$",
+            "description": "Tool name in snake_case, e.g. \"web_search\"."
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "description": "One-line description of the tool."
+          },
+          "input_schema": {
+            "type": "object",
+            "description": "JSON Schema (draft 2020-12) describing the tool's input. Nested schema; unknown JSON Schema keywords tolerated.",
+            "additionalProperties": true
+          },
+          "output_schema": {
+            "type": "object",
+            "description": "JSON Schema (draft 2020-12) describing the tool's output. Nested schema; unknown JSON Schema keywords tolerated.",
+            "additionalProperties": true
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Hard ceiling for a single tool invocation, in seconds. xAgent rejects effective timeouts above this."
+          },
+          "idempotent": {
+            "type": "boolean",
+            "description": "Whether re-invoking with identical input is side-effect free."
+          },
+          "estimated_cost_usd": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Estimated cost in USD per invocation."
+          },
+          "rate_limit": {
+            "type": "object",
+            "description": "Per-tool rate limit.",
+            "properties": {
+              "rpm": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Requests per minute."
+              },
+              "rpd": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Requests per day."
+              }
+            },
+            "required": ["rpm", "rpd"],
+            "additionalProperties": true
+          }
+        },
+        "required": ["name", "description", "input_schema"],
+        "additionalProperties": true
+      }
+    },
+    "health_endpoint": {
+      "type": "string",
+      "format": "uri-reference",
+      "description": "Health-check path, e.g. \"/livez\"."
+    },
+    "metrics_endpoint": {
+      "type": "string",
+      "format": "uri-reference",
+      "description": "Prometheus metrics path, e.g. \"/metrics\"."
+    }
+  },
+  "required": ["schema_version", "protocol_version", "name", "version", "description", "tools"],
+  "$comment": "additionalProperties:true on the manifest object, each tool, and rate_limit is intentional and required for forward-compatibility — Phase 7 (Tools) extends manifests with new fields (capability layer, sandbox_class, egress allowlist, tenant-tool metadata). Older validators MUST tolerate unknown fields; field-level patterns/enums still validate known fields.",
+  "additionalProperties": true
+}

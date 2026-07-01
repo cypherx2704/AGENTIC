@@ -1,0 +1,14 @@
+apiVersion: v2
+name: example-service
+description: |
+  Thin example consumer of the cypherx-service base chart. It is values-only:
+  it sets nothing but the per-service overrides a real service repo would set.
+  Used to `helm lint` / `helm template` the base chart standalone, and as the
+  reference any new service repo copies. Mirrors the Phase 1 echo-service shape.
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+dependencies:
+  - name: cypherx-service
+    version: "0.1.0"
+    repository: "file://../cypherx-service"

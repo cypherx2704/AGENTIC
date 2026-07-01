@@ -1,0 +1,27 @@
+# Contracts CI — validates every PR that touches the contracts source of truth.
+# Stack policy (stack.md): CI = GitHub Actions. NOTE: the service repos are currently hosted on
+# GitLab; a mirror `.gitlab-ci.yml` is provided for parity until the GitHub/GitLab choice is settled.
+name: contracts-ci
+
+on:
+  pull_request:
+    paths: ["**"]
+  push:
+    branches: [main, "feature/**"]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci || npm install
+      - name: Structural + manifest check (offline-safe)
+        run: npm run check
+      - name: JSON Schema validation (Ajv draft 2020-12)
+        run: npm run validate
+      - name: OpenAPI base lint
+        run: npm run lint:openapi

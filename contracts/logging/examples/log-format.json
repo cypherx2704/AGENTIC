@@ -1,0 +1,39 @@
+{
+  "$schemaRef": "../log-format.schema.json",
+  "valid": [
+    {
+      "timestamp": "2026-05-22T10:00:00.000Z",
+      "level": "INFO",
+      "service": "llms-gateway",
+      "version": "1.2.3",
+      "environment": "prod",
+      "trace_id": "7f1c2d3e-4a5b-6c7d-8e9f-0a1b2c3d4e5f",
+      "span_id": "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+      "request_id": "req-8f1c-9921",
+      "tenant_id": "11111111-2222-4333-8444-555566667777",
+      "agent_id": "agent-xyz-789",
+      "message": "LLM request completed",
+      "duration_ms": 342,
+      "extra": {
+        "model": "claude-opus-4",
+        "provider": "anthropic"
+      }
+    },
+    {
+      "timestamp": "2026-05-22T10:00:01.250Z",
+      "level": "ERROR",
+      "service": "xagent",
+      "message": "task execution failed",
+      "trace_id": "7f1c2d3e-4a5b-6c7d-8e9f-0a1b2c3d4e5f",
+      "custom_field_added_later": "tolerated-by-forward-compat"
+    }
+  ],
+  "invalid": [
+    {
+      "timestamp": "2026-05-22T10:00:00.000Z",
+      "level": "TRACE",
+      "service": "llms-gateway",
+      "message": "LLM request completed"
+    }
+  ]
+}

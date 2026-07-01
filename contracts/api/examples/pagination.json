@@ -1,0 +1,45 @@
+{
+  "$schemaRef": "../pagination.schema.json",
+  "valid": [
+    {
+      "data": [
+        { "id": "a1", "name": "first" },
+        { "id": "a2", "name": "second" }
+      ],
+      "pagination": {
+        "limit": 20,
+        "has_more": true,
+        "next_cursor": "eyJvZmZzZXQiOjIwfQ==",
+        "total": null
+      }
+    },
+    {
+      "data": [],
+      "pagination": {
+        "limit": 50,
+        "has_more": false,
+        "next_cursor": null,
+        "total": 0
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "data": [],
+      "pagination": {
+        "limit": 20,
+        "has_more": true,
+        "next_cursor": "eyJvZmZzZXQiOjIwfQ=="
+      }
+    },
+    {
+      "data": { "not": "an array" },
+      "pagination": {
+        "limit": 20,
+        "has_more": false,
+        "next_cursor": null,
+        "total": null
+      }
+    }
+  ]
+}

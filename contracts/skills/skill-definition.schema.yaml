@@ -1,0 +1,149 @@
+$schema: "https://json-schema.org/draft/2020-12/schema"
+$id: "https://contracts.cypherx.ai/v1/skills/skill-definition.schema.json"
+title: "CypherX Skill Definition (Contract 11)"
+x-enforcement-phase: "phase-08"
+description: >-
+  Schema for all CypherX skill definition YAML files (Contract 11). 📋 DEFINED-NOW,
+  ENFORCED-LATER: skills are an alignment artifact in Phase 0; the registry and runtime
+  that enforce this schema turn on in Phase 8 (x-enforcement-phase: phase-08).
+  `input_schema` and `output_schema` MUST themselves be JSON Schema (draft 2020-12),
+  identical in shape to MCP tool schemas (Contract 4), so a tool's output can flow into a
+  skill's input without translation and skills/tools can share validators.
+type: object
+required:
+  - skill_id
+  - version
+  - name
+  - steps
+properties:
+  skill_id:
+    type: string
+    description: >-
+      Reverse-domain-style unique identifier, e.g. com.cypherx.research.summarise.
+      Lower-case dotted segments of alphanumerics, hyphens and underscores.
+    pattern: "^[a-z0-9]([a-z0-9_-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9_-]*[a-z0-9])?)+$"
+    examples:
+      - "com.cypherx.research.summarise"
+  version:
+    type: string
+    description: "Semantic version (SemVer 2.0.0) of this skill definition."
+    pattern: "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-((?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?$"
+    examples:
+      - "1.0.0"
+  name:
+    type: string
+    description: "Human-readable skill name."
+    minLength: 1
+  description:
+    type: string
+    description: "What this skill does."
+  tags:
+    type: array
+    description: "Free-form classification tags."
+    items:
+      type: string
+  status:
+    type: string
+    description: "Lifecycle status of the skill definition."
+    enum:
+      - draft
+      - review
+      - published
+      - deprecated
+  required_tools:
+    type: array
+    description: "MCP tool names this skill must have available to run."
+    items:
+      type: string
+  required_services:
+    type: array
+    description: "Platform services this skill must have available (e.g. llms, memory, rag)."
+    items:
+      type: string
+  optional_services:
+    type: array
+    description: "Platform services this skill can use opportunistically (e.g. guardrails)."
+    items:
+      type: string
+  input_schema:
+    type: object
+    description: >-
+      JSON Schema (draft 2020-12) describing the skill's input. Identical shape to MCP tool
+      schemas so tool output flows in without translation.
+  output_schema:
+    type: object
+    description: "JSON Schema (draft 2020-12) describing the skill's output."
+  steps:
+    type: array
+    description: "Ordered execution steps for the skill."
+    minItems: 1
+    items:
+      type: object
+      required:
+        - id
+        - action_type
+        - action_ref
+      properties:
+        id:
+          type: string
+          description: "Step identifier, unique within the skill."
+          minLength: 1
+        action_type:
+          type: string
+          description: >-
+            Enumerated action kind. Replaces the original free-form
+            `action: tool:<x> | llm:chat | service:<y>` string so the step is
+            parseable and validatable without regex.
+          enum:
+            - tool
+            - llm
+            - service
+        action_ref:
+          type: string
+          description: >-
+            Reference to the concrete action. For action_type=tool: "<server>.<tool>"
+            (e.g. tool-web-search.web_search); for llm: a model id; for service:
+            "<service>.<endpoint>".
+          minLength: 1
+        input:
+          type: object
+          description: >-
+            Input binding for the step. Values may be literals or template references
+            such as "{{input.query}}" or "{{<prior_output_var>}}".
+        output_var:
+          type: string
+          description: "Variable name under which this step's output is stored for later steps."
+      additionalProperties: true
+  constraints:
+    type: object
+    description: "Resource ceilings for a single skill execution."
+    properties:
+      max_tokens:
+        type: integer
+        description: "Maximum total LLM tokens this skill may consume."
+        minimum: 0
+      timeout_seconds:
+        type: number
+        description: "Wall-clock timeout for the whole skill execution, in seconds."
+        minimum: 0
+      max_cost_usd:
+        type: number
+        description: "Maximum total cost in USD this skill execution may incur."
+        minimum: 0
+    additionalProperties: true
+  guardrails:
+    type: object
+    description: "Named guardrail policies applied to skill input and/or output."
+    properties:
+      input:
+        type: array
+        description: "Guardrail policy names applied to the skill's input."
+        items:
+          type: string
+      output:
+        type: array
+        description: "Guardrail policy names applied to the skill's output."
+        items:
+          type: string
+    additionalProperties: true
+additionalProperties: true

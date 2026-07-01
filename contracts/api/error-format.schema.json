@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.cypherx.ai/v1/api/error-format.schema.json",
+  "title": "CypherX API Error Envelope (Contract 2)",
+  "description": "The canonical error response envelope returned by every REST API across all CypherX services. HTTP status codes follow standard semantics (400, 401, 402, 403, 404, 409, 410, 422, 423, 429, 500, 503). The `code` enum is the single canonical list of reserved error codes gathered across Contracts 2, 9, 16, 20 and 21; reserved codes MUST NOT be reused with different meanings.",
+  "type": "object",
+  "required": ["error"],
+  "additionalProperties": true,
+  "properties": {
+    "error": {
+      "type": "object",
+      "description": "The error detail object. All five of code, message, request_id, trace_id and timestamp are always populated.",
+      "required": ["code", "message", "request_id", "trace_id", "timestamp"],
+      "$comment": "additionalProperties:true is intentional for forward-compatibility — later phases may add optional error fields (e.g. help_url, retryable). Older SDKs MUST tolerate unknown fields. The five required fields are always populated.",
+      "additionalProperties": true,
+      "properties": {
+        "code": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]*$",
+          "description": "Machine-readable reserved error code in SCREAMING_SNAKE_CASE. Validated by PATTERN, not a closed enum, so later phases can introduce new codes without a breaking v2 of this contract (per CHANGELOG_POLICY: additive error codes are non-breaking; an older SDK MUST NOT reject an unrecognised code). The canonical reserved list lives in x-known-codes; reserved codes MUST NOT be reused with different meanings, and services SHOULD only emit a code present in x-known-codes or one newly added via PR to this contract.",
+          "x-known-codes": [
+            "UNAUTHORIZED",
+            "FORBIDDEN",
+            "NOT_FOUND",
+            "CONFLICT",
+            "VALIDATION_ERROR",
+            "RATE_LIMIT_EXCEEDED",
+            "INTERNAL_ERROR",
+            "SERVICE_UNAVAILABLE",
+            "GUARDRAIL_VIOLATION",
+            "BUDGET_EXCEEDED",
+            "QUOTA_EXCEEDED",
+            "TENANT_SUSPENDED",
+            "EMBEDDING_DIM_MISMATCH",
+            "IDEMPOTENCY_KEY_CONFLICT",
+            "IDEMPOTENCY_REQUEST_IN_FLIGHT",
+            "IDEMPOTENCY_NOT_SUPPORTED_FOR_ROUTE",
+            "APPROVAL_REQUIRED",
+            "APPROVAL_EXHAUSTED",
+            "APPROVAL_INVALID",
+            "DELEGATION_CHAIN_INVALID",
+            "DELEGATION_CYCLE",
+            "TOKEN_REPLAYED",
+            "TOKEN_BINDING_MISMATCH",
+            "TOKEN_REVOKED",
+            "KEY_REVOKED",
+            "BEHAVIORAL_LIMIT",
+            "AGENT_QUARANTINED",
+            "PX0_TOKEN_INVALID",
+            "STEP_UP_REQUIRED",
+            "TENANT_UNKNOWN",
+            "SIGNUP_DISPOSABLE_EMAIL",
+            "SIGNUP_VERIFICATION_EXPIRED",
+            "SIGNUP_RATE_LIMITED",
+            "TENANT_PENDING_DELETION",
+            "WEBHOOK_SIGNATURE_INVALID",
+            "WEBHOOK_REPLAY_REJECTED"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "description": "Human-readable description of the error. Safe to surface to API consumers; MUST NOT contain secrets or internal stack traces."
+        },
+        "details": {
+          "type": "object",
+          "description": "Optional structured, code-specific detail (e.g. for RATE_LIMIT_EXCEEDED: limit, window, retry_after; for APPROVAL_REQUIRED: request_endpoint; for IDEMPOTENCY_KEY_CONFLICT: divergent JSON pointers). Open-ended by design.",
+          "additionalProperties": true
+        },
+        "request_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Per-HTTP-request UUID injected by Kong (one per inbound client call). Always populated."
+        },
+        "trace_id": {
+          "type": "string",
+          "description": "W3C trace context id that spans the whole distributed call (one trace, many requests). Always populated."
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "RFC 3339 UTC timestamp with millisecond precision (e.g. 2026-05-22T10:00:00.000Z)."
+        }
+      }
+    }
+  }
+}

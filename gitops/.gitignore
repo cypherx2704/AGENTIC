@@ -1,0 +1,4 @@
+# OS / tooling
+.DS_Store
+*.tgz
+node_modules/

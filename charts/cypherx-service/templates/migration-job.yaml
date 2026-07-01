@@ -1,0 +1,118 @@
+{{- if and .Values.database.enabled .Values.migration.enabled }}
+---
+# Dedicated ServiceAccount for the Atlas migration Job (Component 16 mitigation
+# (b)): no other secret access — only the *_ddl Doppler-synced Secret is
+# mounted into this Job. NEVER reuse the runtime ServiceAccount here.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "cypherx-service.migrationServiceAccountName" . }}
+  labels:
+    {{- include "cypherx-service.migrationLabels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "{{ .Values.migration.hookWeight }}"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+automountServiceAccountToken: false
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "cypherx-service.fullname" . }}-migrate
+  labels:
+    {{- include "cypherx-service.migrationLabels" . | nindent 4 }}
+  annotations:
+    # Contract 14: run as a pre-install/pre-upgrade hook so the schema is
+    # current BEFORE the Deployment becomes Ready. If the Job fails Helm aborts
+    # the upgrade and the previous Deployment keeps serving traffic.
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "{{ .Values.migration.hookWeight }}"
+    # before-hook-creation: delete the prior hook before creating the new one
+    # (so a re-run is clean). NOT hook-failed — keep a failed Job for log triage.
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: {{ .Values.migration.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.migration.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "cypherx-service.migrationLabels" . | nindent 8 }}
+      annotations:
+        # The migration Job runs in the `data`-adjacent path to PgBouncer; it
+        # does not need a mesh sidecar and a sidecar would block Job completion.
+        sidecar.istio.io/inject: "false"
+    spec:
+      serviceAccountName: {{ include "cypherx-service.migrationServiceAccountName" . }}
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- if .Values.nodeRole }}
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-role
+                    operator: In
+                    values:
+                      - {{ .Values.nodeRole | quote }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: atlas-migrate
+          image: "{{ .Values.migration.image.repository }}:{{ .Values.migration.image.tag }}"
+          imagePullPolicy: {{ .Values.migration.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          # Atlas applies versioned migrations from db/migrations using the
+          # *_ddl user (Contract 14). The runtime pod uses *_user (separate
+          # Secret) and never holds DDL/CREATEROLE privileges.
+          command:
+            - atlas
+            - migrate
+            - apply
+            - "--dir"
+            - "file://{{ .Values.migration.migrationsDir }}"
+            - "--url"
+            - "$(ATLAS_URL)"
+            - "--revisions-schema"
+            - {{ .Values.database.schema | quote }}
+          env:
+            - name: DDL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cypherx-service.ddlSecretName" . }}
+                  key: POSTGRES_PASSWORD
+            # DSN built from the *_ddl user -> transaction-mode PgBouncer pooler.
+            - name: ATLAS_URL
+              value: "postgres://{{ .Values.database.ddlUser }}:$(DDL_PASSWORD)@{{ .Values.database.pgbouncerHost }}:{{ .Values.database.pgbouncerPort }}/{{ .Values.database.name }}?sslmode={{ .Values.database.sslmode }}&search_path={{ .Values.database.schema }}"
+            - name: SERVICE
+              value: {{ .Values.service | quote }}
+            - name: ENVIRONMENT
+              value: {{ .Values.environment | quote }}
+            - name: LOG_FORMAT
+              value: {{ .Values.observability.logFormat | quote }}
+          resources:
+            {{- toYaml .Values.migration.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- with .Values.migration.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        {{- with .Values.migration.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+{{- end }}

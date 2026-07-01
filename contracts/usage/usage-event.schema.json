@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.cypherx.ai/v1/usage/usage-event.schema.json",
+  "title": "Usage Metering Event (Contract 19.1)",
+  "description": "Common metering payload emitted by every SharedCore service as the body of a cypherx.<service>.usage.recorded Kafka event (Contract 5 envelope wraps it). One event per billable operation; metering events are NEVER sampled (loss = revenue loss) and MUST be produced via the transactional outbox pattern. Forward-compatible: unknown fields are tolerated (additionalProperties: true); only tenant_id, operation and units are validation-mandatory.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["tenant_id", "operation", "units"],
+  "properties": {
+    "tenant_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The isolation boundary that consumed the billable operation (Contract 13). Resolved from the JWT, never from a request body."
+    },
+    "api_key_id": {
+      "type": ["string", "null"],
+      "format": "uuid",
+      "description": "The API key that authenticated the operation (Contract 18), or null when not key-authenticated."
+    },
+    "agent_id": {
+      "type": ["string", "null"],
+      "format": "uuid",
+      "description": "The agent that performed the operation, or null for non-agent callers."
+    },
+    "principal_id": {
+      "type": ["string", "null"],
+      "format": "uuid",
+      "description": "The principal (human/service user) for non-agent callers, or null when an agent_id is present."
+    },
+    "publisher_tenant_id": {
+      "type": ["string", "null"],
+      "format": "uuid",
+      "description": "For tool/skill marketplace revenue-share: the tenant that published the consumed tool/skill. Null when not a marketplace operation."
+    },
+    "operation": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Service-defined operation name being metered (e.g. 'completion', 'check.input', 'query', 'tool.invoke')."
+    },
+    "units": {
+      "type": "object",
+      "description": "Map of unit_type -> numeric quantity consumed (e.g. {\"prompt_tokens\": 1200, \"completion_tokens\": 340}). Unit types are service-defined. Must contain at least one entry; every value is a number.",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "number",
+        "description": "Quantity consumed for this unit_type."
+      }
+    },
+    "cost_usd": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Computed monetary cost of the operation in USD."
+    },
+    "duration_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Wall-clock duration of the metered operation in milliseconds."
+    },
+    "request_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Correlates this metering event to the originating API request."
+    },
+    "trace_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Distributed-trace identifier (Contract 8) for the operation."
+    }
+  }
+}

@@ -1,0 +1,38 @@
+# =====================================================================================================================
+# infra/compose/observability/tempo.yaml — Grafana Tempo (single-binary, local filesystem backend).
+# Receives traces over OTLP (gRPC :4317) from the collector; Grafana queries it at :3200.
+# Local-only: storage on a docker volume (/var/tempo). No object store, no compaction tuning beyond defaults.
+# =====================================================================================================================
+
+stream_over_http_enabled: true
+
+server:
+  http_listen_port: 3200
+  grpc_listen_port: 9095
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+ingester:
+  max_block_duration: 5m
+
+compactor:
+  compaction:
+    block_retention: 48h   # local dev: keep traces 2 days
+
+storage:
+  trace:
+    backend: local
+    local:
+      path: /var/tempo/blocks
+    wal:
+      path: /var/tempo/wal
+
+usage_report:
+  reporting_enabled: false

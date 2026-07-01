@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.cypherx.ai/v1/api-keys/api-key-acl.schema.json",
+  "title": "CypherX API Key Resource ACL Row (Contract 18)",
+  "description": "One row of the per-service <service>.api_key_acls table. Pins a single (api_key_id, resource_type, resource_id) → permissions grant. resource_type and permissions values are service-specific (see api-key-format.md cross-service summary). PRIMARY KEY is (api_key_id, resource_type, resource_id). This is a stored-row shape, so additionalProperties:false is enforced.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["api_key_id", "tenant_id", "resource_type", "resource_id", "permissions"],
+  "properties": {
+    "api_key_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "FK to <service>.api_keys(api_key_id) ON DELETE CASCADE."
+    },
+    "tenant_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Owning tenant UUID (Contract 13). Enforced by row-level security policy p_api_key_acls_tenant."
+    },
+    "resource_type": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Service-specific resource class, e.g. kb, model, policy, agent, tool, skill, memory_scope. See api-key-format.md for the per-service table.",
+      "examples": ["kb", "model", "agent"]
+    },
+    "resource_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Concrete resource identifier, or \"*\" meaning all resources of that type within the tenant."
+    },
+    "permissions": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "minItems": 1,
+      "description": "Service-specific permission verbs, e.g. read, write, invoke, admin, ingest, query, simulate, forget, publish, deprecate, submit, cancel. See api-key-format.md for the per-service table.",
+      "examples": [["read", "write"]]
+    }
+  }
+}

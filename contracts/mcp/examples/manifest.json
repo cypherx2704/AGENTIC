@@ -1,0 +1,79 @@
+{
+  "$schemaRef": "../manifest.schema.json",
+  "valid": [
+    {
+      "schema_version": "1.0.0",
+      "protocol_version": "mcp/1.0",
+      "name": "tool-web-search",
+      "display_name": "Web Search",
+      "version": "1.2.0",
+      "description": "Search the web and return ranked results with snippets",
+      "author": "CypherX Platform",
+      "category": "research",
+      "tags": ["search", "web", "information"],
+      "auth_required": true,
+      "required_scopes": ["tool:invoke", "tool:tool-web-search:invoke"],
+      "tools": [
+        {
+          "name": "web_search",
+          "description": "Perform a web search and return top results",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "query": { "type": "string", "description": "Search query" },
+              "max_results": { "type": "integer", "default": 5, "maximum": 20 }
+            },
+            "required": ["query"]
+          },
+          "output_schema": {
+            "type": "object",
+            "properties": {
+              "results": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "title": { "type": "string" },
+                    "url": { "type": "string" },
+                    "snippet": { "type": "string" },
+                    "rank": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          },
+          "timeout_seconds": 30,
+          "idempotent": true,
+          "estimated_cost_usd": 0.001,
+          "rate_limit": { "rpm": 60, "rpd": 5000 }
+        }
+      ],
+      "health_endpoint": "/livez",
+      "metrics_endpoint": "/metrics"
+    }
+  ],
+  "invalid": [
+    {
+      "schema_version": "1.0.0",
+      "protocol_version": "mcp/1.0",
+      "name": "Tool_Web_Search",
+      "version": "1.2.0",
+      "description": "Server name is not dash-case",
+      "tools": [
+        {
+          "name": "web_search",
+          "description": "Perform a web search",
+          "input_schema": { "type": "object" }
+        }
+      ]
+    },
+    {
+      "schema_version": "1.0.0",
+      "protocol_version": "mcp/1.0",
+      "name": "tool-web-search",
+      "version": "1.2.0",
+      "description": "A server must declare at least one tool",
+      "tools": []
+    }
+  ]
+}

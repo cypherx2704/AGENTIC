@@ -1,0 +1,27 @@
+{{ .Values.service }} ({{ .Values.environment }}) deployed via cypherx-service chart v{{ .Chart.Version }}.
+
+Baked-in contracts:
+  Contract 6  — LOG_FORMAT=json, SERVICE/VERSION/ENVIRONMENT env injected.
+  Contract 7  — livenessProbe {{ .Values.probes.liveness.path }}, readinessProbe {{ .Values.probes.readiness.path }}, /metrics on :{{ .Values.ports.metrics }}.
+  Contract 8  — OTEL_EXPORTER_OTLP_ENDPOINT={{ .Values.observability.otelEndpoint }}, propagators={{ .Values.observability.otelPropagators }}.
+{{- if .Values.database.enabled }}
+  Contract 13 — POSTGRES_DSN -> {{ .Values.database.pgbouncerHost }}:{{ .Values.database.pgbouncerPort }} (transaction-mode pooler).
+{{- end }}
+{{- if and .Values.database.enabled .Values.migration.enabled }}
+  Contract 14 — Atlas migration Job runs as a pre-install/pre-upgrade hook (user {{ .Values.database.ddlUser }}).
+{{- end }}
+
+Endpoints:
+  Service:  {{ include "cypherx-service.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.ports.http }}
+  Metrics:  {{ include "cypherx-service.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.ports.metrics }}{{ .Values.serviceMonitor.path }}
+
+{{- if not .Values.istio.sidecarInject }}
+
+WARNING: istio.sidecarInject is false — this pod will not get mTLS / trace
+propagation from the mesh. Only disable in non-mesh namespaces (data/observability).
+{{- end }}
+{{- if and .Values.database.enabled (not .Values.database.schema) }}
+
+WARNING: database.enabled=true but database.schema is empty. Set database.schema,
+database.runtimeUser, and database.ddlUser per Phase 1 Component 14/16.
+{{- end }}

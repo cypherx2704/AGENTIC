@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.cypherx.ai/v1/kafka/events/tenant.suspended.json",
+  "title": "Payload — cypherx.tenant.suspended",
+  "description": "Contract 13 tenant-lifecycle payload. Emitted by Auth on px0 `org.suspended`, billing failure, admin action, or self-serve cancellation. On consumption all agents for the tenant are marked `status='suspended'` and Auth rejects new tokens (`TENANT_SUSPENDED`). Carried inside the Kafka event envelope `payload` field. Forward-compatible: tolerates unknown fields (additionalProperties:true).",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "tenant_id"
+  ],
+  "properties": {
+    "tenant_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Isolation-boundary UUID of the suspended tenant (Contract 13)."
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Reason for suspension (e.g. `billing-failure`, `admin-action`, `self-serve-cancellation`)."
+    },
+    "suspended_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 UTC timestamp (millisecond precision) at which the tenant was suspended."
+    }
+  }
+}

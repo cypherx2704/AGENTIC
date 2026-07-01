@@ -1,0 +1,93 @@
+# =====================================================================================================================
+# infra/compose/edge/Caddyfile — CypherX EDGE reverse proxy (Kong substitute, local/dev).
+#
+# A single HTTP entrypoint on :8000 that fronts the whole platform:
+#   /healthz        -> 200 (edge liveness; used by the compose healthcheck)
+#   /bff/*          -> the BFF (frontend-bff:8088) — login/logout/me + the /bff/api/* proxy surface
+#   /api/<svc>/*    -> the platform services directly (optional; handy for curl-driven smoke tests)
+#   everything else -> the SPA (frontend-app:3000)
+#
+# CONTRACT-15 case 5 (edge 401 on missing auth for a protected route):
+#   The mutating + data BFF routes under /bff/api/* require the opaque session cookie. If it is ABSENT the edge
+#   short-circuits with a 401 *before* touching any upstream — a missing-auth request never reaches the BFF/services.
+#   (The BFF still does the real session validation; this is the cheap edge gate, exactly like Kong's key-auth.)
+#
+# X-RateLimit-* PASS-THROUGH:
+#   Caddy's reverse_proxy copies upstream response headers through verbatim by default — so X-RateLimit-Limit/
+#   Remaining/Reset emitted by auth/llms/guardrails/xagent (and relayed by the BFF) reach the browser unchanged.
+#   We do NOT strip or rewrite them. (Documented here so nobody "cleans up" headers and breaks the contract.)
+#
+# Keep it simple: plain HTTP on :8000 (TLS terminates upstream of this in real deploys / at Kong). The session
+# cookie name is injected via the EDGE_SESSION_COOKIE_NAME env var (defaults to cypherx_sid) so it tracks .env.
+# =====================================================================================================================
+{
+	# Local/dev: no automatic HTTPS (single plain-HTTP entrypoint). Admin API off — config is static + file-driven.
+	auto_https off
+	admin off
+}
+
+:8000 {
+	# ── Edge liveness ────────────────────────────────────────────────────────────────────────────────────────────
+	handle /healthz {
+		respond "ok" 200
+	}
+
+	# ── Onboarding verification link -> the SPA verify page ──────────────────────────────────────────────────────
+	# The auth-service builds the emailed link as <verification-base-url>/v1/onboarding/verify?token=... and the
+	# local base is this edge (:8000). Redirect that path to the SPA's /register/verify page (preserving ?token),
+	# which then drives the BFF /bff/onboarding/verify call + auto-login. Keeps the clickable link host-stable
+	# without any auth-service change. (The actual verify API call still goes BFF -> auth /v1/onboarding/verify.)
+	redir /v1/onboarding/verify /register/verify?{query} 302
+
+	# ── BFF: protected data/mutation surface (/bff/api/*) — edge-401 when the session cookie is absent ────────────
+	# Contract-15 case 5: reject missing auth at the edge before proxying. The login route (/bff/login) is NOT under
+	# /bff/api and is intentionally NOT gated here (you cannot have a session before you log in).
+	@bff_protected_no_cookie {
+		path /bff/api/*
+		not header Cookie *{$EDGE_SESSION_COOKIE_NAME}=*
+	}
+	handle @bff_protected_no_cookie {
+		header Content-Type application/json
+		respond `{"error":{"code":"UNAUTHENTICATED","message":"Missing session"}}` 401
+	}
+
+	# ── BFF: everything under /bff/* -> the BFF (login/logout/me + the proxied /bff/api/* once authenticated) ─────
+	# Caddy already forwards X-Forwarded-For/Proto/Host to the upstream by default; no extra header_up needed.
+	handle /bff/* {
+		reverse_proxy frontend-bff:8088
+	}
+
+	# ── Optional direct service routes (smoke tests / debugging). Strip the /api/<svc> prefix before proxying. ────
+	handle_path /api/auth/* {
+		reverse_proxy auth-service:8080
+	}
+	handle_path /api/llms/* {
+		reverse_proxy llms-gateway:8080
+	}
+	handle_path /api/guardrails/* {
+		reverse_proxy guardrails-service:8080
+	}
+	handle_path /api/xagent/* {
+		reverse_proxy xagent:8080
+	}
+	handle_path /api/rag/* {
+		reverse_proxy rag:8080
+	}
+	handle_path /api/memory/* {
+		reverse_proxy memory:8080
+	}
+	handle_path /api/tools/* {
+		reverse_proxy tool-registry:8080
+	}
+
+	# ── Default: the SPA (Next.js standalone). All non-API paths (incl. /login, /, static assets) go here. ───────
+	handle {
+		reverse_proxy frontend-app:3000
+	}
+
+	# Access log to stdout (visible in `docker compose logs edge`).
+	log {
+		output stdout
+		format console
+	}
+}

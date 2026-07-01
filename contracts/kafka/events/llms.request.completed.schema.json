@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.cypherx.ai/v1/kafka/events/llms.request.completed.json",
+  "title": "Payload — cypherx.llms.request.completed",
+  "description": "Contract 5 first-cycle payload. Emitted by the LLMs gateway when an LLM request finishes. Carried inside the Kafka event envelope `payload` field. Forward-compatible: tolerates unknown fields (additionalProperties:true).",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "request_id",
+    "agent_id",
+    "tenant_id",
+    "model",
+    "provider",
+    "prompt_tokens",
+    "completion_tokens",
+    "cost_usd",
+    "duration_ms",
+    "trace_id"
+  ],
+  "properties": {
+    "request_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Unique identifier of the LLM request."
+    },
+    "agent_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Agent that initiated the request."
+    },
+    "tenant_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Isolation-boundary UUID (Contract 13)."
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Model identifier, e.g. `gpt-4o`, `claude-opus-4`."
+    },
+    "provider": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Upstream model provider, e.g. `openai`, `anthropic`, `bedrock`."
+    },
+    "prompt_tokens": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of prompt (input) tokens consumed."
+    },
+    "completion_tokens": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of completion (output) tokens generated."
+    },
+    "cost_usd": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Computed cost of the request in US dollars."
+    },
+    "duration_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "End-to-end request duration in milliseconds."
+    },
+    "trace_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Distributed-tracing correlation id (Contract 8)."
+    }
+  }
+}

@@ -1,0 +1,35 @@
+# Raw ServiceMonitor for echo-service (Helm-less fallback). Backs assertion 6:
+# Prometheus scrapes :9090 -> `up{job="echo"} == 1`. The `release` label is what
+# the kube-prometheus-stack Prometheus selects ServiceMonitors on.
+#
+# The PERMISSIVE mTLS exception on port 9090 (Component 7 metrics-permissive
+# PeerAuthentication) is what lets the no-sidecar observability scraper reach
+# this port over plain HTTP. Do NOT weaken global STRICT mTLS to make this work.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: echo
+  namespace: smoketest
+  labels:
+    app.kubernetes.io/name: echo
+    cypherx.ai/service: echo
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: echo
+      app.kubernetes.io/instance: echo
+  namespaceSelector:
+    matchNames:
+      - smoketest
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s
+      scheme: http
+      # Relabel so the Prometheus `job` label is exactly "echo"
+      # (assertion 6: up{job="echo"}).
+      relabelings:
+        - targetLabel: job
+          replacement: echo

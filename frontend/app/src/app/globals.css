@@ -1,0 +1,49 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Design tokens — a clean dark-first palette. RGB triples so Tailwind's
+   <alpha-value> opacity modifiers work (e.g. bg-brand/15). */
+:root {
+  --bg: 13 17 23;
+  --surface: 22 27 34;
+  --surface-2: 33 38 45;
+  --border: 48 54 61;
+  --fg: 230 237 243;
+  --muted: 139 148 158;
+  --brand: 88 166 255;
+  --brand-fg: 13 17 23;
+  --success: 63 185 80;
+  --warning: 210 153 34;
+  --danger: 248 81 73;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background-color: rgb(var(--bg));
+  color: rgb(var(--fg));
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  border-color: rgb(var(--border));
+}
+
+/* Thin, themed scrollbars for the dense data views. */
+::-webkit-scrollbar {
+  height: 10px;
+  width: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgb(var(--surface-2));
+  border-radius: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}

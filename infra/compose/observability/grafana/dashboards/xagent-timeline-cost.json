@@ -1,0 +1,157 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "liveNow": false,
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["cypherx", "xagent"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "CypherX — xAgent Timeline & Cost",
+  "uid": "cypherx-xagent",
+  "version": 1,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Task throughput (by status)",
+      "description": "Rate of completed/failed/timeout tasks (xagent_tasks_total).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (status) (rate(xagent_tasks_total[5m]))",
+          "legendFormat": "{{status}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Task duration p50 / p95 / p99 (timeline)",
+      "description": "End-to-end task latency from xagent_task_duration_seconds.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.50, sum(rate(xagent_task_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p50"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum(rate(xagent_task_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p95"
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.99, sum(rate(xagent_task_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p99"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Per-stage duration p95 (pipeline timeline)",
+      "description": "p95 of each pipeline stage (xagent_stage_duration_seconds) — LOAD/PRE_GUARDRAIL/RAG/MEMORY/LLM/TOOL_LOOP/POST_GUARDRAIL.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum(rate(xagent_stage_duration_seconds_bucket[5m])) by (le, stage))",
+          "legendFormat": "{{stage}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Downstream calls (by service + outcome)",
+      "description": "Outbound calls to auth/llms/guardrails/rag/memory/registry/mcp (xagent_downstream_calls_total).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 17 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (service, outcome) (rate(xagent_downstream_calls_total[5m]))",
+          "legendFormat": "{{service}} / {{outcome}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "MCP tool invocations (by outcome)",
+      "description": "Tool-loop MCP invocations (xagent_mcp_invocations_total).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 17 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (outcome) (rate(xagent_mcp_invocations_total[5m]))",
+          "legendFormat": "{{outcome}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "LLM token cost proxy (tokens/s by model + direction)",
+      "description": "Spend proxy: llms_tokens_total by provider/model/direction. (Exact USD cost lives in the llms billing journal / cypherx.llms.usage.recorded events, not a Prometheus counter.)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 25 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (model, direction) (rate(llms_tokens_total[5m]))",
+          "legendFormat": "{{model}} / {{direction}}"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Total tokens (1h, cost proxy)",
+      "description": "Total accounted tokens over the dashboard window (proxy for LLM spend).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 25 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(llms_tokens_total[1h]))",
+          "legendFormat": "tokens"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Task event-write failures (1h)",
+      "description": "xagent_event_write_failed_total — a non-finalised task row (reliability signal).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 25 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(xagent_event_write_failed_total[1h]))",
+          "legendFormat": "failures"
+        }
+      ]
+    }
+  ]
+}

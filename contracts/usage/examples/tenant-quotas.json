@@ -1,0 +1,77 @@
+{
+  "$schemaRef": "../tenant-quotas.schema.json",
+  "valid": [
+    {
+      "auth": {
+        "agents_max": 1000,
+        "api_keys_per_agent_max": 5,
+        "tokens_issued_per_min": 6000
+      },
+      "llms": {
+        "requests_per_min": 600,
+        "prompt_tokens_per_min": 500000,
+        "completion_tokens_per_min": 200000,
+        "cost_usd_per_hour": 10.0,
+        "cost_usd_per_day": 150.0,
+        "cost_usd_per_month": 3000.0,
+        "byok_keys_max": 10
+      },
+      "guardrails": {
+        "checks_per_min": 3000,
+        "input_bytes_per_min": 10485760,
+        "custom_rules_max": 50,
+        "custom_policies_max": 20
+      },
+      "rag": {
+        "kbs_max": 20,
+        "documents_per_kb_max": 100000,
+        "storage_bytes_max": 10737418240,
+        "queries_per_min": 600,
+        "ingest_jobs_per_hour": 100
+      },
+      "memory": {
+        "memories_max": 1000000,
+        "storage_bytes_max": 5368709120,
+        "stores_per_min": 1000,
+        "retrieves_per_min": 3000
+      },
+      "tools": {
+        "private_tools_max": 50,
+        "invocations_per_min": 600,
+        "publishable_versions_max": 10
+      },
+      "skills": {
+        "private_skills_max": 200,
+        "executions_per_min": 300
+      },
+      "xagent": {
+        "agents_max": 500,
+        "concurrent_tasks_max": 100,
+        "workflow_depth_max": 10
+      }
+    },
+    {
+      "llms": {
+        "requests_per_min": 120,
+        "webhook_deliveries_per_min": 1000
+      },
+      "billing": { "future_service_block": true }
+    },
+    {}
+  ],
+  "invalid": [
+    {
+      "auth": {
+        "agents_max": "1000"
+      }
+    },
+    {
+      "llms": {
+        "cost_usd_per_hour": -5
+      }
+    },
+    {
+      "rag": "not-an-object"
+    }
+  ]
+}

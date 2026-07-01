@@ -1,0 +1,13 @@
+-- =====================================================================================
+-- cypherx-a1 — flattened schema snapshot (Atlas drift source).
+--
+-- For first cycle the single versioned migration `20260614_0001__init.sql` IS the
+-- end-state, and the compose migrate job applies the versioned files directly via psql.
+-- Regenerate this snapshot from the migrations with:
+--
+--     atlas migrate diff --env local        # writes a new versioned file from schema.sql
+--     atlas schema inspect --env local --url "file://20260614_0001__init.sql" > schema.sql
+--
+-- Until Atlas is wired in CI, treat `20260614_0001__init.sql` as authoritative and keep
+-- this file in sync when the schema changes (the schema is small and additive at MVP).
+-- =====================================================================================

@@ -1,0 +1,32 @@
+# Local virtualenv (rebuilt inside the image from uv.lock)
+.venv/
+**/.venv/
+
+# Python caches
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local env / secrets — never bake into the image
+.env
+.env.*
+
+# Tests & dev tooling (not needed at runtime)
+tests/
+.git/
+.gitignore
+.vscode/
+.idea/
+
+# Docker artifacts
+Dockerfile
+.dockerignore
+
+# Docs / OS cruft
+*.md
+.DS_Store
+Thumbs.db

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.cypherx.ai/v1/kafka/events/tenant.deleted.json",
+  "title": "Payload — cypherx.tenant.deleted",
+  "description": "Contract 13 tenant-lifecycle payload. Emitted by Auth on px0 `org.deleted`, admin action, or self-serve close-account + 30-day grace. On consumption all services run their bulk-wipe handler against the tenant (GDPR right to erasure). Carried inside the Kafka event envelope `payload` field. Forward-compatible: tolerates unknown fields (additionalProperties:true).",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "tenant_id"
+  ],
+  "properties": {
+    "tenant_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Isolation-boundary UUID of the deleted tenant (Contract 13)."
+    },
+    "deleted_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 UTC timestamp (millisecond precision) at which the tenant deletion took effect."
+    },
+    "grace_started_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 UTC timestamp (millisecond precision) at which the 30-day grace period began (for self-serve close-account)."
+    }
+  }
+}

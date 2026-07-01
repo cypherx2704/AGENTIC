@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.cypherx.ai/v1/api/classify.schema.json",
+  "title": "CypherX Safety Classify API (Contract 2.x)",
+  "description": "Request/response contract for the safety/moderation classifier exposed by the Guardrails service. Classifies a single text payload, on either the inbound (input) or outbound (output) direction, into a moderation verdict plus per-category scores. Forward-compatible: every object sets additionalProperties:true and requires only validation-mandatory fields, so later phases may add optional fields without a breaking v2. The CLASSIFIER_MODE flag defaults to 'stub'; the stub classifier returns verdict=allow with empty/low category scores, reproducing today's permissive behaviour when no real model is configured.",
+  "oneOf": [
+    { "$ref": "#/$defs/request" },
+    { "$ref": "#/$defs/response" }
+  ],
+  "$defs": {
+    "request": {
+      "title": "Classify Request",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["input", "direction"],
+      "properties": {
+        "input": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The text payload to classify for safety/moderation."
+        },
+        "direction": {
+          "type": "string",
+          "enum": ["input", "output"],
+          "description": "Whether the payload is the request `input` to the model or the `output` returned from it (mirrors Contract 5 guardrails.violation.detected.direction)."
+        },
+        "context": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Optional caller-supplied context for the classification (e.g. tenant policy id, conversation excerpt, locale). Open-ended by design."
+        }
+      }
+    },
+    "response": {
+      "title": "Classify Response",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["verdict", "categories", "model"],
+      "properties": {
+        "verdict": {
+          "type": "string",
+          "enum": ["allow", "warn", "redact", "block"],
+          "description": "The moderation decision. `allow` passes unchanged; `warn` passes but flags; `redact` requires masking before passing; `block` denies (maps to a GUARDRAIL_VIOLATION on enforcement)."
+        },
+        "categories": {
+          "type": "array",
+          "description": "Per-category safety scores that informed the verdict. May be empty when nothing of concern was detected (e.g. the stub classifier).",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["name", "score"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Category identifier (e.g. `hate`, `self_harm`, `pii`, `jailbreak`, `prompt_injection`)."
+              },
+              "score": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "description": "Confidence in [0,1] that the payload matches this category."
+              }
+            }
+          }
+        },
+        "scores": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          },
+          "description": "Optional flat map of category name -> score, as a convenience alongside the structured `categories` array. Open-ended by design."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The classifier model that produced this verdict (e.g. `omni-moderation`, or `stub` in CLASSIFIER_MODE=stub / keyless local dev)."
+        }
+      }
+    }
+  }
+}

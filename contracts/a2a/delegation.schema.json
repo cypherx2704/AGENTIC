@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.cypherx.ai/v1/a2a/delegation.schema.json",
+  "title": "A2A Delegation Envelope",
+  "x-enforcement-phase": "phase-10",
+  "description": "Contract 3 — A2A delegation envelope. DEFINED NOW for alignment; ENFORCEMENT TURNS ON in Phase 10 (Component 2b: operational rules, cycle detection, transitive matrix, audit pipeline; issuance side in Phase 2 Component 8d). This envelope is carried in the Bearer JWT claims (Contract 1 reserved optional), NOT in the A2A message body — the body is data, the JWT is authority. Receivers run the validation cascade (sig verify, chain continuity, expiry bounding, monotone scope non-increase, terminal-receiver match, root-not-expired, action-in-scope, cycle check) before honouring a delegated task. Forward-compatible: tolerates unknown fields.",
+  "type": "object",
+  "properties": {
+    "delegation_chain": {
+      "type": "array",
+      "description": "Ordered chain of signed delegation hops from root to current receiver.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "Agent-id of the delegating (sending) agent for this hop."
+          },
+          "to": {
+            "type": "string",
+            "description": "Agent-id of the receiving agent for this hop. For i>0, chain[i-1].to MUST equal chain[i].from."
+          },
+          "task_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "UUID of this hop's task."
+          },
+          "scopes": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Scopes granted on this hop, e.g. [\"llm:invoke\", \"tool:invoke\"]. For i>0 MUST be a subset of chain[i-1].scopes (monotone non-increasing)."
+          },
+          "issued_at": {
+            "type": "integer",
+            "description": "Unix epoch seconds when this hop was issued."
+          },
+          "expires_at": {
+            "type": "integer",
+            "description": "Unix epoch seconds when this hop expires. MUST be <= delegation_root_expiry."
+          },
+          "transitive": {
+            "type": "boolean",
+            "description": "Whether the receiver may further delegate without being the root."
+          },
+          "kid": {
+            "type": "string",
+            "description": "Auth signing key id; sig MUST verify against the JWKS entry referenced by this kid."
+          },
+          "sig": {
+            "type": "string",
+            "description": "base64 RS256 signature over canonical-json(entry minus sig)."
+          }
+        },
+        "required": ["from", "to", "task_id", "scopes", "issued_at", "expires_at", "transitive", "kid", "sig"],
+        "additionalProperties": true
+      }
+    },
+    "delegation_depth": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Current chain depth. Issuance requires delegation_depth + 1 <= MAX_DELEGATION_DEPTH (default 5, per-tenant override allowed)."
+    },
+    "delegation_root_task": {
+      "type": "string",
+      "description": "Root workflow task UUID; carried verbatim through every hop."
+    },
+    "delegation_root_expiry": {
+      "type": "integer",
+      "description": "Unix epoch seconds when the root authority expires; no link may extend it. Carried verbatim through every hop."
+    }
+  },
+  "required": ["delegation_chain", "delegation_depth", "delegation_root_task", "delegation_root_expiry"],
+  "additionalProperties": true
+}

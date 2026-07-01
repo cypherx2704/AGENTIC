@@ -1,0 +1,92 @@
+# =====================================================================================================================
+# infra/compose/observability/prometheus.yml — Prometheus scrape + alerting config (local dev).
+#
+# Scrapes /metrics on EVERY CypherX service (all listen on :8080 in-container, Contract 7) + the BFF (:8088) + the
+# OTel collector. Loads the WP07 guardrails SLO alert rules from ./alerts/. Targets use the compose DNS names on the
+# 'cypherx' network (Prometheus runs on the same network, so it reaches them on their INTERNAL ports).
+# =====================================================================================================================
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: cypherx-local
+    environment: local
+
+rule_files:
+  - /etc/prometheus/alerts/*.yml
+
+scrape_configs:
+  # ── Platform app services (Contract 7: /metrics on :8080) ─────────────────────────────────────────────────────
+  - job_name: auth-service
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["auth-service:8080"]
+        labels: { service: auth-service }
+
+  - job_name: llms-gateway
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["llms-gateway:8080"]
+        labels: { service: llms-gateway }
+
+  - job_name: guardrails-service
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["guardrails-service:8080"]
+        labels: { service: guardrails-service }
+
+  - job_name: xagent
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["xagent:8080"]
+        labels: { service: xagent }
+
+  - job_name: rag
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["rag:8080"]
+        labels: { service: rag }
+
+  - job_name: memory
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["memory:8080"]
+        labels: { service: memory }
+
+  - job_name: tool-registry
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["tool-registry:8080"]
+        labels: { service: tool-registry }
+
+  - job_name: tool-web-search
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["tool-web-search:8080"]
+        labels: { service: tool-web-search }
+
+  # ── BFF (Node/Fastify; /metrics on :8088) ─────────────────────────────────────────────────────────────────────
+  - job_name: frontend-bff
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["frontend-bff:8088"]
+        labels: { service: frontend-bff }
+
+  # ── OTel collector (its own + relayed metrics) ────────────────────────────────────────────────────────────────
+  - job_name: otel-collector
+    static_configs:
+      - targets: ["otel-collector:8889"]   # prometheus exporter (relayed OTLP metrics)
+      - targets: ["otel-collector:8888"]   # collector self-metrics
+
+  # ── Redpanda (Kafka) admin/prometheus endpoint ────────────────────────────────────────────────────────────────
+  - job_name: redpanda
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["redpanda:9644"]
+        labels: { service: redpanda }
+
+  # ── Prometheus self ───────────────────────────────────────────────────────────────────────────────────────────
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

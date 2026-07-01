@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.cypherx.ai/v1/kafka/events/agent.task.completed.json",
+  "title": "Payload — cypherx.agent.task.completed",
+  "description": "Contract 5 first-cycle payload. Emitted by xAgent when an agent task completes successfully. Carried inside the Kafka event envelope `payload` field. Forward-compatible: tolerates unknown fields (additionalProperties:true).",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "task_id",
+    "agent_id",
+    "tenant_id",
+    "status",
+    "tokens_used",
+    "cost_usd",
+    "duration_ms",
+    "trace_id"
+  ],
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Identifier of the completed task."
+    },
+    "agent_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Agent that executed the task."
+    },
+    "tenant_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Isolation-boundary UUID (Contract 13)."
+    },
+    "status": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Terminal status of the task (e.g. `completed`, `partial`)."
+    },
+    "tokens_used": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total tokens consumed by the task."
+    },
+    "cost_usd": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Total cost of the task in US dollars."
+    },
+    "duration_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "End-to-end task duration in milliseconds."
+    },
+    "trace_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Distributed-tracing correlation id (Contract 8)."
+    }
+  }
+}

@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>cypherx · Engineering Memory</title>
+<style>
+  :root{
+    --bg:#0b0e14; --panel:#11151f; --panel2:#161b27; --line:#222a3a; --line2:#2c3650;
+    --fg:#e6e9f0; --mut:#8b93a7; --mut2:#5e6679; --acc:#5b8cff; --acc2:#7aa2ff;
+    --ok:#3fb950; --warn:#d29922; --bad:#f85149; --chip:#1b2333;
+    --person:#c084fc; --repo:#5b8cff; --service:#3fb6c9; --pr:#3fb950; --ticket:#d29922;
+    --incident:#f85149; --change:#7aa2ff; --decision:#e3b341; --summary:#c084fc;
+    --r:10px; --r2:7px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{background:var(--bg);color:var(--fg);font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+       display:flex;flex-direction:column;height:100vh;overflow:hidden}
+  a{color:var(--acc2);text-decoration:none}
+  button{font:inherit;color:var(--fg);background:var(--panel2);border:1px solid var(--line2);
+         border-radius:var(--r2);padding:7px 12px;cursor:pointer;transition:.12s}
+  button:hover{border-color:var(--acc);background:#1a2236}
+  button.primary{background:var(--acc);border-color:var(--acc);color:#0b0e14;font-weight:600}
+  button.primary:hover{background:var(--acc2)}
+  button.ghost{background:transparent}
+  input,textarea,select{font:inherit;color:var(--fg);background:#0e131d;border:1px solid var(--line2);
+         border-radius:var(--r2);padding:9px 11px;width:100%}
+  input:focus,textarea:focus,select:focus{outline:none;border-color:var(--acc)}
+  ::placeholder{color:var(--mut2)}
+  .row{display:flex;gap:10px;align-items:center}
+  .muted{color:var(--mut)} .small{font-size:12px} .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+
+  /* top bar */
+  header{display:flex;align-items:center;gap:14px;padding:10px 16px;background:var(--panel);
+         border-bottom:1px solid var(--line)}
+  .brand{font-weight:700;letter-spacing:.2px}.brand b{color:var(--acc2)}
+  .grow{flex:1}
+  #ask-global{max-width:520px}
+  .pill{font-size:12px;padding:3px 9px;border-radius:999px;background:var(--chip);border:1px solid var(--line2)}
+  .dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:5px;background:var(--mut2)}
+  .dot.ok{background:var(--ok)}.dot.bad{background:var(--bad)}.dot.warn{background:var(--warn)}
+
+  /* shell */
+  .shell{display:flex;flex:1;min-height:0}
+  nav{width:188px;background:var(--panel);border-right:1px solid var(--line);padding:12px 10px;display:flex;flex-direction:column;gap:3px}
+  nav a{display:flex;gap:9px;align-items:center;padding:9px 11px;border-radius:var(--r2);color:var(--mut);cursor:pointer}
+  nav a:hover{background:var(--panel2);color:var(--fg)}
+  nav a.active{background:#16203a;color:#fff}
+  nav .sep{margin:10px 6px 4px;font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--mut2)}
+  main{flex:1;min-width:0;display:flex}
+  .content{flex:1;min-width:0;overflow:auto;padding:20px 22px}
+  aside{width:330px;border-left:1px solid var(--line);background:var(--panel);overflow:auto;padding:14px}
+  aside h3{margin:2px 0 10px;font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--mut)}
+
+  /* footer status */
+  footer{display:flex;gap:18px;align-items:center;padding:7px 16px;background:var(--panel);
+         border-top:1px solid var(--line);font-size:12px;color:var(--mut)}
+
+  h1{font-size:19px;margin:0 0 4px}h2{font-size:15px;margin:18px 0 8px}
+  .sub{color:var(--mut);margin:0 0 16px}
+  .card{background:var(--panel2);border:1px solid var(--line);border-radius:var(--r);padding:13px 15px;margin-bottom:11px}
+  .lenses{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 14px}
+  .kind{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;padding:2px 7px;border-radius:5px;background:#0e131d;border:1px solid var(--line2)}
+  .k-person{color:var(--person)}.k-repo{color:var(--repo)}.k-service{color:var(--service)}.k-pr{color:var(--pr)}
+  .k-ticket{color:var(--ticket)}.k-incident{color:var(--incident)}.k-change{color:var(--change)}
+  .k-decision{color:var(--decision)}.k-expertise_summary,.k-capability{color:var(--summary)}.k-feature,.k-document{color:var(--mut)}
+  .dots{letter-spacing:1px;color:var(--acc2)} .dots .o{color:var(--mut2)}
+  .empty{border:1px dashed var(--line2);border-radius:var(--r);padding:26px;text-align:center;color:var(--mut)}
+  .answer{white-space:pre-wrap;line-height:1.65}
+  .cite{cursor:pointer;color:var(--acc2);font-weight:600}
+  .citecard{border:1px solid var(--line2);border-radius:var(--r2);padding:9px 11px;margin-bottom:8px;background:var(--panel2);cursor:pointer}
+  .citecard:hover{border-color:var(--acc)}
+  .tl{position:relative;margin-left:8px;padding-left:18px;border-left:2px solid var(--line2)}
+  .tl .ev{position:relative;margin-bottom:12px}
+  .tl .ev::before{content:"";position:absolute;left:-25px;top:5px;width:9px;height:9px;border-radius:50%;background:var(--acc);border:2px solid var(--bg)}
+  .when{color:var(--mut);font-size:12px}
+  .toast{position:fixed;bottom:48px;right:18px;background:#0e1626;border:1px solid var(--line2);border-radius:var(--r);padding:11px 14px;box-shadow:0 8px 30px #0008;max-width:360px}
+  .login{max-width:520px;margin:6vh auto}
+  .login .card{padding:20px}
+  .hide{display:none}
+  .spin{display:inline-block;width:13px;height:13px;border:2px solid var(--line2);border-top-color:var(--acc);border-radius:50%;animation:s .7s linear infinite;vertical-align:-2px}
+  @keyframes s{to{transform:rotate(360deg)}}
+  details summary{cursor:pointer;color:var(--mut)}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">◧ cypherx · <b>Engineering Memory</b></div>
+  <div class="grow"></div>
+  <input id="ask-global" placeholder="Ask anything…  (Enter)" />
+  <span id="conn" class="pill"><span class="dot"></span>not connected</span>
+  <button class="ghost" id="btn-auth" title="Session / token">👤</button>
+</header>
+
+<div class="shell">
+  <nav>
+    <div class="sep">Ask</div>
+    <a data-route="ask">💬 Ask</a>
+    <div class="sep">Explore</div>
+    <a data-route="graph">◍ Graph</a>
+    <a data-route="activity">⧗ Activity</a>
+    <a data-route="entity">⊙ Entity detail</a>
+    <div class="sep">Help</div>
+    <a data-route="about">ⓘ About</a>
+  </nav>
+  <main>
+    <div class="content" id="view"></div>
+    <aside>
+      <h3>Citations / sources</h3>
+      <div id="cites"><div class="empty small">Sources for the current result appear here.</div></div>
+    </aside>
+  </main>
+</div>
+
+<footer>
+  <span id="f-health"><span class="dot"></span>health…</span>
+  <span id="f-counts" class="muted"></span>
+  <span class="grow"></span>
+  <span class="muted small">served by cypherx-a1 · /ui</span>
+</footer>
+
+<script>
+const $ = s => document.querySelector(s);
+const el = (t,c,h)=>{const e=document.createElement(t);if(c)e.className=c;if(h!=null)e.innerHTML=h;return e};
+const esc = s => (s==null?"":String(s)).replace(/[&<>"]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[m]));
+const TOKEN = () => sessionStorage.getItem("cxa1_jwt") || "";
+const dots = c => {c=Math.max(0,Math.min(1,Number(c||0)));const n=Math.round(c*5);return `<span class="dots">${"●".repeat(n)}<span class="o">${"○".repeat(5-n)}</span></span>`};
+const kindTag = k => `<span class="kind k-${esc(k)}">${esc(k||"·")}</span>`;
+function toast(msg){const t=el("div","toast",msg);document.body.appendChild(t);setTimeout(()=>t.remove(),3200)}
+
+async function api(path, body){
+  const opt={method:body?"POST":"GET",headers:{"Authorization":"Bearer "+TOKEN()}};
+  if(body){opt.headers["Content-Type"]="application/json";opt.body=JSON.stringify(body)}
+  const r=await fetch(path,opt);
+  let data=null; try{data=await r.json()}catch(e){}
+  if(!r.ok){const m=data&&data.error?data.error.message:("HTTP "+r.status);throw new Error(m)}
+  return data;
+}
+
+/* ── Citations rail ───────────────────────────────────────────── */
+function renderCites(cites){
+  const box=$("#cites"); box.innerHTML="";
+  if(!cites||!cites.length){box.appendChild(el("div","empty small","No sources for this result."));return}
+  cites.forEach((c,i)=>{
+    const card=el("div","citecard");
+    card.innerHTML=`<div class="row"><span class="small muted">[${i+1}]</span> ${kindTag(c.entity_kind||c.kind)} <b>${esc(c.title||c.natural_key||"source")}</b></div>`
+      + (c.source?`<div class="small muted">${esc(c.source)}${c.score!=null?" · score "+(+c.score).toFixed(2):""}</div>`:"")
+      + (c.snippet?`<div class="small" style="margin-top:4px;color:#aeb6c8">${esc(c.snippet)}</div>`:"");
+    if(c.uri) card.onclick=()=>window.open(c.uri,"_blank");
+    else if(c.natural_key) card.onclick=()=>{location.hash="#entity";setTimeout(()=>{$("#ent-target").value=c.natural_key;runEntity()},30)};
+    box.appendChild(card);
+  });
+}
+
+/* ── Views ────────────────────────────────────────────────────── */
+const views={};
+
+views.ask = () => {
+  $("#view").innerHTML=`
+    <h1>Ask the engineering memory</h1>
+    <p class="sub">Cited answers over your org's code, services, decisions and people.</p>
+    <div class="card">
+      <textarea id="q" rows="2" placeholder="Who owns acme/payments and what breaks if I change auth-service?"></textarea>
+      <div class="row" style="margin-top:9px">
+        <span class="small muted">top_k</span><input id="topk" type="number" value="8" min="1" max="50" style="width:70px">
+        <div class="grow"></div>
+        <button class="primary" id="go">Ask ⏎</button>
+      </div>
+    </div>
+    <div class="lenses small muted">Try:
+      <button class="ghost ex">Who owns acme/payments?</button>
+      <button class="ghost ex">What breaks if I change auth-service?</button>
+      <button class="ghost ex">Who is the expert on payment retry?</button>
+      <button class="ghost ex">What changed in acme/payments recently?</button>
+    </div>
+    <div id="ans"></div>`;
+  $("#go").onclick=ask;
+  $("#q").addEventListener("keydown",e=>{if(e.key==="Enter"&&(e.metaKey||e.ctrlKey))ask()});
+  document.querySelectorAll(".ex").forEach(b=>b.onclick=()=>{$("#q").value=b.textContent;ask()});
+};
+async function ask(){
+  const q=$("#q").value.trim(); if(!q)return;
+  $("#ans").innerHTML=`<div class="card"><span class="spin"></span> thinking…</div>`;
+  try{
+    const d=await api("/v1/copilot/ask",{question:q,top_k:Number($("#topk").value)||8});
+    const used=d.used||{};
+    $("#ans").innerHTML=`<div class="card"><div class="answer">${esc(d.answer)}</div>
+      <div class="small muted" style="margin-top:10px;border-top:1px solid var(--line);padding-top:8px">
+      used: graph ${used.graph||0} · rag ${used.rag||0} · keyword ${used.keyword||0} · ${d.duration_ms||0}ms · trace ${esc((d.trace_id||"").slice(0,8))}</div></div>`;
+    renderCites(d.citations);
+  }catch(e){ $("#ans").innerHTML=`<div class="card" style="border-color:var(--bad)">⚠ ${esc(e.message)}</div>`; }
+}
+
+views.graph = () => {
+  $("#view").innerHTML=`
+    <h1>Graph</h1><p class="sub">Search entities, then apply a lens. Every answer is cited.</p>
+    <div class="card"><div class="row">
+      <input id="g-target" placeholder="repo / service / person / feature  (e.g. acme/payments)">
+      <button class="primary" id="g-go">Go</button></div>
+      <div class="lenses">
+        <button class="lens" data-l="who-owns">Who owns</button>
+        <button class="lens" data-l="what-breaks">What breaks if changed</button>
+        <button class="lens" data-l="experts">Experts</button>
+        <button class="lens" data-l="why-built">Why built</button>
+        <button class="lens" data-l="neighbors">Neighbors</button>
+      </div>
+    </div>
+    <div id="g-out"><div class="empty">Enter a target and pick a lens.</div></div>`;
+  const run=l=>graphLens(l);
+  document.querySelectorAll(".lens").forEach(b=>b.onclick=()=>run(b.dataset.l));
+  $("#g-go").onclick=()=>run("who-owns");
+  $("#g-target").addEventListener("keydown",e=>{if(e.key==="Enter")run("who-owns")});
+};
+async function graphLens(lens){
+  const t=$("#g-target").value.trim(); if(!t){toast("Enter a target");return}
+  const body= lens==="experts"||lens==="why-built" ? {topic:t} :
+              lens==="what-breaks"||lens==="neighbors" ? {target:t,max_hops:3} : {target:t};
+  $("#g-out").innerHTML=`<div class="card"><span class="spin"></span> ${lens}…</div>`;
+  try{
+    const d=await api("/v1/graph/"+lens,body);
+    const items=d.items||[];
+    if(!items.length){$("#g-out").innerHTML=`<div class="empty">No results for “${esc(t)}”.</div>`;renderCites(d.citations);return}
+    $("#g-out").innerHTML=`<h2>${esc(lens)} · ${esc(t)}</h2>`+items.map(it=>{
+      const name=it.person||it.entity||it.artifact||it.natural_key||JSON.stringify(it);
+      const meta=[it.kind?kindTag(it.kind):"",
+                  it.relations?("via "+it.relations.join(", ")):"",
+                  it.rel?("rel "+it.rel):"",
+                  it.depth!=null?("depth "+it.depth):"",
+                  it.owners?("owners: "+it.owners.join(", ")):"",
+                  it.score!=null?("score "+it.score):"",
+                  it.confidence!=null?dots(it.confidence):""].filter(Boolean).join(" · ");
+      const url=it.url?` <a href="${esc(it.url)}" target="_blank">↗</a>`:"";
+      return `<div class="card"><b>${esc(name)}</b>${url}<div class="small muted">${meta}</div></div>`;
+    }).join("");
+    renderCites(d.citations);
+  }catch(e){ $("#g-out").innerHTML=`<div class="card" style="border-color:var(--bad)">⚠ ${esc(e.message)}</div>`; }
+}
+
+views.activity = () => {
+  $("#view").innerHTML=`
+    <h1>Activity — what changed, who, when</h1>
+    <p class="sub">A cited, time-ordered timeline for a repo or person.</p>
+    <div class="card"><div class="row">
+      <input id="a-target" placeholder="acme/payments  or  a person">
+      <input id="a-since" placeholder="since (ISO, optional)" style="max-width:200px">
+      <input id="a-until" placeholder="until (optional)" style="max-width:200px">
+      <button class="primary" id="a-go">Show</button></div></div>
+    <div id="a-out"><div class="empty">Pick a scope to see the activity timeline.</div></div>`;
+  $("#a-go").onclick=runActivity;
+  $("#a-target").addEventListener("keydown",e=>{if(e.key==="Enter")runActivity()});
+};
+async function runActivity(){
+  const t=$("#a-target").value.trim(); if(!t){toast("Enter a scope");return}
+  const body={target:t}; const s=$("#a-since").value.trim(),u=$("#a-until").value.trim();
+  if(s)body.since=s; if(u)body.until=u;
+  $("#a-out").innerHTML=`<div class="card"><span class="spin"></span> loading timeline…</div>`;
+  try{
+    const d=await api("/v1/graph/activity",body); const items=d.items||[];
+    if(!items.length){$("#a-out").innerHTML=`<div class="empty">No activity for “${esc(t)}”.</div>`;renderCites(d.citations);return}
+    $("#a-out").innerHTML=`<div class="tl">`+items.map(it=>{
+      const when=(it.when||"").replace("T"," ").slice(0,16);
+      return `<div class="ev"><div class="when">${esc(when)}</div>
+        <div>${kindTag(it.kind)} <b>${esc(it.activity)}</b> ${it.url?`<a href="${esc(it.url)}" target="_blank">↗</a>`:""}</div>
+        <div class="small muted">by ${esc(it.author||"?")}${it.via?" · "+esc(it.via):""}</div></div>`;
+    }).join("")+`</div>`;
+    renderCites(d.citations);
+  }catch(e){ $("#a-out").innerHTML=`<div class="card" style="border-color:var(--bad)">⚠ ${esc(e.message)}</div>`; }
+}
+
+views.entity = () => {
+  $("#view").innerHTML=`
+    <h1>Entity detail</h1><p class="sub">Neighborhood + relationships for any entity.</p>
+    <div class="card"><div class="row">
+      <input id="ent-target" placeholder="acme/payments / auth-service / a person">
+      <button class="primary" id="ent-go">Open</button></div></div>
+    <div id="ent-out"><div class="empty">Open an entity to see its relationships.</div></div>`;
+  $("#ent-go").onclick=runEntity;
+  $("#ent-target").addEventListener("keydown",e=>{if(e.key==="Enter")runEntity()});
+};
+async function runEntity(){
+  const t=$("#ent-target").value.trim(); if(!t)return;
+  $("#ent-out").innerHTML=`<div class="card"><span class="spin"></span> loading…</div>`;
+  try{
+    const d=await api("/v1/graph/neighbors",{target:t,max_hops:2}); const items=d.items||[];
+    $("#ent-out").innerHTML=`<h2>${esc(t)}</h2>`+(items.length?items.map(it=>
+      `<div class="card"><div class="row">${kindTag(it.kind)} <b>${esc(it.entity||it.natural_key)}</b>
+        <span class="grow"></span><span class="small muted">${esc(it.rel)} ${dots(it.confidence)}</span></div></div>`).join("")
+      : `<div class="empty">No relationships found.</div>`);
+    renderCites(d.citations);
+  }catch(e){ $("#ent-out").innerHTML=`<div class="card" style="border-color:var(--bad)">⚠ ${esc(e.message)}</div>`; }
+}
+
+views.about = () => {
+  $("#view").innerHTML=`
+    <h1>About this console</h1>
+    <div class="card">
+      <p>A lightweight, self-contained UI over the cypherx-a1 Engineering Memory API (same-origin, served at <span class="mono">/ui</span>).</p>
+      <p class="muted">It calls the read-only graph + copilot endpoints with your agent JWT (kept in this tab's sessionStorage only). For production, fold these screens into the platform Console behind the BFF (no token in the browser) — see <span class="mono">docs/ui-design.md</span>.</p>
+      <p>Implements UI-1: Ask · Graph · Activity · Entity. Connectors, Extraction/Consolidation, MCP keys, Observability and full Settings are UI-2/UI-3 in the design.</p>
+    </div>`;
+};
+
+/* ── Auth dialog ──────────────────────────────────────────────── */
+function authDialog(){
+  views._restore=location.hash;
+  $("#view").innerHTML=`
+    <div class="login"><h1>Connect</h1>
+    <div class="card">
+      <p class="muted small">Paste an <b>agent JWT</b> (scope <span class="mono">cypherxa1:query</span> or <span class="mono">agent:execute</span>). It stays in this tab only.</p>
+      <textarea id="jwt" rows="4" placeholder="eyJ…">${esc(TOKEN())}</textarea>
+      <div class="row" style="margin-top:10px"><button class="primary" id="save">Save token</button>
+        <button class="ghost" id="clear">Clear</button></div>
+      <details style="margin-top:12px"><summary>How do I get a token?</summary>
+        <pre class="mono small" style="white-space:pre-wrap;color:#aeb6c8">curl -s -X POST http://localhost:8080/v1/agents/&lt;AGENT_ID&gt;/token \\
+  -H "X-Tenant-ID: &lt;TENANT_ID&gt;" -H "Content-Type: application/json" \\
+  -d '{"api_key":"&lt;ADMIN_API_KEY&gt;"}'   # -> { token }</pre>
+        <p class="small muted">Or use the platform Console at <span class="mono">http://localhost:8000</span>.</p>
+      </details>
+    </div></div>`;
+  $("#save").onclick=()=>{sessionStorage.setItem("cxa1_jwt",$("#jwt").value.trim());checkConn();toast("Token saved");location.hash=views._restore||"#ask"};
+  $("#clear").onclick=()=>{sessionStorage.removeItem("cxa1_jwt");$("#jwt").value="";checkConn()};
+}
+
+/* ── Router + status ──────────────────────────────────────────── */
+function route(){
+  const r=(location.hash.replace("#","")||"ask");
+  document.querySelectorAll("nav a").forEach(a=>a.classList.toggle("active",a.dataset.route===r));
+  (views[r]||views.ask)();
+}
+async function checkConn(){
+  const c=$("#conn");
+  if(!TOKEN()){c.innerHTML='<span class="dot bad"></span>no token';return}
+  try{ await api("/v1/graph/who-owns",{target:"__ping__"}); c.innerHTML='<span class="dot ok"></span>connected'; }
+  catch(e){ const ok=/No results|FORBIDDEN|VALIDATION/i.test(e.message); c.innerHTML=ok?'<span class="dot ok"></span>connected':'<span class="dot warn"></span>'+esc(e.message.slice(0,22)); }
+}
+async function health(){
+  try{ const r=await fetch("/readyz"); const d=await r.json();
+    const ok=d.ready; $("#f-health").innerHTML=`<span class="dot ${ok?'ok':'bad'}"></span>${ok?'ready':'DB not provisioned'} · pg ${d.checks.postgresql} · auth ${d.checks.auth_jwks}`;
+  }catch(e){ $("#f-health").innerHTML='<span class="dot bad"></span>unreachable'; }
+}
+
+document.querySelectorAll("nav a").forEach(a=>a.onclick=()=>location.hash="#"+a.dataset.route);
+$("#btn-auth").onclick=authDialog;
+$("#ask-global").addEventListener("keydown",e=>{if(e.key==="Enter"&&e.target.value.trim()){location.hash="#ask";setTimeout(()=>{$("#q").value=e.target.value;ask()},30);e.target.value=""}});
+window.addEventListener("hashchange",route);
+if(!TOKEN()) location.hash="#ask";
+route(); checkConn(); health(); setInterval(health,15000);
+if(!TOKEN()) setTimeout(authDialog,300);
+</script>
+</body>
+</html>

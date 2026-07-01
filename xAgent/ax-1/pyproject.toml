@@ -1,0 +1,75 @@
+[project]
+name = "agent-runtime"
+version = "0.1.0"
+description = "CypherX xAgent — agent-runtime. Single-agent task execution pipeline (LOAD -> guardrails -> LLM -> guardrails -> return), first cycle."
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "httpx>=0.27",
+    "psycopg[binary,pool]>=3.2",
+    "aiokafka>=0.11",
+    "pyjwt[crypto]>=2.9",
+    "structlog>=24.4",
+    "prometheus-client>=0.21",
+    "redis>=5",
+]
+
+[project.optional-dependencies]
+# OpenTelemetry OTLP span export (WP08). OPT-IN: install this extra AND set
+# OTEL_EXPORTER_OTLP_ENDPOINT to export spans. With the extra absent (the default) the
+# runtime still propagates W3C trace context (traceparent + tracestate) on every
+# downstream call — only span EXPORT requires these packages, and core.trace degrades to
+# a NO-OP when they are missing, so the base install stays lean and tests need no
+# collector. Use the matching exporter for OTEL_EXPORTER_OTLP_PROTOCOL (grpc is default).
+otel = [
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.27",
+    "opentelemetry-exporter-otlp-proto-http>=1.27",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.7",
+    "mypy>=1.13",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "asgi-lifespan>=2.1",
+    "respx>=0.21",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_runtime"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "C4", "SIM"]
+ignore = ["B008"]
+
+[tool.mypy]
+python_version = "3.12"
+packages = ["agent_runtime"]
+mypy_path = "src"
+warn_unused_ignores = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src"]
+# CI safety net: if any single test (or its teardown) blocks for 60s, dump every thread's
+# stack and abort instead of hanging the whole run forever. App-level tests neutralise all
+# real-network background resources (DB pool, aiokafka publisher, Valkey) so a healthy run
+# finishes in ~10s; this only fires on a genuine regression and points straight at it.
+faulthandler_timeout = 60

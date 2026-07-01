@@ -1,0 +1,65 @@
+[project]
+name = "guardrails-service"
+version = "0.1.0"
+description = "CypherX SharedCore — Guardrails. Input/output safety checks (prompt-injection, PII redaction, toxicity) with deterministic redaction, fail-modes, and usage metering."
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "httpx>=0.27",
+    "psycopg[binary,pool]>=3.2",
+    "aiokafka>=0.11",
+    "pyjwt[crypto]>=2.9",
+    "structlog>=24.4",
+    "prometheus-client>=0.21",
+    "redis>=5",
+]
+
+[project.optional-dependencies]
+# Heavy ML classifier (detoxify -> torch). PROD only. Local/dev uses the stub classifier
+# (env CLASSIFIER_MODE=stub — Settings has no env_prefix) so `uv sync` stays light, no GPU/model download.
+ml = ["detoxify>=0.5.2"]
+# Microsoft Presidio PII analyzer (OPTIONAL — flag GUARDRAILS_PII_PRESIDIO, default off).
+# Lifts PII recall before the existing regex/HMAC redaction. Not installed by default so
+# `uv sync` stays light + keyless; when the extra is absent the flag degrades to regex-only.
+pii = ["presidio-analyzer>=2.2"]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.7",
+    "mypy>=1.13",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "asgi-lifespan>=2.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/guardrails_service"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "C4", "SIM"]
+ignore = ["B008"]
+
+[tool.mypy]
+python_version = "3.12"
+packages = ["guardrails_service"]
+mypy_path = "src"
+warn_unused_ignores = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src"]

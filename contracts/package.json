@@ -1,0 +1,20 @@
+{
+  "name": "@cypherx-ai/contracts",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "CypherX AI — source-of-truth contracts, schemas and standards (Phase 0). Consumed by every platform service.",
+  "license": "UNLICENSED",
+  "scripts": {
+    "validate": "node scripts/validate.mjs",
+    "check": "node scripts/check-structure.mjs",
+    "lint:openapi": "redocly lint api/openapi-base.yaml --config .redocly.yaml || spectral lint api/openapi-base.yaml",
+    "test": "npm run check && npm run validate"
+  },
+  "devDependencies": {
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "yaml": "^2.6.1",
+    "@redocly/cli": "^1.25.0"
+  }
+}

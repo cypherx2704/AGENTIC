@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cypherx-service.fullname" . }}
+  labels:
+    {{- include "cypherx-service.labels" . | nindent 4 }}
+  {{- with .Values.service_.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service_.type }}
+  selector:
+    {{- include "cypherx-service.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.ports.http }}
+      targetPort: http
+      protocol: TCP
+    # Metrics port — convention is 9090 so the Istio metrics-permissive
+    # PeerAuthentication (Phase 1 Component 7) lets observability scrape it.
+    - name: metrics
+      port: {{ .Values.ports.metrics }}
+      targetPort: metrics
+      protocol: TCP

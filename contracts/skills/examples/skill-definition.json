@@ -1,0 +1,87 @@
+{
+  "$schemaRef": "../skill-definition.schema.yaml",
+  "valid": [
+    {
+      "skill_id": "com.cypherx.research.summarise",
+      "version": "1.0.0",
+      "name": "Research Summariser",
+      "description": "Searches the web and produces a cited summary.",
+      "tags": ["research", "summary"],
+      "status": "published",
+      "required_tools": ["tool-web-search", "tool-http-fetch"],
+      "required_services": ["llms", "memory", "rag"],
+      "optional_services": ["guardrails"],
+      "input_schema": {
+        "type": "object",
+        "required": ["query"],
+        "properties": {
+          "query": { "type": "string", "description": "Search query" },
+          "max_results": { "type": "integer", "default": 5, "maximum": 20 }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "summary": { "type": "string" },
+          "sources": { "type": "array", "items": { "type": "string", "format": "uri" } }
+        }
+      },
+      "steps": [
+        {
+          "id": "search",
+          "action_type": "tool",
+          "action_ref": "tool-web-search.web_search",
+          "input": { "query": "{{input.query}}" },
+          "output_var": "search_results"
+        },
+        {
+          "id": "summarise",
+          "action_type": "llm",
+          "action_ref": "claude-opus-4",
+          "input": { "context": "{{search_results}}" },
+          "output_var": "summary"
+        }
+      ],
+      "constraints": {
+        "max_tokens": 2000,
+        "timeout_seconds": 30,
+        "max_cost_usd": 0.1
+      },
+      "guardrails": {
+        "input": ["prompt-injection-v1"],
+        "output": ["pii-email-v1"]
+      }
+    },
+    {
+      "skill_id": "com.cypherx.minimal",
+      "version": "0.1.0",
+      "name": "Minimal Skill",
+      "steps": [
+        {
+          "id": "only_step",
+          "action_type": "service",
+          "action_ref": "memory.retrieve"
+        }
+      ]
+    }
+  ],
+  "invalid": [
+    {
+      "skill_id": "com.cypherx.no.steps",
+      "version": "1.0.0",
+      "name": "Missing Steps"
+    },
+    {
+      "skill_id": "com.cypherx.bad.action",
+      "version": "1.0.0",
+      "name": "Bad Action Type",
+      "steps": [
+        {
+          "id": "step1",
+          "action_type": "database",
+          "action_ref": "x.y"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,139 @@
+# cypherx-a1 — published API contract (Contract 10, OpenAPI 3.1).
+# Committed rendered spec (FastAPI also serves /openapi.json at runtime). Identity is taken
+# ONLY from the Authorization agent JWT (Contract 13); request bodies carry no identity.
+openapi: 3.1.0
+info:
+  title: cypherx-a1 — Autonomous Engineering Memory
+  version: 0.1.0
+  description: >
+    Cited hybrid-retrieval copilot + read-only graph query surface over a tenant-scoped
+    engineering knowledge graph + RAG corpus. A CypherX consuming app (peer of xAgent).
+servers:
+  - url: http://localhost:8093
+    description: local compose (host map 8093 -> 8080)
+security:
+  - agentJwt: []
+components:
+  securitySchemes:
+    agentJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: CypherX agent JWT (Contract 1). Scopes cypherxa1:query|ingest|admin (or agent:execute).
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+            request_id: { type: string }
+            trace_id: { type: string }
+            timestamp: { type: string }
+    Citation:
+      type: object
+      properties:
+        kind: { type: string, enum: [entity, chunk] }
+        title: { type: string }
+        source: { type: string, nullable: true }
+        uri: { type: string, nullable: true }
+        entity_id: { type: string, nullable: true }
+        entity_kind: { type: string, nullable: true }
+        natural_key: { type: string, nullable: true }
+        doc_id: { type: string, nullable: true }
+        chunk_id: { type: string, nullable: true }
+        score: { type: number, nullable: true }
+        snippet: { type: string, nullable: true }
+    GraphAnswer:
+      type: object
+      properties:
+        items: { type: array, items: { type: object, additionalProperties: true } }
+        citations: { type: array, items: { $ref: "#/components/schemas/Citation" } }
+        trace_id: { type: string, nullable: true }
+paths:
+  /livez: { get: { tags: [health], security: [], summary: Liveness, responses: { "200": { description: ok } } } }
+  /readyz: { get: { tags: [health], security: [], summary: Readiness, responses: { "200": { description: ready }, "503": { description: not ready } } } }
+  /metrics: { get: { tags: [health], security: [], summary: Prometheus metrics, responses: { "200": { description: ok } } } }
+  /v1/copilot/ask:
+    post:
+      tags: [copilot]
+      summary: Cited LLM answer over the engineering memory
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [question]
+              properties:
+                question: { type: string, minLength: 1, maxLength: 4000 }
+                session_id: { type: string, maxLength: 128, nullable: true }
+                top_k: { type: integer, minimum: 1, maximum: 50, default: 8 }
+      responses:
+        "200":
+          description: cited answer
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  answer: { type: string }
+                  citations: { type: array, items: { $ref: "#/components/schemas/Citation" } }
+                  used: { type: object, additionalProperties: true }
+                  trace_id: { type: string }
+                  duration_ms: { type: integer }
+        "422": { description: validation or guardrail violation, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /v1/graph/who-owns:
+    post:
+      tags: [graph]
+      summary: Owners of a repo/service/feature/path (cited, no LLM)
+      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: false, required: [target], properties: { target: { type: string, minLength: 1 } } } } } }
+      responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/GraphAnswer" } } } } }
+  /v1/graph/what-breaks:
+    post:
+      tags: [graph]
+      summary: Reverse-dependency blast radius (cited, no LLM)
+      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: false, required: [target], properties: { target: { type: string }, max_hops: { type: integer, minimum: 1, maximum: 6, default: 3 } } } } } }
+      responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/GraphAnswer" } } } } }
+  /v1/graph/experts:
+    post:
+      tags: [graph]
+      summary: Experts on a topic (cited, no LLM)
+      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: false, required: [topic], properties: { topic: { type: string } } } } } }
+      responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/GraphAnswer" } } } } }
+  /v1/graph/why-built:
+    post:
+      tags: [graph]
+      summary: Why a feature/change exists (cited, no LLM)
+      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: false, required: [topic], properties: { topic: { type: string } } } } } }
+      responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/GraphAnswer" } } } } }
+  /v1/graph/neighbors:
+    post:
+      tags: [graph]
+      summary: Typed neighbours of an entity (cited, no LLM)
+      requestBody: { required: true, content: { application/json: { schema: { type: object, additionalProperties: false, required: [target], properties: { target: { type: string }, max_hops: { type: integer, minimum: 1, maximum: 6, default: 3 } } } } } }
+      responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/GraphAnswer" } } } } }
+  /v1/connectors/{kind}/sync:
+    post:
+      tags: [connectors]
+      summary: Backfill/sync a source into the graph + RAG (ingest scope)
+      parameters: [ { name: kind, in: path, required: true, schema: { type: string } } ]
+      requestBody: { required: false, content: { application/json: { schema: { type: object, additionalProperties: false, properties: { repo: { type: string }, mode: { type: string, enum: [full, incremental], default: full } } } } } }
+      responses: { "200": { description: ingest stats } }
+  /v1/extract:
+    post:
+      tags: [connectors]
+      summary: Run the LLM knowledge-extraction pass (ingest scope)
+      responses: { "200": { description: extraction stats } }
+  /webhooks/{kind}:
+    post:
+      tags: [webhooks]
+      summary: App-owned webhook receiver (signature-verified; graph-only landing)
+      security: []
+      parameters:
+        - { name: kind, in: path, required: true, schema: { type: string } }
+        - { name: tenant, in: query, required: true, schema: { type: string, format: uuid } }
+      responses: { "202": { description: accepted }, "401": { description: invalid signature } }

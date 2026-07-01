@@ -1,0 +1,61 @@
+# Test profile config (profile `test`). Hermetic: Postgres comes from Testcontainers
+# (AbstractIntegrationTest wires spring.datasource.* via @DynamicPropertySource); Kafka and
+# Valkey/Redis beans are @MockkBean(relaxed=true) so no broker/cache is required.
+spring:
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+  application:
+    name: auth-service
+  # Do NOT eagerly connect to Kafka/Redis on context start. The datasource is wired dynamically.
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration
+
+server:
+  port: 0
+
+management:
+  endpoints:
+    web:
+      base-path: ""
+      exposure:
+        include: prometheus,health
+      path-mapping:
+        prometheus: metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+
+cypherx:
+  auth:
+    issuer-url: http://localhost
+    platform-audience: cypherx-platform
+    deployment-id: cypherx-test
+    environment: test
+    agent-token-ttl-seconds: 3600
+    service-token-ttl-seconds: 300
+    clock-skew-seconds: 60
+    key-encryptor: local
+    # 32-byte base64 AES-256 master key (test-only).
+    local-master-key-b64: dOTCWIvKNfbl3uEaPSKz9gLHU83+q1gePY/AMZJOqVE=
+    bootstrap-token: test-bootstrap-token
+    signing-key-rotation-days: 90
+    tenant-deletion-grace-days: 30
+    # Relay loop OFF in tests: outbox rows stay observable, and tests drain deterministically by
+    # calling OutboxRelay.relayOnce() themselves.
+    outbox:
+      enabled: false
+  service-auth:
+    bootstrap-secrets:
+      xagent: test-xagent-secret
+      # Has a valid bootstrap secret but NO service_acl rows -> exercises the 403 (no ACL) path.
+      noacl: test-noacl-secret
+
+logging:
+  level:
+    root: WARN
+    ai.cypherx.auth: WARN
+    org.testcontainers: WARN
+    com.github.dockerjava: WARN

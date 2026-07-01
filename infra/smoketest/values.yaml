@@ -1,0 +1,142 @@
+# smoketest/values.yaml — drives the charts/cypherx-service base chart to deploy
+# the Phase 1 Component 21 echo-service into the throwaway `smoketest` namespace.
+#
+# Everything under `cypherx-service:` is forwarded to the base subchart. The
+# echo-service is a smoke-test artefact ONLY — deployed by
+# infra/scripts/infra-smoke-test.sh, then torn down (assertion 10).
+#
+# Install:
+#   helm dependency build infra/smoketest
+#   helm upgrade --install echo infra/smoketest -n smoketest --create-namespace \
+#     --set cypherx-service.image.repository=<acct>.dkr.ecr.<region>.amazonaws.com/cypherx/echo-service \
+#     --set cypherx-service.image.tag=<git-sha7>
+
+cypherx-service:
+  # --- identity ---
+  # `service: echo` is the Contract 6 `service` field AND the Loki `service`
+  # label (assertion 2: `{service="echo"}`; assertion 6: `up{job="echo"}`).
+  service: echo
+  environment: dev
+  replicaCount: 1               # assertion 8 scales 1 -> 3
+
+  image:
+    # Overridden by the script (--set) with the ECR repo + immutable sha tag.
+    repository: 000000000000.dkr.ecr.us-east-1.amazonaws.com/cypherx/echo-service
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+
+  ports:
+    http: 8080                  # Kong routes here (Contract 8)
+    metrics: 9090               # Istio metrics-permissive port (Component 7)
+
+  # --- scheduling: run on the `agent` NodePool so assertion 8's 1->3 scale can
+  # trigger Karpenter provisioning (agent is the autoscaled, HPA-driven pool). ---
+  nodeRole: agent
+
+  # --- Istio sidecar (assertion 1: traceparent populated at the mesh edge;
+  # assertion 4: spans cross Kong->echo). smoketest ns is istio-injection=enabled. ---
+  istio:
+    sidecarInject: true
+
+  # --- database wiring (Contract 13): the RLS probe (assertion 7) runs
+  # BEGIN; SET LOCAL app.tenant_id; SELECT 1; COMMIT through the transaction-mode
+  # PgBouncer pooler. echo-service has NO Atlas migrations, so the migration Job
+  # is disabled — but DB env wiring (POSTGRES_*) stays on for the probe. ---
+  database:
+    enabled: true
+    pgbouncerHost: pgbouncer.data.svc.cluster.local
+    pgbouncerPort: 6432
+    name: cypherx_platform
+    schema: public
+    runtimeUser: smoketest_user
+    ddlUser: smoketest_user
+    sslmode: disable
+  migration:
+    enabled: false              # no schema to migrate for a smoke test
+
+  # --- Doppler secret wiring (Component 11/20). The operator syncs the
+  # `smoketest.echo` Doppler config into a K8s Secret holding SMOKE_SECRET
+  # (assertion 9), POSTGRES_PASSWORD, VALKEY_PASSWORD, KAFKA_SASL_PASSWORD.
+  # The Deployment envFroms that Secret, so SMOKE_SECRET lands in the pod env
+  # and /echo can report SMOKE_SECRET_LEN. ---
+  doppler:
+    enabled: true
+    project: cypherx-platform
+    # Operator convention: doppler-token-<namespace>. The smoke-test runner must
+    # ensure a doppler-token-smoketest Secret exists in the throwaway namespace
+    # (add `smoketest` to the doppler-operator bootstrap_service_tokens set, or
+    # have infra-smoke-test.sh create it) — required for assertion 9.
+    tokenSecretName: doppler-token-smoketest
+    runtimeConfig: smoketest.echo
+    # ddlConfig intentionally omitted — no DDL user / migration Job.
+
+  # --- non-secret env the app reads (config.py). Secrets come via envFrom the
+  # Doppler-synced Secret above; only NON-secret values go here. ---
+  extraEnv:
+    - name: VALKEY_HOST
+      value: valkey.data.svc.cluster.local
+    - name: VALKEY_PORT
+      value: "6379"
+    - name: VALKEY_TLS
+      value: "true"
+    - name: KAFKA_SMOKETEST_TOPIC
+      value: cypherx.smoketest.event
+    - name: KAFKA_SECURITY_PROTOCOL
+      value: SASL_SSL
+    - name: KAFKA_SASL_MECHANISM
+      value: SCRAM-SHA-512
+    - name: KAFKA_SASL_USERNAME
+      value: smoketest
+    - name: SMOKE_TENANT_ID
+      value: "00000000-0000-0000-0000-0000000000ff"  # well-known integration-test tenant
+    # KAFKA_BROKERS comes from the messaging-namespace broker ConfigMap. The
+    # script overrides this entry's value via:
+    #   --set-string 'cypherx-service.extraEnv[8].value=<brokers>'
+    # (index 8 == this 9th, last extraEnv entry). Keep it LAST so the index is
+    # stable; if you add entries above, bump the index in infra-smoke-test.sh.
+    - name: KAFKA_BROKERS
+      value: ""
+
+  # --- Prometheus ServiceMonitor (assertion 6). Scrapes :9090; the label is
+  # what the kube-prometheus-stack Prometheus selects on. ---
+  serviceMonitor:
+    enabled: true
+    interval: 15s
+    scrapeTimeout: 10s
+    labels:
+      release: kube-prometheus-stack
+
+  # --- autoscaling OFF so `kubectl scale ... --replicas=3` (assertion 8) is not
+  # immediately reverted by the HPA. ---
+  autoscaling:
+    enabled: false
+
+  pdb:
+    enabled: false              # single short-lived smoke deployment
+
+  # --- NetworkPolicy: allow Kong (ingress) in to :8080 and observability in to
+  # :9090. Same default-deny + explicit-allow shape every service uses. ---
+  networkPolicy:
+    enabled: true
+    ingressNamespace: ingress
+    observabilityNamespace: observability
+    allowSameNamespace: true
+    allowAllEgress: true        # DNS, PgBouncer, Valkey, Kafka, Tempo
+
+  # --- probe timings: readiness re-probes DB+Valkey each interval so a recovered
+  # downstream re-adds the pod (Contract 7). ---
+  probes:
+    readiness:
+      initialDelaySeconds: 5
+      periodSeconds: 10
+    liveness:
+      initialDelaySeconds: 10
+      periodSeconds: 10
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi

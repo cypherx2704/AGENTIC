@@ -1,0 +1,50 @@
+{
+  "$schemaRef": "../task-response.schema.json",
+  "valid": [
+    {
+      "task_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+      "schema_version": "1.0.0",
+      "status": "completed",
+      "output": { "summary": "Three key advances were identified." },
+      "error": null,
+      "started_at": "2026-05-22T10:00:00.000Z",
+      "completed_at": "2026-05-22T10:00:05.123Z",
+      "duration_ms": 5123,
+      "tokens_used": 1450,
+      "cost_usd": 0.00234,
+      "task_steps": [
+        { "step": "guardrail_check_input", "status": "passed", "duration_ms": 12 },
+        { "step": "llm_call", "status": "passed", "duration_ms": 4980, "tokens": 1450 },
+        { "step": "guardrail_check_output", "status": "passed", "duration_ms": 13 }
+      ],
+      "trace_id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"
+    },
+    {
+      "task_id": "0a1b2c3d-4e5f-4061-8273-849506afb1c2",
+      "schema_version": "1.0.0",
+      "status": "timeout",
+      "error": { "code": "TASK_TIMEOUT", "message": "Receiver did not complete within timeout_seconds." },
+      "started_at": "2026-05-22T10:00:00.000Z",
+      "completed_at": "2026-05-22T10:01:00.000Z",
+      "duration_ms": 60000,
+      "trace_id": "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e"
+    }
+  ],
+  "invalid": [
+    {
+      "task_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+      "schema_version": "1.0.0",
+      "status": "completed",
+      "output": { "summary": "Missing cost_usd and task_steps on a completed response." },
+      "started_at": "2026-05-22T10:00:00.000Z",
+      "trace_id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"
+    },
+    {
+      "task_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+      "schema_version": "1.0.0",
+      "status": "succeeded",
+      "started_at": "2026-05-22T10:00:00.000Z",
+      "trace_id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"
+    }
+  ]
+}

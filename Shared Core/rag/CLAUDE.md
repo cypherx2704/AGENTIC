@@ -1,0 +1,72 @@
+# CLAUDE.md — rag-service (Shared Core/rag)
+
+> Universal Retrieval-Augmented Generation service for CypherX (Phase 5 / WP09): tenant-scoped knowledge bases, document ingestion, and pgvector semantic retrieval. Called by xAgent and the Skills system (Phase 8). Platform-wide rules: [../../CLAUDE.md](../../CLAUDE.md). Owning spec: [../../archive/Manoj/phases/phase-05-rag.md](../../archive/Manoj/phases/phase-05-rag.md). Cross-service contracts (single source of truth — services honour contracts): [../../contracts/](../../contracts/).
+
+## What this is
+A substantially **implemented** Python 3.12 / FastAPI RAG service. Agents create KBs, ingest documents (inline ≤100 KiB, or presigned upload + Kafka worker), and run pgvector semantic search before calling an LLM. It implements the first-cycle (⚡) components of phase-05: KB CRUD with immutable creation-time embedding-alias resolution, per-principal ACLs, two-pass HNSW query, transactional outbox, usage metering, quota enforcement, the pluggable `IVectorStore` interface (only pgvector ships), and the platform-skills bootstrap. 10 test modules run fully in-process against in-memory fakes (no Postgres/Valkey/Kafka/llms).
+**Research-backed retrieval upgrades are now SHIPPED, additive, and flag-gated — defaults preserve today's dense-only behaviour** (verified live 2026-06-14): hybrid dense+lexical search via Reciprocal Rank Fusion (`search_mode=hybrid`; RRF k=60; lexical leg = Postgres `tsvector`/GIN), lexical-only (`search_mode=sparse`), optional cross-encoder reranking (`rag_rerank_enabled`, default off, via llms-gateway `POST /v1/rerank`; a query opts in with `rerank=true`, a no-op when the flag is off), and contextual retrieval at ingest (`rag_contextual_ingest`, default off, generates a chunk-context prefix via llms-gateway chat). Flag matrix: `search_mode` ∈ {`dense`(default),`hybrid`,`sparse`}; `rag_rerank_enabled`=false; `rerank_candidate_n`=150; `rerank_model`=`rerank`; `rag_contextual_ingest`=false; `hybrid_rrf_k`=60. Still 📋 NOT built: query expansion (HyDE/multi-query), multimodal/OCR, non-pgvector backends, PDF extraction.
+
+## Tech stack
+- **Lang/framework:** Python ≥3.12, FastAPI + uvicorn, pydantic v2 + pydantic-settings.
+- **Build/deps:** uv (`uv.lock`, frozen), hatchling wheel (`src/rag_service`). Lint: ruff (line 110, `E,F,I,UP,B,ASYNC,C4,SIM`). Tests: pytest + pytest-asyncio (`asyncio_mode=auto`, `pythonpath=["src"]`), asgi-lifespan, respx.
+- **Data/infra libs:** psycopg3 `[binary,pool]` async + pgvector (HNSW cosine), aiokafka, redis (Valkey client), httpx (llms + S3), PyJWT`[crypto]`, structlog, prometheus-client.
+- **Object store:** stdlib AWS SigV4 presigning (no boto3) against MinIO/S3.
+- **DB:** PostgreSQL 16 + pgvector (Neon — external; no postgres container locally).
+
+## Repository layout
+| Path | Holds |
+|------|-------|
+| `src/rag_service/main.py`, `__main__.py` | App factory + lifespan; run entry (`python -m rag_service`; `RAG_RUN_WORKER=1` → ingestion worker). Windows SelectorEventLoop shim for psycopg3 async. |
+| `src/rag_service/api/` | Routers: `health` (livez/readyz/metrics), `kbs`, `query`, `ingest`, `acls`. |
+| `src/rag_service/core/` | `config` (pydantic Settings), `auth` (dual-mode JWT + WP03 revocation mirror), `errors` (Contract-2 envelope), `trace`, `logging`, `metrics`. |
+| `src/rag_service/db/` | `pool` (async pool + `in_tenant` RLS helper), `outbox` (enqueue + Kafka publisher), `repository` (KB/doc/ACL DAL), `valkey`. |
+| `src/rag_service/services/` | `acl`, `quota`, `idempotency`, `embeddings` (llms + mock), `chunking`, `ingest` (shared pipeline), `object_store`, `bootstrap`, `service_token`, `store/{base,pgvector}` (IVectorStore + PgVectorAdapter). |
+| `src/rag_service/worker/` | `ingestion_worker` (Kafka consumer, poison-pill/DLQ), `sweeper` (s3_deletions). |
+| `src/rag_service/models/api.py` | Request/response pydantic models (`extra="forbid"`). |
+| `db/migrations/` | `20260611_0001__init.sql`, `_0002__seed.sql`, `schema.sql` (flattened snapshot), `atlas.hcl`, `README.md`. |
+| `tests/` | 10 modules + `conftest.py` + `fakes.py` (in-memory pool/valkey). |
+| `Dockerfile`, `.env.example`, `pyproject.toml`, `README.md` | Multi-stage uv image; env template; manifests. |
+
+## Build, test, run
+**Host (uv):** `uv venv && uv sync` (uv may not be on PATH — `python -m uv ...` also works).
+- API: `PORT=8000 MOCK_EMBEDDINGS=true DATABASE_URL=postgresql://rag_user:localdev@localhost:5432/cypherx_platform .venv/Scripts/python.exe -m rag_service` (Linux: `.venv/bin/python`).
+- Worker: same env + `RAG_RUN_WORKER=1`.
+- Tests: `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider -o faulthandler_timeout=60` ; lint: `ruff check src tests`.
+- Migrations: `atlas migrate apply --env local` or `psql "$DATABASE_URL" -f db/migrations/20260611_0001__init.sql` then `_0002__seed.sql` (run as superuser/migration role; `rag_user` is created idempotently and is NOT a superuser / does NOT bypass RLS).
+
+**Docker / compose:** `Dockerfile` CMD `python -m rag_service`, **PORT=8080 in-container**, non-root uid 10001, HEALTHCHECK on `/livez` (stdlib urllib, no curl). In `infra/compose/docker-compose.yml` the service is `rag`, build context `../../Shared Core/rag` (resolves via the `Shared Core` → `SharedCore` junction), host **8087 → 8080**, `MOCK_EMBEDDINGS=true` by default (keyless), MinIO bucket `cypherx-rag-documents-dev`, DB via `RAG_DATABASE_URL` (Neon POOLED, `search_path=rag`). `depends_on` redpanda + valkey + auth-service. Schema applied by the `--profile migrate` one-shot job (mounts `db/migrations` at `/migrations/rag`, Neon DIRECT endpoint).
+
+**Health (Contract 7):** `GET /livez` (process-only), `GET /readyz` (HARD deps: Postgres reachable + pgvector extension present + bootstrap loop *running*; Valkey/Kafka/S3/llms are soft/reported only — 503 until all hard checks pass), `GET /metrics` (Prometheus).
+
+## Configuration & secrets
+All env via pydantic-settings (no prefix, `extra="ignore"`); defaults boot a local dev machine, nothing hardcoded. Real secrets come from **Doppler**; only `.env.example` is committed. Key vars: `DATABASE_URL`, `KAFKA_BROKERS`, `VALKEY_URL`, `AUTH_JWKS_URL`/`AUTH_ISSUER_URL`/`AUTH_PLATFORM_AUDIENCE`/`AUTH_SERVICE_URL`, `SERVICE_BOOTSTRAP_SECRET` (Contract-12 mint), `LLMS_GATEWAY_URL`, `S3_BUCKET`/`S3_ENDPOINT`/`S3_SSE_MODE` (`none`|`kms`)/`RAG_S3_KMS_KEY_ID`, `WORKER_ENABLED`/`INGESTION_TOPIC`/`INGESTION_CONSUMER_GROUP`, `QUOTA_ENABLED`/`DEFAULT_PLAN`, `EMBEDDING_MODEL_RESOLVED`/`EMBEDDING_DIM` (=1536), `PORT` (8000 host default, 8080 in compose).
+**Mock toggles:** `MOCK_EMBEDDINGS=true` → deterministic in-process embedder (no network/service token); `EMBEDDINGS_FALLBACK_TO_MOCK=true` (default) → mock vector on real-call failure (resilient local; flip off in prod to hard-fail). Empty `S3_ENDPOINT` makes object-store put/head degrade to no-op success (tests/offline); `get_object` raises (worker retries / tests inject `inline_text`). `bootstrap_enabled=false` and `mock_embeddings=true` are pinned in tests. `RAG_RUN_WORKER=1` selects the worker process. NOTE: `ObjectStore` uses hardcoded `minioadmin`/`minioadmin` access/secret keys in code (first-cycle local only — not yet env/Settings-driven).
+
+## Contracts & cross-repo dependencies
+- **Implements/honours:** Contract-1 (JWKS RS256 verify), Contract-2 (error envelope; adds domain codes `FORBIDDEN_KB` → 403, `QUOTA_EXCEEDED` → 413), Contract-5 (Kafka envelope `event_id/event_type/schema_version/produced_at/trace_id/tenant_id/producer_*/partition_key/payload`), Contract-7 (health), Contract-8 (W3C trace / `X-Request-ID`), Contract-9 (idempotency on finalize), Contract-12 (service tokens), Contract-13 (tenant RLS), Contract-14 (usage single-owner: units + `request_id` only, no cost fields), Contract-19 (quota limits from JWT plan/`limits.rag`).
+- **Calls:** llms-gateway `POST /v1/embeddings` + `GET /v1/models` (Contract-12 service JWT + `X-Forwarded-Agent-JWT`); auth-service `POST /v1/service-tokens` (X-Service-Name: `rag` + bootstrap secret) + JWKS. `db/migrations/_0002__seed.sql` attempts `auth.service_acl` edges `rag-service→llms-gateway`, `rag-service→auth-service` (guarded `DO $$ IF EXISTS (table) $$`).
+- **Called by:** xAgent (`RAG_SERVICE_URL=http://rag:8080`), frontend-bff, Skills (Phase 8) via cross-tenant platform read.
+- **Kafka produced (via outbox):** `cypherx.rag.ingestion.requested` (worker work-order), `.completed`, `.failed`, `cypherx.rag.usage.recorded`; DLQ `<topic>.dlq` after 10 publisher attempts. **Consumed (worker):** `cypherx.rag.ingestion.requested` (group `cypherx-rag-ingestion-workers`, manual commit, worker DLQs to `<topic>.dlq` after `worker_max_attempts=3`).
+- **DB:** owns schema `rag`, runtime role `rag_user`. Tenant-scoped (RLS): `knowledge_bases`, `documents`, `chunks`, `chunk_vectors_1536`, `kb_acls`. Platform-internal (no RLS): `outbox`, `s3_deletions`, `pricing`, `tenant_backends`.
+
+## Invariants & guards (do NOT break)
+- **Identity from JWT only (Contract-13).** Request bodies use `extra="forbid"`; never accept tenant_id/agent_id/trace_id from a body. Three auth modes feed one `Principal`: EXTERNAL (bare agent/api-key JWT), INTERNAL (`sub=svc:*` + `X-Forwarded-Agent-JWT`, `on_behalf_of` MUST equal the forwarded `agent_id`), and CROSS-TENANT PLATFORM-READ (service JWT carrying the platform tenant + `on_behalf_of` + `internal:read`). `internal:read` satisfies a `rag:query` requirement only.
+- **RLS is strict single-tenant.** Every tenant-scoped query runs inside `in_tenant()` (`SELECT set_config('app.tenant_id', …, true)`). Never relax RLS for cross-tenant reads — the platform-read path sets the token's **platform** tenant_id (`00000000-0000-0000-0000-000000000001`), never a mid-request swap. Policies use `tenant_id = NULLIF(current_setting('app.tenant_id', true),'')::uuid` (unset → admits no rows, never throws on `''::uuid`).
+- **Embedding model/dim resolved at KB creation and IMMUTABLE.** No UPDATE path touches `embedding_model_resolved`/`embedding_dim`; repointing the alias in llms never changes existing KBs. Resolution falls back to env-pinned values when llms is unreachable (never hard-blocks create).
+- **A KB with zero matching `kb_acls` rows is readable by NO ONE** (no API-layer fallback). KB create writes the default `(tenant,'*')` ACL in the SAME txn (unless `private`); the platform-skills bootstrap inserts KB + default ACL in one idempotent txn. ACL management endpoints require `rag:admin` AND the `admin` permission on the KB. The platform-skills KB is non-deletable via the API.
+- **Worker message is the authoritative work-order** — it MUST NOT re-read chunk/embedding config from `rag.knowledge_bases` (snapshotted into the payload at finalize). Only hot-path DB touches are document status transitions + chunk INSERTs.
+- **Usage = units + `request_id` ONLY (Contract-14).** No cost fields, no live join against llms pricing; billing de-dupes on `request_id` downstream. `rag.pricing` holds admin-managed unit costs (units-only metering joins these downstream). Usage emission must NEVER fail the request.
+- **Fail-open dependencies:** WP03 revocation mirror, idempotency (Valkey), and all quota checks fail OPEN when Valkey/DB/plan are unavailable (availability wins; a metric is bumped). `/readyz` gates on the bootstrap loop *running* (not on the KB row existing) and requires NO live llms call (avoids the circular cold start).
+- **No bucket name as a schema literal** (the `source_uri` CHECK was deliberately dropped). Validate against env `S3_BUCKET` + JWT tenant prefix at write time; finalize rejects object keys not starting with `<tenant_id>/`. Filenames are sanitized; upload-url rejects path separators.
+- **Outbox atomicity:** every event-bearing op writes its `rag.outbox` row in the same txn as the domain mutation via `enqueue_outbox(conn, …)`. The two-pass query CTE keeps `ORDER BY embedding <=> vec` index-friendly with `SET LOCAL hnsw.ef_search` — do NOT move the `1 - distance >= min_score` floor into the candidate WHERE.
+- **`top_k` server cap = 100** (over → `VALIDATION_ERROR`); `ef_search` clamped to its cap (500). Inline ingest cap 100 KiB; presigned upload cap 100 MiB.
+
+## Gotchas & current status
+- **Built and tested in-process; not verified against a live stack in this checkout** (`uv sync` first — no `.venv` committed). Tests rely on `tests/fakes.py` answering exact SQL, so changing a query string may require updating the fake.
+- **KNOWN BUG (tolerated):** the seed inserts `INSERT INTO auth.service_acl (source_service, target_service, scopes)`, but the auth schema defines that table with columns `(caller_service, target_service, allowed_scopes)`. The seed's `DO $$` block guards only on the table *existing*, not on column compatibility — so against the real `auth` schema this INSERT errors on the unknown column names. Do NOT "fix" rag to depend on it; the service-token allow-list is owned/seeded by auth, and RAG's keyless local path (`MOCK_EMBEDDINGS=true`) needs no service token.
+- **pgvector only.** `IVectorStore`/`tenant_backends` exist but only `chunk_vectors_1536` (dim 1536) ships; any other `embedding_dim` raises `ValueError`. Pinecone/Qdrant/Weaviate are 📋. `resolve_vector_store` write-through-creates a missing `tenant_backends` row (best-effort) and always returns `PgVectorAdapter`.
+- **Chunking:** only `fixed` + `sentence` (regex, dependency-free). semantic/recursive/code are 📋. Deterministic so `(doc_id, content_sha)` worker dedup is stable across retries.
+- **PDF parsing is not implemented** — the worker `_load_text` decodes object bytes as UTF-8 (markdown/text); a real PDF extractor is the cloud form. Inline ingest accepts only `markdown`/`text` source types.
+- **`ObjectStore`:** hardcoded `minioadmin` creds (see Configuration); `put_object` is a best-effort unsigned PUT; `delete_prefix` is single-object (full ListObjects+DeleteObjects is the cloud form, sweeper retries on failure up to `attempts < 100`).
+- **Topic provisioning is external** (compose `topics-init.sh` / Terraform); the service does not auto-create topics. The Kafka producer/consumer connect lazily and fail-soft.
+- 📋 NOT built: hybrid/sparse/BM25 search, reranking, query expansion, multimodal/OCR, `rag.tenant_pricing`, S3 lifecycle/orphan-sweep scripts.

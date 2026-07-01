@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.cypherx.ai/v1/api/pagination.schema.json",
+  "title": "CypherX Cursor Pagination Envelope (Contract 9)",
+  "description": "The response envelope for every list endpoint. Cursor-based pagination only — no offset pagination. `total` is null unless the caller explicitly requested it (it is expensive to compute). Endpoints set `data` to the concrete item type.",
+  "type": "object",
+  "required": ["data", "pagination"],
+  "additionalProperties": true,
+  "properties": {
+    "data": {
+      "type": "array",
+      "description": "The page of results. Item type is defined by the concrete list endpoint that extends this envelope.",
+      "items": true
+    },
+    "pagination": {
+      "type": "object",
+      "description": "Cursor pagination metadata.",
+      "required": ["limit", "has_more", "next_cursor", "total"],
+      "additionalProperties": true,
+      "properties": {
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The page size that was applied to this request."
+        },
+        "has_more": {
+          "type": "boolean",
+          "description": "True when more results exist beyond this page (i.e. next_cursor can be followed)."
+        },
+        "next_cursor": {
+          "type": ["string", "null"],
+          "description": "Opaque cursor to fetch the next page, or null when there are no further pages."
+        },
+        "total": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Total number of matching items. Null unless explicitly requested by the caller (expensive)."
+        }
+      }
+    }
+  }
+}

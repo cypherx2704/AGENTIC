@@ -1,0 +1,27 @@
+apiVersion: v2
+name: cypherx-service
+description: |
+  CypherX base Helm chart. Every SharedCore / xAgent / tools service deploys via
+  this chart. It bakes in Phase 0 contracts so individual service repos cannot
+  drift from platform standards:
+    - Contract 6  (structured JSON logs, LOG_FORMAT=json)
+    - Contract 7  (/livez liveness, /readyz readiness, /metrics on :9090)
+    - Contract 8  (W3C trace context propagation -> Tempo via OTLP)
+    - Contract 13 (POSTGRES_DSN points at the transaction-mode PgBouncer pooler)
+    - Contract 14 (Atlas migration Job as a pre-install/pre-upgrade Helm hook)
+type: application
+# Chart version. Bump on template/values changes (SemVer).
+version: 0.1.0
+# Default app version. Overridden per-service via image.tag / appVersion.
+appVersion: "0.1.0"
+kubeVersion: ">=1.28.0-0"
+keywords:
+  - cypherx
+  - base-chart
+  - microservice
+home: https://github.com/cypherx-ai/charts
+maintainers:
+  - name: CypherX Platform Team
+    email: platform@cypherx.ai
+annotations:
+  cypherx.ai/contracts: "6,7,8,13,14"

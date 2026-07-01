@@ -1,0 +1,54 @@
+{
+  "$schemaRef": "../memory.usage.recorded.schema.json",
+  "valid": [
+    {
+      "tenant_id": "8f1d3b2a-0c4e-4f6a-9b1c-2d3e4f5a6b7c",
+      "api_key_id": "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+      "agent_id": "9f8e7d6c-5b4a-4938-8271-6a5b4c3d2e1f",
+      "principal_id": null,
+      "operation": "write",
+      "units": {
+        "items_written": 3,
+        "embedding_tokens": 512
+      },
+      "cost_usd": 0.00012,
+      "duration_ms": 47,
+      "request_id": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+      "trace_id": "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d"
+    },
+    {
+      "tenant_id": "11111111-2222-4333-8444-555566667777",
+      "operation": "recall",
+      "units": { "items_recalled": 5 },
+      "cost_usd": 0.0,
+      "duration_ms": 21,
+      "x-future-field": "tolerated by additionalProperties:true (forward-compat)"
+    },
+    {
+      "tenant_id": "22222222-3333-4444-8555-666677778888",
+      "operation": "score",
+      "units": { "items_scored": 12 }
+    }
+  ],
+  "invalid": [
+    {
+      "operation": "write",
+      "units": { "items_written": 1 }
+    },
+    {
+      "tenant_id": "8f1d3b2a-0c4e-4f6a-9b1c-2d3e4f5a6b7c",
+      "operation": "write",
+      "units": "1"
+    },
+    {
+      "tenant_id": "8f1d3b2a-0c4e-4f6a-9b1c-2d3e4f5a6b7c",
+      "operation": "write",
+      "units": {}
+    },
+    {
+      "tenant_id": "not-a-uuid",
+      "operation": "write",
+      "units": { "items_written": 1 }
+    }
+  ]
+}

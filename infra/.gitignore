@@ -1,0 +1,23 @@
+# Terraform / Terragrunt
+.terraform/
+.terraform.tfstate.lock.info
+.terragrunt-cache/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+# Secrets / local env (never commit real values)
+*.tfvars.local
+.env
+.env.*
+!.env.example
+# Tooling / OS
+.tools/
+node_modules/
+*.zip
+.DS_Store

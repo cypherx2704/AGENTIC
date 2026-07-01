@@ -1,0 +1,38 @@
+# Kong route for the smoke test: ALB -> Kong -> echo-service GET /echo.
+# Backs assertion 1 (`curl https://api.<env>.cypherx.ai/echo` -> 200 with a
+# `traceparent` populated by the Istio sidecar). Kong runs DB-less with
+# declarative config via Ingress (Component 8); this Ingress is reconciled into
+# a Kong route. Torn down with the namespace (assertion 10).
+#
+# NOTE on the ALB->Kong plaintext boundary (Component 8, do NOT "fix"): the ALB
+# terminates TLS with the ACM cert and forwards plain HTTP to Kong inside the
+# VPC private network (sg-kong only accepts sg-alb). Kong->echo is mTLS via the
+# Istio sidecars. This Ingress only declares the Kong-side route — the ALB and
+# its cert are owned by the Kong platform install, not by this smoke test.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: echo
+  namespace: smoketest
+  labels:
+    app.kubernetes.io/part-of: cypherx
+    cypherx.ai/purpose: infra-smoke-test
+  annotations:
+    kubernetes.io/ingress.class: kong
+    # Strip nothing — echo-service serves /echo at the root path.
+    konghq.com/strip-path: "false"
+    # The host is env-scoped (Component 5 hostname convention). The script
+    # substitutes <env>; external-dns already manages api.<env>.cypherx.ai -> ALB.
+spec:
+  ingressClassName: kong
+  rules:
+    - host: api.dev.cypherx.ai
+      http:
+        paths:
+          - path: /echo
+            pathType: Prefix
+            backend:
+              service:
+                name: echo            # base chart fullname == release "echo"
+                port:
+                  number: 8080

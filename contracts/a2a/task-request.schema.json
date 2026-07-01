@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.cypherx.ai/v1/a2a/task-request.schema.json",
+  "title": "A2A Task Request",
+  "description": "Contract 3 — Agent-to-Agent task delegation request message. The message body is data; authority (delegation chain) travels in the Bearer JWT, never in this body. The `input` object's total serialized size MUST NOT exceed 256 KiB. `idempotency_key` is required when `mode` is `async` (re-delivery with the same key within 24h returns the original task_id with no re-execution). `task_type` MUST be drawn from the published task-type registry (a2a/task-types.md); unknown task types are rejected with VALIDATION_ERROR. Request-body schema: stricter than envelopes but tolerant of unknown OPTIONAL metadata under `metadata`.",
+  "type": "object",
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "UUID v4 uniquely identifying this task."
+    },
+    "schema_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "description": "Semantic version of this contract schema, e.g. \"1.0.0\"."
+    },
+    "idempotency_key": {
+      "type": "string",
+      "format": "uuid",
+      "description": "UUID v4 idempotency key. REQUIRED when mode=async. Re-delivery with the same key within 24h returns the original task_id with no re-execution."
+    },
+    "sender_agent_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Agent UUID of the delegating (sending) agent."
+    },
+    "receiver_agent_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Agent UUID of the receiving agent."
+    },
+    "tenant_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Organisation/tenant UUID that owns this task."
+    },
+    "task_type": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Task type drawn from the published task-type registry (a2a/task-types.md). Unknown task types are rejected with VALIDATION_ERROR."
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["sync", "async", "stream"],
+      "description": "Delivery mode. `async` requires `idempotency_key`."
+    },
+    "priority": {
+      "type": "string",
+      "enum": ["low", "normal", "high", "critical"],
+      "description": "Scheduling priority. Defaults to `normal` when omitted."
+    },
+    "input": {
+      "type": "object",
+      "description": "Task-type-specific input payload. Total serialized size MUST NOT exceed 256 KiB.",
+      "additionalProperties": true
+    },
+    "callback_url": {
+      "type": "string",
+      "format": "uri",
+      "description": "HTTPS callback URL for async/stream results. Receiver MUST enforce https scheme, public-IP host (reject RFC1918/loopback/link-local/metadata), per-tenant allow-list, and HMAC-SHA256 signing."
+    },
+    "timeout_seconds": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 900,
+      "description": "Task timeout in seconds, in [1, 900] (max 15 minutes). Receivers reject anything outside that range."
+    },
+    "trace_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "UUID v4 distributed-trace identifier (Contract 8)."
+    },
+    "span_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "UUID v4 span identifier for this hop."
+    },
+    "produced_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 UTC timestamp (millisecond precision) when this message was produced."
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Free-form metadata. Unknown OPTIONAL keys are tolerated here.",
+      "additionalProperties": true
+    }
+  },
+  "required": [
+    "task_id",
+    "schema_version",
+    "sender_agent_id",
+    "receiver_agent_id",
+    "tenant_id",
+    "task_type",
+    "mode",
+    "input"
+  ],
+  "$comment": "additionalProperties:true is intentional and required for forward-compatibility — this is an A2A wire envelope that later phases (Phase 10) extend (e.g. workflow_id, parent_task_id, protocol_version). Receivers MUST tolerate unknown top-level fields; field-level validation still applies to known fields. Matches sibling task-response and delegation schemas.",
+  "additionalProperties": true
+}

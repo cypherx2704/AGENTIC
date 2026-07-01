@@ -1,0 +1,45 @@
+# =============================================================================
+# schema-validate.yml — POINTER ONLY (Component 18).
+# =============================================================================
+# The `schema-validate.yml` described in Component 18 (ajv validate JSON schemas,
+# redocly lint openapi-base.yaml, yamllint contracts YAML) does NOT live in this
+# infra repo. It is OWNED BY AND RUNS IN the contracts repo, because that is where
+# the schemas, OpenAPI base template, and Kafka envelope definitions live (Phase 0).
+#
+# Authoritative location:
+#   contracts/.github/workflows/contracts-ci.yml   (GitHub Actions — the canonical host)
+#   contracts/.gitlab-ci.yml                        (GitLab mirror, kept in sync until the
+#                                                     platform settles on a single CI host)
+#
+# What the contracts CI does (do NOT duplicate it here — single source of truth):
+#   1. npm run check     — offline-safe structural + MCP manifest check
+#   2. npm run validate  — Ajv (JSON Schema draft 2020-12) compile + example assertions
+#   3. npm run lint:openapi — redocly lint api/openapi-base.yaml (Contract 10)
+#   (yamllint of contracts/*.yaml is folded into `check`.)
+#
+# Triggers in that repo: pull_request touching contracts/**, push to main/feature/**.
+#
+# Why a stub here: Component 18 lists schema-validate.yml alongside ci.yml, so a
+# placeholder is kept in the infra workflows directory to make the cross-repo
+# ownership explicit for anyone grepping for "schema-validate". This file performs
+# NO validation itself — it only documents and links the real job. Removing it is
+# fine once everyone knows where contracts CI lives.
+#
+# This stub intentionally has no `on:` triggers so GitHub never schedules it.
+name: schema-validate-pointer
+
+# (no triggers — informational stub; real job runs in the contracts repo)
+on:
+  workflow_dispatch:
+
+jobs:
+  pointer:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Where schema validation actually runs
+        run: |
+          echo "Schema validation runs in the CONTRACTS repo, not here."
+          echo "See contracts/.github/workflows/contracts-ci.yml"
+          echo "  - npm run check     (structural + MCP manifest)"
+          echo "  - npm run validate  (Ajv draft 2020-12)"
+          echo "  - npm run lint:openapi (redocly, Contract 10)"

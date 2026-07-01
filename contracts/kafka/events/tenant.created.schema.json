@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.cypherx.ai/v1/kafka/events/tenant.created.json",
+  "title": "Payload — cypherx.tenant.created",
+  "description": "Contract 13 tenant-lifecycle payload. Emitted by Auth (regardless of upstream source) when a new tenant is provisioned. Each service's `bootstrap-tenant` consumer seeds default rows (tenant_config, plan, quotas — see Contract 19). Carried inside the Kafka event envelope `payload` field. Forward-compatible: tolerates unknown fields (additionalProperties:true).",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "tenant_id",
+    "source"
+  ],
+  "properties": {
+    "tenant_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Isolation-boundary UUID of the newly created tenant (Contract 13). Owned by Auth."
+    },
+    "source": {
+      "type": "string",
+      "enum": [
+        "px0-bridge",
+        "external-admin",
+        "self-serve-signup",
+        "sso-jit",
+        "manual-seed"
+      ],
+      "description": "Provisioning source persisted on `auth.tenants.source`. All sources are equivalent at the data and policy layer; no service may special-case `px0-bridge`."
+    },
+    "plan": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Initial subscription/quota plan for the tenant (optional at creation time)."
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 UTC timestamp (millisecond precision) at which the tenant was created."
+    }
+  }
+}

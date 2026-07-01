@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.cypherx.ai/v1/kafka/events/tenant.plan_changed.json",
+  "title": "Payload — cypherx.tenant.plan_changed",
+  "description": "Contract 13 tenant-lifecycle payload. Emitted by Auth on a billing event from any billing adapter (Contract 19 emitter, e.g. px0 / Stripe / Chargebee). On consumption every service refreshes its quota tables per the new plan and invalidates its in-process quota cache immediately. Carried inside the Kafka event envelope `payload` field. Forward-compatible: tolerates unknown fields (additionalProperties:true).",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "tenant_id",
+    "new_plan"
+  ],
+  "properties": {
+    "tenant_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Isolation-boundary UUID whose plan changed (Contract 13)."
+    },
+    "old_plan": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Previous plan identifier (optional)."
+    },
+    "new_plan": {
+      "type": "string",
+      "minLength": 1,
+      "description": "New plan identifier now in effect."
+    },
+    "effective_from": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 UTC timestamp (millisecond precision) from which the new plan applies."
+    },
+    "source": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Billing adapter / emitter that triggered the plan change (e.g. `px0`, `stripe`, `chargebee`)."
+    }
+  }
+}

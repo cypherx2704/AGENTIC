@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.cypherx.ai/v1/kafka/events/agent.task.failed.json",
+  "title": "Payload — cypherx.agent.task.failed",
+  "description": "Contract 5 first-cycle payload. Emitted by xAgent when an agent task fails. Carried inside the Kafka event envelope `payload` field. Forward-compatible: tolerates unknown fields (additionalProperties:true).",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "task_id",
+    "agent_id",
+    "tenant_id",
+    "error_code",
+    "error_message",
+    "trace_id"
+  ],
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Identifier of the failed task."
+    },
+    "agent_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Agent that attempted the task."
+    },
+    "tenant_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Isolation-boundary UUID (Contract 13)."
+    },
+    "error_code": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Machine-readable error code (aligns with Contract 2 error format)."
+    },
+    "error_message": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable description of the failure."
+    },
+    "trace_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Distributed-tracing correlation id (Contract 8)."
+    }
+  }
+}

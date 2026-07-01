@@ -1,0 +1,60 @@
+name: cypherx-a1 CI
+
+# Standard CypherX Python/FastAPI CI: uv sync -> ruff -> mypy -> pytest, for both the
+# product service and the mcp-eng-memory server, plus MCP-manifest conformance against the
+# contracts schema. Mirrors the SharedCore service CI (stack.md).
+
+on:
+  push:
+    branches: [main, development, "feature/**"]
+  pull_request:
+
+jobs:
+  cypherx-a1:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: CoreProjects/cypherx-a1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+      - run: uv python install 3.12
+      - run: uv sync --dev
+      - run: uv run ruff check src tests
+      - run: uv run mypy
+      - run: uv run pytest -q
+
+  mcp-eng-memory:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: CoreProjects/cypherx-a1/mcp-eng-memory
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+      - run: uv python install 3.12
+      - run: uv sync --dev
+      - run: uv run ruff check src tests
+      - run: uv run pytest -q
+
+  manifest-conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Validate MCP manifest against Contract 4
+        run: |
+          python -m pip install jsonschema
+          python - <<'PY'
+          import json
+          from jsonschema import Draft202012Validator
+          schema = json.load(open("contracts/mcp/manifest.schema.json"))
+          manifest = json.load(open("CoreProjects/cypherx-a1/mcp-eng-memory/manifest.json"))
+          errs = list(Draft202012Validator(schema).iter_errors(manifest))
+          assert not errs, [ (list(e.path), e.message) for e in errs ]
+          print("mcp-eng-memory manifest is valid against Contract 4")
+          PY

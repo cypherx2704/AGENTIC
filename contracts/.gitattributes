@@ -1,0 +1,6 @@
+# Normalize line endings to LF for all text — keeps JSON Schemas, YAML, and the Node
+# validator scripts byte-stable across Windows/macOS/Linux and CI.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.pdf binary

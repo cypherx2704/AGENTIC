@@ -1,0 +1,5 @@
+# Intentionally empty at Phase 1 end (Component 19).
+# ArgoCD root app `cypherx-platform-staging` (apps/staging-apps.yaml) watches this dir.
+# Service teams add their app here in their deploy phase:
+#   envs/staging/<namespace>/<service>/
+# Each child app added here is auto-created by ArgoCD and AUTO-SYNCS (staging policy).

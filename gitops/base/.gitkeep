@@ -1,0 +1,4 @@
+# Intentionally empty at Phase 1 end (Component 19).
+# Shared Helm value files / kustomize bases added per phase live here, e.g.
+#   base/<service>/values.yaml  (env overlays in envs/<env>/<ns>/<service>/ override these).
+# Keeps per-env app dirs thin: common values here, env-specific overrides per env.

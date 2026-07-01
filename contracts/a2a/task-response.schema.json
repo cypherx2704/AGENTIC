@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.cypherx.ai/v1/a2a/task-response.schema.json",
+  "title": "A2A Task Response",
+  "description": "Contract 3 — Agent-to-Agent task response message. `cost_usd` and `task_steps` are REQUIRED in all completed task responses (status=completed) — they back smoke-test assertions and audit-trail queries. `cost_usd` is computed by the LLMs gateway from per-provider token pricing.",
+  "type": "object",
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "UUID v4 echoing the request task_id."
+    },
+    "schema_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "description": "Semantic version of this contract schema, e.g. \"1.0.0\"."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["completed", "failed", "cancelled", "timeout"],
+      "description": "Terminal task status."
+    },
+    "output": {
+      "type": "object",
+      "description": "Task-type-specific output payload. Present on completed tasks.",
+      "additionalProperties": true
+    },
+    "error": {
+      "type": ["object", "null"],
+      "description": "Error detail (Contract 2 error shape) when status is failed/cancelled/timeout; null on success.",
+      "additionalProperties": true
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 UTC timestamp (millisecond precision) when execution started."
+    },
+    "completed_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 UTC timestamp (millisecond precision) when execution finished."
+    },
+    "duration_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total wall-clock execution time in milliseconds."
+    },
+    "tokens_used": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total LLM tokens consumed across all steps."
+    },
+    "cost_usd": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Total cost in USD, computed by the LLMs gateway from per-provider token pricing. REQUIRED on completed responses."
+    },
+    "task_steps": {
+      "type": "array",
+      "description": "Ordered per-step execution trace. REQUIRED on completed responses.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "step": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Step name, e.g. guardrail_check_input, llm_call, guardrail_check_output."
+          },
+          "status": {
+            "type": "string",
+            "enum": ["passed", "failed", "timeout", "skipped"],
+            "description": "Step outcome. A tool timeout surfaces here as `timeout`, not `failed`."
+          },
+          "duration_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Step wall-clock time in milliseconds."
+          },
+          "tokens": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Tokens consumed by this step (optional; present for llm_call steps)."
+          }
+        },
+        "required": ["step", "status", "duration_ms"],
+        "additionalProperties": true
+      }
+    },
+    "trace_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "UUID v4 distributed-trace identifier (Contract 8), echoing the request."
+    }
+  },
+  "required": ["task_id", "schema_version", "status", "started_at", "trace_id"],
+  "if": {
+    "properties": {
+      "status": { "const": "completed" }
+    },
+    "required": ["status"]
+  },
+  "then": {
+    "required": ["cost_usd", "task_steps"]
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,13 @@
+.gradle/
+build/
+out/
+bin/
+# Keep the committed wrapper jar (stack.md: wrapper is committed)
+!gradle/wrapper/gradle-wrapper.jar
+*.log
+.idea/
+*.iml
+.DS_Store
+.env
+.env.*
+!.env.example

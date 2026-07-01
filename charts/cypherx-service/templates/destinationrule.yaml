@@ -1,0 +1,14 @@
+{{- if .Values.istio.destinationRule.enabled }}
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: {{ include "cypherx-service.fullname" . }}
+  labels:
+    {{- include "cypherx-service.labels" . | nindent 4 }}
+spec:
+  host: {{ default (printf "%s.%s.svc.cluster.local" (include "cypherx-service.fullname" .) .Release.Namespace) .Values.istio.destinationRule.host }}
+  {{- with .Values.istio.destinationRule.trafficPolicy }}
+  trafficPolicy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.cypherx.ai/v1/kafka/events/auth.agent.registered.json",
+  "title": "Payload — cypherx.auth.agent.registered",
+  "description": "Contract 5 first-cycle payload. Emitted by the Auth service when a new agent is registered. Carried inside the Kafka event envelope `payload` field. Forward-compatible: tolerates unknown fields (additionalProperties:true).",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "agent_id",
+    "tenant_id",
+    "created_at",
+    "plan"
+  ],
+  "properties": {
+    "agent_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Identifier of the newly registered agent."
+    },
+    "tenant_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Isolation-boundary UUID the agent belongs to (Contract 13)."
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 UTC timestamp (millisecond precision) at which the agent was registered."
+    },
+    "plan": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Subscription/quota plan applied to the tenant at registration time (e.g. `free`, `pro`, `enterprise`)."
+    }
+  }
+}

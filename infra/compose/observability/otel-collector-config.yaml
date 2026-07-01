@@ -1,0 +1,70 @@
+# =====================================================================================================================
+# infra/compose/observability/otel-collector-config.yaml — OpenTelemetry Collector (contrib) pipeline.
+#
+# Receives OTLP (gRPC :4317 / HTTP :4318) from the services that opt into span export (xagent sets
+# OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317) and fans signals out to the local backends:
+#   * traces  -> Tempo  (OTLP)
+#   * logs    -> Loki   (OTLP push)
+#   * metrics -> Prometheus scrapes THIS collector's :8889 exporter (the services are scraped directly too).
+# Self-observability: the collector exposes its own metrics on :8888 (also scraped).
+# =====================================================================================================================
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+  memory_limiter:
+    check_interval: 2s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: local
+        action: upsert
+
+exporters:
+  # Traces -> Tempo (OTLP gRPC). Tempo's OTLP receiver listens on :4317 inside the tempo container.
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+  # Logs -> Loki (OTLP HTTP push endpoint).
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
+    tls:
+      insecure: true
+  # Metrics -> a Prometheus exposition surface Prometheus scrapes (job: otel-collector).
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    send_timestamps: true
+    resource_to_telemetry_conversion:
+      enabled: true
+  debug:
+    verbosity: basic
+
+service:
+  telemetry:
+    metrics:
+      address: 0.0.0.0:8888
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [otlp/tempo]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [prometheus]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [otlphttp/loki]

@@ -1,0 +1,41 @@
+{
+  "description": "Tiny golden retrieval KB for the rag-service eval harness. Each document is one chunk (id == doc_id). Queries carry the set of relevant chunk ids. Mixed lexical + paraphrase queries so hybrid (lexical) and rerank can beat dense-only with the deterministic mock embedder.",
+  "documents": [
+    {"id": "d01", "content": "The refund policy allows a full refund within 30 days for enterprise plans."},
+    {"id": "d02", "content": "Standard plans have a 14-day return window for refunds instead of 30 days."},
+    {"id": "d03", "content": "To request a refund, open a support ticket and include your order number."},
+    {"id": "d04", "content": "Shipping is free for orders over fifty dollars shipped within the country."},
+    {"id": "d05", "content": "International shipping fees are calculated at checkout based on destination."},
+    {"id": "d06", "content": "Password reset links expire after one hour for account security."},
+    {"id": "d07", "content": "Two-factor authentication can be enabled from the account security settings page."},
+    {"id": "d08", "content": "The API rate limit is 100 requests per minute per API key on the free tier."},
+    {"id": "d09", "content": "Enterprise API keys raise the rate limit to 10000 requests per minute."},
+    {"id": "d10", "content": "Webhooks retry with exponential backoff for up to 24 hours on delivery failure."},
+    {"id": "d11", "content": "Invoices are generated monthly and emailed to the billing contact on file."},
+    {"id": "d12", "content": "You can update the billing contact email under the organization settings."},
+    {"id": "d13", "content": "Data is encrypted at rest using AES-256 and in transit using TLS 1.3."},
+    {"id": "d14", "content": "Audit logs are retained for 90 days on the free plan and 365 days on enterprise."},
+    {"id": "d15", "content": "Single sign-on via SAML is available exclusively on enterprise plans."},
+    {"id": "d16", "content": "The mobile app supports offline reading and syncs when connectivity returns."},
+    {"id": "d17", "content": "Exported reports are available in CSV and PDF formats from the dashboard."},
+    {"id": "d18", "content": "Scheduled reports can be emailed daily, weekly, or monthly to a distribution list."},
+    {"id": "d19", "content": "Custom roles let admins grant granular permissions to team members."},
+    {"id": "d20", "content": "Deleting a workspace permanently removes all of its documents after a 7-day grace period."}
+  ],
+  "queries": [
+    {"query": "refund policy", "relevant": ["d01", "d02", "d03"]},
+    {"query": "how do I get my money back for an order", "relevant": ["d01", "d02", "d03"]},
+    {"query": "free shipping threshold", "relevant": ["d04", "d05"]},
+    {"query": "reset my password", "relevant": ["d06"]},
+    {"query": "enable two factor authentication", "relevant": ["d07"]},
+    {"query": "API rate limit per minute", "relevant": ["d08", "d09"]},
+    {"query": "webhook retry behavior", "relevant": ["d10"]},
+    {"query": "change billing contact email", "relevant": ["d11", "d12"]},
+    {"query": "data encryption at rest and in transit", "relevant": ["d13"]},
+    {"query": "how long are audit logs kept", "relevant": ["d14"]},
+    {"query": "single sign on SAML", "relevant": ["d15"]},
+    {"query": "export reports CSV PDF", "relevant": ["d17", "d18"]},
+    {"query": "custom roles permissions for team", "relevant": ["d19"]},
+    {"query": "delete a workspace", "relevant": ["d20"]}
+  ]
+}

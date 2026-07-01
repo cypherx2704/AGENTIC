@@ -1,0 +1,294 @@
+# Default values for cypherx-service.
+# A consuming service repo overrides only what it needs (image, service name,
+# DB schema/users, resources). Everything below encodes Phase 0/1 contracts and
+# should rarely be changed by a service author.
+
+# -- Service identity. `service` is the Contract 6 `service` log field and the
+# `cypherx.ai/service` label. REQUIRED — example-service overrides this.
+service: cypherx-service
+
+# -- Deployment environment: dev | staging | prod. Drives the ENVIRONMENT env
+# var (Contract 6) and replica/affinity defaults.
+environment: dev
+
+# -- Number of pod replicas (ignored when autoscaling.enabled=true).
+replicaCount: 2
+
+# -- Override the chart name / fullname.
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: ""              # e.g. <acct>.dkr.ecr.<region>.amazonaws.com/cypherx/<service>
+  # -- Image tag. Also used as the VERSION env var (Contract 6) when set.
+  tag: ""                     # defaults to .Chart.AppVersion when empty
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# -- Container ports. http is the app port (Kong routes here, Contract 8).
+# metrics is the Prometheus exposition port — fixed at 9090 by the Istio
+# metrics-permissive PeerAuthentication convention (Phase 1 Component 7).
+ports:
+  http: 8080
+  metrics: 9090
+
+serviceAccount:
+  # -- Create a dedicated ServiceAccount for the runtime pods.
+  create: true
+  name: ""
+  # -- IRSA role ARN. Set per-service when the pod needs AWS access (S3, etc).
+  # Maps to eks.amazonaws.com/role-arn.
+  roleArn: ""
+  annotations: {}
+  automountServiceAccountToken: true
+
+# Pod-level security context. Non-root, no privilege escalation (Phase 1).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+# Container-level security context. readOnlyRootFilesystem + drop ALL caps.
+securityContext:
+  allowPrivilegeEscalation: false
+  privileged: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 10001
+  capabilities:
+    drop:
+      - ALL
+
+# writableTmp mounts an emptyDir at /tmp so readOnlyRootFilesystem pods can
+# still write scratch/temp files. Add more emptyDir mounts via extraVolumes.
+writableTmp:
+  enabled: true
+  mountPath: /tmp
+  sizeLimit: 256Mi
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+# ---------------------------------------------------------------------------
+# Observability / contract env injection
+# ---------------------------------------------------------------------------
+observability:
+  # OTEL_EXPORTER_OTLP_ENDPOINT -> Tempo OTLP gRPC (Contract 8 / Phase 1 Component 13).
+  # Distributor service is fixed by the platform; do NOT point services elsewhere.
+  otelEndpoint: "http://tempo-distributor.observability.svc.cluster.local:4317"
+  otelProtocol: "grpc"
+  # W3C Trace Context only (Contract 8). Do NOT add b3/jaeger here.
+  otelPropagators: "tracecontext,baggage"
+  # LOG_FORMAT is pinned to json (Contract 6 — no plain-text logs in prod).
+  logFormat: "json"
+  logLevel: "INFO"
+
+# ---------------------------------------------------------------------------
+# Database / PgBouncer (Contract 13 + Contract 14)
+# ---------------------------------------------------------------------------
+database:
+  # Toggle all DB wiring (DSN env, migration Job, *_user/*_ddl secrets). Set
+  # false for stateless services with no Postgres schema.
+  enabled: true
+  # Shared transaction-mode PgBouncer pooler (Phase 1 Component 14). Host/port
+  # are platform-fixed — pool_mode=transaction is what makes Contract 13 RLS
+  # (`SET LOCAL app.tenant_id`) safe. Do NOT point services at RDS directly.
+  pgbouncerHost: "pgbouncer.data.svc.cluster.local"
+  pgbouncerPort: 6432
+  # Logical database (all services share one DB, one schema each).
+  name: "cypherx_platform"
+  # Per-service schema (Phase 1 Component 16).
+  schema: ""
+  # Runtime (least-privilege) user used by the Deployment pods (*_user).
+  runtimeUser: ""
+  # DDL user used ONLY by the Atlas migration Job (*_ddl). Holds CREATEROLE.
+  ddlUser: ""
+  # sslmode forwarded to the pooler. PgBouncer originates TLS to RDS itself.
+  sslmode: "disable"
+  # Extra query params appended to the DSN.
+  extraParams: ""
+
+# ---------------------------------------------------------------------------
+# Doppler secret wiring (Phase 1 Component 11 + Component 20)
+# ---------------------------------------------------------------------------
+doppler:
+  # Create DopplerSecret CRs (operator syncs Doppler -> K8s Secret).
+  enabled: true
+  # Doppler project (Component 20). All services share one project.
+  project: "cypherx-platform"
+  # Doppler operator bootstrap token Secret (per env+namespace), provisioned by
+  # Terraform. Referenced by every DopplerSecret CR via tokenSecret.
+  # EMPTY = derive `doppler-token-<release-namespace>`, matching the operator's
+  # per-namespace convention (Component 11). Override only for special cases.
+  tokenSecretName: ""
+  # Runtime config group, e.g. shared-core.auth (Component 20). The runtime pod
+  # envFroms the synced Secret. Holds runtime_password etc.
+  runtimeConfig: ""
+  # Name of the synced K8s Secret for the runtime pod.
+  runtimeSecretName: ""            # defaults to <fullname>-runtime
+  # Separate config holding the *_ddl password (db/<service>/ddl_password).
+  # Mounted ONLY into the migration Job, never the runtime pod (Component 16).
+  ddlConfig: ""
+  ddlSecretName: ""                # defaults to <fullname>-ddl
+  # If you do not use the Doppler operator (e.g. local helm template), point
+  # these at pre-existing Secrets instead and set doppler.enabled=false.
+  externalRuntimeSecretName: ""
+  externalDdlSecretName: ""
+
+# Arbitrary plain (non-secret) env vars injected into the runtime container.
+extraEnv: []
+# Additional envFrom sources (configMapRef/secretRef) for the runtime container.
+extraEnvFrom: []
+
+# ---------------------------------------------------------------------------
+# Atlas migration Job (Contract 14)
+# ---------------------------------------------------------------------------
+migration:
+  # Run the Atlas migration Job as a pre-install/pre-upgrade hook. Disable only
+  # for services with no Postgres schema (database.enabled=false implies off).
+  enabled: true
+  image:
+    repository: "arigaio/atlas"
+    tag: "0.31.0"
+    pullPolicy: IfNotPresent
+  # helm hook weight — lower runs earlier. Keep negative so the Job precedes
+  # any other pre-install resources.
+  hookWeight: "-5"
+  # Path inside the service image / mounted config holding db/migrations.
+  migrationsDir: "/migrations"
+  # Atlas migration source URL (file://<migrationsDir>).
+  # Job uses the *_ddl user (separate DopplerSecret). Runtime uses *_user.
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  # Mount the migrations directory. Default expects them baked into the service
+  # image (initContainer copies them), or supply a configMap/volume here.
+  extraVolumes: []
+  extraVolumeMounts: []
+
+# ---------------------------------------------------------------------------
+# Service
+# ---------------------------------------------------------------------------
+service_:
+  type: ClusterIP
+  annotations: {}
+
+# ---------------------------------------------------------------------------
+# Autoscaling (needs metrics-server)
+# ---------------------------------------------------------------------------
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# Pod Disruption Budget.
+pdb:
+  enabled: true
+  minAvailable: 1
+  # maxUnavailable: ""   # mutually exclusive with minAvailable
+
+# Prometheus ServiceMonitor (scrapes :9090). Needs the Prometheus Operator CRDs.
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  scrapeTimeout: 10s
+  path: /metrics
+  # Label that the kube-prometheus-stack Prometheus selects on.
+  labels:
+    release: kube-prometheus-stack
+
+# NetworkPolicy: default-deny ingress + explicit allows.
+networkPolicy:
+  enabled: true
+  # Namespace that may send app traffic in (Kong is in `ingress`, Contract 8).
+  ingressNamespace: ingress
+  # Allow same-namespace pod-to-pod traffic.
+  allowSameNamespace: true
+  # Observability namespace allowed to scrape :metrics (Phase 1 Component 7).
+  observabilityNamespace: observability
+  # Extra ingress rules (e.g. other service namespaces).
+  extraIngress: []
+  # Allow all egress by default (DNS, PgBouncer, Tempo, Auth, Kafka). Tighten
+  # per-service if required.
+  allowAllEgress: true
+  extraEgress: []
+
+# ---------------------------------------------------------------------------
+# Scheduling
+# ---------------------------------------------------------------------------
+# node-role label of the NodePool/managed-NG this service runs on
+# (Phase 1 Component 5: system | core | agent | tools | observability).
+nodeRole: core
+nodeSelector: {}
+tolerations: []
+# affinity overrides the node-role nodeSelector-based affinity when set.
+affinity: {}
+# Spread pods across zones + nodes (HA). Defaults set in the template.
+topologySpreadConstraints: []
+
+# ---------------------------------------------------------------------------
+# Istio (Phase 1 Component 7)
+# ---------------------------------------------------------------------------
+istio:
+  # Inject the Envoy sidecar. The namespace must have istio-injection=enabled
+  # (shared-core, xagent, tools, platform-mgmt, ingress, px0-bridge).
+  sidecarInject: true
+  # Optional VirtualService for in-mesh routing (guarded).
+  virtualService:
+    enabled: false
+    hosts: []
+    gateways: []
+    http: []
+  # Optional DestinationRule (guarded).
+  destinationRule:
+    enabled: false
+    host: ""
+    trafficPolicy: {}
+
+# Probe configuration (Contract 7 paths are fixed; timings are tunable).
+probes:
+  liveness:
+    path: /livez
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+  readiness:
+    path: /readyz
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+  startup:
+    enabled: true
+    path: /livez
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    failureThreshold: 30
+
+podAnnotations: {}
+podLabels: {}
+
+# Extra volumes/mounts for the runtime container.
+extraVolumes: []
+extraVolumeMounts: []
+
+# Termination grace + lifecycle.
+terminationGracePeriodSeconds: 30

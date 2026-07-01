@@ -1,0 +1,345 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "cypherx-service values",
+  "description": "Strict schema for the CypherX base service Helm chart (Contracts 6,7,8,13,14).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "service",
+    "environment",
+    "image",
+    "ports",
+    "observability",
+    "database",
+    "doppler",
+    "migration"
+  ],
+  "properties": {
+    "global": {
+      "type": "object",
+      "description": "Helm-injected global values shared with subcharts. Declared (with root additionalProperties:false) so this chart validates when consumed as a subchart dependency — Helm always injects a top-level 'global' key.",
+      "additionalProperties": true
+    },
+    "service": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+      "description": "Logical service name (Contract 6 service field, cypherx.ai/service label)."
+    },
+    "environment": {
+      "type": "string",
+      "enum": ["dev", "staging", "prod"]
+    },
+    "replicaCount": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "nameOverride": { "type": "string" },
+    "fullnameOverride": { "type": "string" },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name"],
+        "properties": { "name": { "type": "string" } }
+      }
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository"],
+      "properties": {
+        "repository": { "type": "string" },
+        "tag": { "type": "string" },
+        "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
+      }
+    },
+    "ports": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["http", "metrics"],
+      "properties": {
+        "http": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "metrics": {
+          "type": "integer",
+          "const": 9090,
+          "description": "Fixed at 9090 by the Istio metrics-permissive convention (Phase 1 Component 7)."
+        }
+      }
+    },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "create": { "type": "boolean" },
+        "name": { "type": "string" },
+        "roleArn": { "type": "string" },
+        "annotations": { "type": "object" },
+        "automountServiceAccountToken": { "type": "boolean" }
+      }
+    },
+    "podSecurityContext": { "type": "object" },
+    "securityContext": {
+      "type": "object",
+      "properties": {
+        "runAsNonRoot": { "const": true },
+        "readOnlyRootFilesystem": { "const": true },
+        "allowPrivilegeEscalation": { "const": false }
+      }
+    },
+    "writableTmp": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "mountPath": { "type": "string" },
+        "sizeLimit": { "type": "string" }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requests": { "$ref": "#/$defs/resourceMap" },
+        "limits": { "$ref": "#/$defs/resourceMap" }
+      }
+    },
+    "observability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["otelEndpoint", "otelPropagators", "logFormat"],
+      "properties": {
+        "otelEndpoint": { "type": "string", "minLength": 1 },
+        "otelProtocol": { "type": "string", "enum": ["grpc", "http/protobuf"] },
+        "otelPropagators": {
+          "type": "string",
+          "pattern": "tracecontext",
+          "description": "Must include tracecontext (Contract 8 W3C Trace Context)."
+        },
+        "logFormat": {
+          "type": "string",
+          "const": "json",
+          "description": "Contract 6: production logs MUST be JSON."
+        },
+        "logLevel": { "type": "string", "enum": ["DEBUG", "INFO", "WARN", "ERROR"] }
+      }
+    },
+    "database": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "pgbouncerHost": {
+          "type": "string",
+          "description": "Transaction-mode PgBouncer (Contract 13). Do NOT point at RDS directly."
+        },
+        "pgbouncerPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "name": { "type": "string" },
+        "schema": { "type": "string" },
+        "runtimeUser": { "type": "string" },
+        "ddlUser": { "type": "string" },
+        "sslmode": {
+          "type": "string",
+          "enum": ["disable", "require", "verify-ca", "verify-full", "prefer", "allow"]
+        },
+        "extraParams": { "type": "string" }
+      }
+    },
+    "doppler": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "project": { "type": "string" },
+        "tokenSecretName": { "type": "string" },
+        "runtimeConfig": { "type": "string" },
+        "runtimeSecretName": { "type": "string" },
+        "ddlConfig": { "type": "string" },
+        "ddlSecretName": { "type": "string" },
+        "externalRuntimeSecretName": { "type": "string" },
+        "externalDdlSecretName": { "type": "string" }
+      }
+    },
+    "extraEnv": {
+      "type": "array",
+      "items": { "type": "object" }
+    },
+    "extraEnvFrom": {
+      "type": "array",
+      "items": { "type": "object" }
+    },
+    "migration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "image"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["repository", "tag"],
+          "properties": {
+            "repository": { "type": "string" },
+            "tag": { "type": "string" },
+            "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
+          }
+        },
+        "hookWeight": { "type": "string" },
+        "migrationsDir": { "type": "string" },
+        "backoffLimit": { "type": "integer", "minimum": 0 },
+        "activeDeadlineSeconds": { "type": "integer", "minimum": 1 },
+        "resources": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "requests": { "$ref": "#/$defs/resourceMap" },
+            "limits": { "$ref": "#/$defs/resourceMap" }
+          }
+        },
+        "extraVolumes": { "type": "array" },
+        "extraVolumeMounts": { "type": "array" }
+      }
+    },
+    "service_": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "enum": ["ClusterIP", "NodePort", "LoadBalancer", "ExternalName"] },
+        "annotations": { "type": "object" }
+      }
+    },
+    "autoscaling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "minReplicas": { "type": "integer", "minimum": 1 },
+        "maxReplicas": { "type": "integer", "minimum": 1 },
+        "targetCPUUtilizationPercentage": { "type": ["integer", "null"], "minimum": 1, "maximum": 100 },
+        "targetMemoryUtilizationPercentage": { "type": ["integer", "null"], "minimum": 1, "maximum": 100 }
+      }
+    },
+    "pdb": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "minAvailable": { "type": ["integer", "string"] },
+        "maxUnavailable": { "type": ["integer", "string"] }
+      }
+    },
+    "serviceMonitor": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "interval": { "type": "string" },
+        "scrapeTimeout": { "type": "string" },
+        "path": { "type": "string" },
+        "labels": { "type": "object" }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "ingressNamespace": { "type": "string" },
+        "allowSameNamespace": { "type": "boolean" },
+        "observabilityNamespace": { "type": "string" },
+        "extraIngress": { "type": "array" },
+        "allowAllEgress": { "type": "boolean" },
+        "extraEgress": { "type": "array" }
+      }
+    },
+    "nodeRole": {
+      "type": "string",
+      "enum": ["system", "core", "agent", "tools", "observability"],
+      "description": "node-role label of the target NodePool/managed-NG (Phase 1 Component 5)."
+    },
+    "nodeSelector": { "type": "object" },
+    "tolerations": { "type": "array" },
+    "affinity": { "type": "object" },
+    "topologySpreadConstraints": { "type": "array" },
+    "istio": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sidecarInject": { "type": "boolean" },
+        "virtualService": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "hosts": { "type": "array" },
+            "gateways": { "type": "array" },
+            "http": { "type": "array" }
+          }
+        },
+        "destinationRule": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "host": { "type": "string" },
+            "trafficPolicy": { "type": "object" }
+          }
+        }
+      }
+    },
+    "probes": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "liveness": { "$ref": "#/$defs/probe" },
+        "readiness": { "$ref": "#/$defs/probe" },
+        "startup": {
+          "allOf": [{ "$ref": "#/$defs/probe" }],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "path": { "type": "string" },
+            "initialDelaySeconds": { "type": "integer", "minimum": 0 },
+            "periodSeconds": { "type": "integer", "minimum": 1 },
+            "timeoutSeconds": { "type": "integer", "minimum": 1 },
+            "failureThreshold": { "type": "integer", "minimum": 1 }
+          }
+        }
+      }
+    },
+    "podAnnotations": { "type": "object" },
+    "podLabels": { "type": "object" },
+    "extraVolumes": { "type": "array" },
+    "extraVolumeMounts": { "type": "array" },
+    "terminationGracePeriodSeconds": { "type": "integer", "minimum": 0 }
+  },
+  "$defs": {
+    "resourceMap": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cpu": { "type": ["string", "number"] },
+        "memory": { "type": "string" }
+      }
+    },
+    "probe": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "path": {
+          "type": "string",
+          "pattern": "^/(livez|readyz)$",
+          "description": "Contract 7: liveness=/livez, readiness=/readyz."
+        },
+        "initialDelaySeconds": { "type": "integer", "minimum": 0 },
+        "periodSeconds": { "type": "integer", "minimum": 1 },
+        "timeoutSeconds": { "type": "integer", "minimum": 1 },
+        "failureThreshold": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

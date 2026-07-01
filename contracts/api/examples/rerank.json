@@ -1,0 +1,59 @@
+{
+  "$schemaRef": "../rerank.schema.json",
+  "valid": [
+    {
+      "model": "bge-reranker-base",
+      "query": "how do I rotate an API key?",
+      "documents": [
+        { "id": "doc-1", "text": "API keys can be rotated from the dashboard settings page." },
+        { "id": "doc-2", "text": "Billing invoices are generated on the first of each month." },
+        { "text": "Use the POST /v1/api-keys/{id}/rotate endpoint to rotate programmatically." }
+      ],
+      "top_n": 2
+    },
+    {
+      "model": "mock",
+      "query": "reset password",
+      "documents": [
+        { "text": "Click 'forgot password' on the login screen." }
+      ]
+    },
+    {
+      "results": [
+        { "index": 2, "id": "doc-3", "score": 0.94 },
+        { "index": 0, "score": 0.71 }
+      ],
+      "model": "bge-reranker-base",
+      "usage": { "total_tokens": 412, "search_units": 1 },
+      "x-future-field": "tolerated by additionalProperties:true (forward-compat)"
+    },
+    {
+      "results": [],
+      "model": "mock"
+    }
+  ],
+  "invalid": [
+    {
+      "model": "bge-reranker-base",
+      "documents": [{ "text": "missing query" }]
+    },
+    {
+      "model": "bge-reranker-base",
+      "query": "no documents array",
+      "documents": []
+    },
+    {
+      "model": "bge-reranker-base",
+      "query": "doc missing text",
+      "documents": [{ "id": "doc-1" }]
+    },
+    {
+      "results": [{ "index": 0 }],
+      "model": "bge-reranker-base"
+    },
+    {
+      "results": [{ "index": -1, "score": 0.5 }],
+      "model": "bge-reranker-base"
+    }
+  ]
+}

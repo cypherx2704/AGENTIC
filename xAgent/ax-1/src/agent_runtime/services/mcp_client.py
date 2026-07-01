@@ -1,0 +1,282 @@
+"""MCP tool-invocation client (tool-loop stage, WP12).
+
+Invokes an MCP tool (e.g. tool-web-search) at the ``invoke_url`` resolved from the Tool
+Registry:
+
+  * ``GET  {invoke_url}/manifest``        -> the tool's MCP manifest
+  * ``POST {invoke_url}/mcp/v1/invoke``   body ``{ tool, args }`` -> ``{ tool, result }``
+
+Identity flows via HEADERS only (Contract 13) — no identity in the body:
+
+  * ``Authorization: Bearer <xAgent service JWT>``     (Contract 12, on_behalf_of=agent)
+  * ``X-Forwarded-Agent-JWT: <inbound agent JWT>``      (verbatim forward, Phase 9 rule)
+  * ``traceparent`` + ``tracestate`` + ``X-Request-ID`` (Contract 8 W3C propagation)
+  * ``Idempotency-Key: {task_id}:{tool_call_id}``       (Contract 9 — a retried/duplicated
+    invocation of the SAME tool call is de-duplicated by the tool, so a network retry
+    can't double-charge a side-effecting tool)
+
+── Circuit breaker (per ``(endpoint, agent)``) ───────────────────────────────────────────
+Each ``(invoke_url, on_behalf_of-or-agent)`` pair has its own breaker:
+  * CLOSED   — calls flow; ``mcp_circuit_breaker_threshold`` CONSECUTIVE failures open it.
+  * OPEN     — calls fast-fail SERVICE_UNAVAILABLE (NO network) until the cooldown
+               (``mcp_circuit_breaker_cooldown_seconds``) elapses; then HALF-OPEN.
+  * HALF-OPEN— one trial call is allowed; success CLOSES + resets the breaker, failure
+               RE-OPENS it for another cooldown.
+A "failure" is a transport error or a 5xx (server fault). A 4xx is a CLIENT fault (bad
+args / unauthorized) — it does NOT trip the breaker and is NEVER retried.
+
+── Retry ─────────────────────────────────────────────────────────────────────────────────
+Within a single ``invoke``, a connection error / 5xx is retried up to
+``mcp_retry_attempts`` times (same Idempotency-Key each time, so retries are safe). A 4xx
+is terminal on the first response. Retries are bounded by the breaker — once enough
+consecutive failures accrue the breaker opens and subsequent calls fast-fail.
+
+── FAIL POSTURE ───────────────────────────────────────────────────────────────────────────
+A tool is an OPTIONAL capability, so all failure modes raise a typed ``ApiError`` for the
+tool-loop stage to handle (record the tool result as an error + let the LLM proceed)
+rather than being swallowed: a terminal 4xx -> VALIDATION_ERROR (carries the upstream
+status in ``details``), an open breaker / exhausted-retry transport-or-5xx ->
+SERVICE_UNAVAILABLE. The stage decides whether a failed tool call is fatal to the task.
+"""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass, field
+from typing import Any
+
+import httpx
+import structlog
+
+from ..core import metrics, trace
+from ..core.config import Settings
+from ..core.errors import ApiError, ErrorCode
+from .service_token import ServiceTokenProvider
+
+logger = structlog.get_logger(__name__)
+
+
+@dataclass
+class McpResult:
+    """Normalised MCP tool-invocation result."""
+
+    tool: str
+    result: Any = None
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+class _Breaker:
+    """A single (endpoint, agent) circuit breaker (CLOSED / OPEN / HALF-OPEN)."""
+
+    __slots__ = ("consecutive_failures", "opened_at")
+
+    def __init__(self) -> None:
+        self.consecutive_failures = 0
+        self.opened_at: float | None = None  # monotonic time the breaker tripped open
+
+
+class McpClient:
+    """Thin async client for invoking MCP tools, with a per-(endpoint, agent) breaker."""
+
+    def __init__(
+        self,
+        settings: Settings,
+        token_provider: ServiceTokenProvider,
+        *,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        self._settings = settings
+        self._tokens = token_provider
+        self._client = client  # injectable for tests (respx); lazily created otherwise
+        self._owns_client = client is None
+        self._breakers: dict[tuple[str, str], _Breaker] = {}
+
+    def _http(self) -> httpx.AsyncClient:
+        if self._client is None:
+            self._client = httpx.AsyncClient(timeout=self._settings.mcp_timeout_seconds)
+        return self._client
+
+    async def aclose(self) -> None:
+        if self._owns_client and self._client is not None:
+            await self._client.aclose()
+
+    async def _headers(
+        self, *, agent_jwt: str, on_behalf_of: str | None, idempotency_key: str | None = None
+    ) -> dict[str, str]:
+        service_jwt = await self._tokens.get_token(on_behalf_of=on_behalf_of)
+        headers = {
+            "Authorization": f"Bearer {service_jwt}",
+            "X-Forwarded-Agent-JWT": agent_jwt,
+            **trace.propagation_headers(),
+        }
+        if idempotency_key:
+            headers["Idempotency-Key"] = idempotency_key
+        return headers
+
+    # ── Circuit-breaker helpers ───────────────────────────────────────────────────
+    def _breaker_for(self, invoke_url: str, agent_key: str) -> _Breaker:
+        key = (invoke_url, agent_key)
+        breaker = self._breakers.get(key)
+        if breaker is None:
+            breaker = _Breaker()
+            self._breakers[key] = breaker
+        return breaker
+
+    def _is_open(self, breaker: _Breaker, invoke_url: str) -> bool:
+        """True while the breaker is OPEN (cooldown not yet elapsed).
+
+        Once the cooldown passes we report False (HALF-OPEN) and allow one trial call;
+        the trial's outcome is recorded via ``_record_success`` / ``_record_failure``.
+        """
+        if breaker.opened_at is None:
+            return False
+        # Within cooldown -> still OPEN; once it elapses report False (HALF-OPEN: a trial runs).
+        elapsed = time.monotonic() - breaker.opened_at
+        return elapsed < self._settings.mcp_circuit_breaker_cooldown_seconds
+
+    def _record_success(self, breaker: _Breaker, invoke_url: str) -> None:
+        breaker.consecutive_failures = 0
+        if breaker.opened_at is not None:
+            breaker.opened_at = None  # half-open trial succeeded -> CLOSE
+            metrics.mcp_circuit_breaker_state.labels(invoke_url).set(0)
+
+    def _record_failure(self, breaker: _Breaker, invoke_url: str) -> None:
+        breaker.consecutive_failures += 1
+        threshold = self._settings.mcp_circuit_breaker_threshold
+        # A half-open trial failure (already open) re-opens; or we cross the threshold.
+        if breaker.opened_at is not None or breaker.consecutive_failures >= threshold:
+            breaker.opened_at = time.monotonic()
+            metrics.mcp_circuit_breaker_state.labels(invoke_url).set(1)
+            logger.warning(
+                "mcp_circuit_open",
+                endpoint=invoke_url,
+                consecutive_failures=breaker.consecutive_failures,
+            )
+
+    # ── Public API ─────────────────────────────────────────────────────────────────
+    async def get_manifest(
+        self,
+        invoke_url: str,
+        *,
+        agent_jwt: str,
+        on_behalf_of: str | None = None,
+    ) -> dict[str, Any]:
+        """Fetch the tool's MCP manifest (``GET {invoke_url}/manifest``).
+
+        Not breaker-gated (a read with no side effects). Raises SERVICE_UNAVAILABLE on a
+        transport/5xx error, VALIDATION_ERROR on a 4xx.
+        """
+        headers = await self._headers(agent_jwt=agent_jwt, on_behalf_of=on_behalf_of)
+        url = f"{invoke_url.rstrip('/')}/manifest"
+        try:
+            resp = await self._http().get(url, headers=headers)
+        except httpx.HTTPError as exc:
+            metrics.mcp_invocations_total.labels("error").inc()
+            logger.warning("mcp_manifest_failed", endpoint=invoke_url, error=str(exc))
+            raise ApiError(ErrorCode.SERVICE_UNAVAILABLE, "MCP tool unavailable.") from exc
+        if 400 <= resp.status_code < 500:
+            metrics.mcp_invocations_total.labels("rejected").inc()
+            raise ApiError(
+                ErrorCode.VALIDATION_ERROR,
+                f"MCP tool rejected manifest request ({resp.status_code}).",
+                details={"status": resp.status_code},
+            )
+        if resp.status_code >= 500:
+            metrics.mcp_invocations_total.labels("error").inc()
+            raise ApiError(ErrorCode.SERVICE_UNAVAILABLE, f"MCP tool returned {resp.status_code}.")
+        return resp.json()
+
+    async def invoke(
+        self,
+        invoke_url: str,
+        tool: str,
+        args: dict[str, Any],
+        *,
+        task_id: str,
+        tool_call_id: str,
+        agent_jwt: str,
+        on_behalf_of: str | None = None,
+    ) -> McpResult:
+        """Invoke ``tool`` with ``args`` at ``invoke_url`` (``POST .../mcp/v1/invoke``).
+
+        Idempotency-Key = ``{task_id}:{tool_call_id}`` (same on every retry). Guarded by
+        the per-(endpoint, agent) circuit breaker; retries a connection error / 5xx up to
+        ``mcp_retry_attempts`` but NEVER a 4xx. Raises SERVICE_UNAVAILABLE when the breaker
+        is open or transport/5xx persists; VALIDATION_ERROR (with ``details.status``) on a
+        terminal 4xx.
+        """
+        agent_key = on_behalf_of or agent_jwt
+        breaker = self._breaker_for(invoke_url, agent_key)
+
+        if self._is_open(breaker, invoke_url):
+            metrics.mcp_invocations_total.labels("circuit_open").inc()
+            logger.warning("mcp_circuit_open_fastfail", endpoint=invoke_url, tool=tool)
+            raise ApiError(
+                ErrorCode.SERVICE_UNAVAILABLE,
+                f"MCP tool circuit open for {invoke_url!r}.",
+            )
+
+        idempotency_key = f"{task_id}:{tool_call_id}"
+        headers = await self._headers(
+            agent_jwt=agent_jwt, on_behalf_of=on_behalf_of, idempotency_key=idempotency_key
+        )
+        body = {"tool": tool, "args": args}
+        url = f"{invoke_url.rstrip('/')}/mcp/v1/invoke"
+
+        attempts = max(1, self._settings.mcp_retry_attempts + 1)
+        last_exc: httpx.HTTPError | None = None
+        for attempt in range(attempts):
+            try:
+                resp = await self._http().post(url, headers=headers, json=body)
+            except httpx.HTTPError as exc:
+                # Connection/transport error — retryable; counts as a breaker failure.
+                last_exc = exc
+                self._record_failure(breaker, invoke_url)
+                logger.warning(
+                    "mcp_invoke_attempt_failed", endpoint=invoke_url, attempt=attempt, error=str(exc)
+                )
+                if self._is_open(breaker, invoke_url):
+                    break  # breaker tripped mid-loop -> stop retrying
+                continue
+
+            if 400 <= resp.status_code < 500:
+                # CLIENT fault — terminal, NEVER retried, does NOT trip the breaker.
+                metrics.mcp_invocations_total.labels("rejected").inc()
+                logger.warning("mcp_invoke_rejected_4xx", endpoint=invoke_url, status=resp.status_code)
+                raise ApiError(
+                    ErrorCode.VALIDATION_ERROR,
+                    f"MCP tool rejected the call ({resp.status_code}).",
+                    details={"status": resp.status_code, "tool": tool},
+                )
+            if resp.status_code >= 500:
+                # SERVER fault — retryable; counts as a breaker failure.
+                self._record_failure(breaker, invoke_url)
+                logger.warning(
+                    "mcp_invoke_5xx", endpoint=invoke_url, attempt=attempt, status=resp.status_code
+                )
+                if attempt < attempts - 1 and not self._is_open(breaker, invoke_url):
+                    continue
+                metrics.mcp_invocations_total.labels("error").inc()
+                raise ApiError(
+                    ErrorCode.SERVICE_UNAVAILABLE,
+                    f"MCP tool returned {resp.status_code}.",
+                )
+
+            # 2xx — success: close/reset the breaker, normalise the result.
+            self._record_success(breaker, invoke_url)
+            metrics.mcp_invocations_total.labels("ok").inc()
+            return self._parse(tool, resp.json())
+
+        # Fell out of the loop on a transport error (retries exhausted or breaker opened).
+        metrics.mcp_invocations_total.labels("error").inc()
+        raise ApiError(ErrorCode.SERVICE_UNAVAILABLE, "MCP tool unavailable.") from last_exc
+
+    @staticmethod
+    def _parse(tool: str, data: dict[str, Any]) -> McpResult:
+        if not isinstance(data, dict):
+            return McpResult(tool=tool, result=data, raw={})
+        return McpResult(
+            tool=str(data.get("tool", tool)),
+            result=data.get("result"),
+            raw=data,
+        )

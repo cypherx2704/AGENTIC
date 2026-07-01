@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.cypherx.ai/v1/approval/approval-token.schema.json",
+  "title": "CypherX Step-Up Approval Token Claims (Contract 16)",
+  "x-enforcement-phase": "phase-02",
+  "description": "📋 Defined now for alignment; ENFORCEMENT TURNS ON IN PHASE 2 (see Phase 2 Component 10 for the full grant flow — this contract pins only the wire format and verification rules). Claims of the Approval Token presented in the X-Approval-Token header alongside the agent JWT when an agent invokes an approval-required scope (e.g. payments:execute, data:bulk_delete, infra:write, external_api:write, agent:create_subagent, policy:write). Forward-compatibility: additionalProperties is true and only validation-mandatory claims are required. TTL (exp - iat) MUST be ≤ 15 min for one-shot and ≤ 1 hour for multi-shot tokens.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "iss",
+    "sub",
+    "aud",
+    "iat",
+    "exp",
+    "jti",
+    "tenant_id",
+    "agent_id",
+    "grant_id",
+    "approved_by",
+    "approval_scopes",
+    "approval_resource",
+    "approval_task",
+    "step_up_method",
+    "one_shot"
+  ],
+  "properties": {
+    "iss": {
+      "type": "string",
+      "format": "uri",
+      "description": "Issuer. Resolves to the deployment's AUTH_ISSUER_URL (e.g. https://auth.cypherx.ai)."
+    },
+    "sub": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Subject — the agent UUID the approval is bound to."
+    },
+    "aud": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "minItems": 1,
+      "description": "Audience. MUST contain the configured AUTH_PLATFORM_AUDIENCE of the verifying deployment."
+    },
+    "iat": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Issued-at (NumericDate, seconds since Unix epoch)."
+    },
+    "exp": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Expiry (NumericDate). MUST be in the future. exp - iat MUST be ≤ 900s (one-shot) or ≤ 3600s (multi-shot)."
+    },
+    "jti": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique token id (UUID v4). Replay-protected."
+    },
+    "tenant_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Org UUID. MUST match the tenant_id of the bound agent JWT."
+    },
+    "agent_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Agent UUID. MUST match the agent_id of the bound agent JWT."
+    },
+    "grant_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "References auth.approval_grants.grant_id. For one-shot tokens, the row is atomically consumed at verification (consumed_at), else APPROVAL_EXHAUSTED."
+    },
+    "approved_by": {
+      "type": "string",
+      "format": "uuid",
+      "description": "px0 user UUID of the approver. MUST be a different user identity from the agent's owner when the owner is a human user (prevents self-approval on hijacked credentials)."
+    },
+    "approval_scopes": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "minItems": 1,
+      "description": "Approval-required scope(s) this token grants (e.g. [\"payments:execute\"]). Verification requires this to contain the scope needed for the action.",
+      "examples": [["payments:execute"]]
+    },
+    "approval_resource": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Resource the approval covers (e.g. payment:invoice-123). MAY be \"*\" for multi-shot tokens within a workflow scope; for one-shot tokens it MUST be a concrete resource identifier. Verification requires it to match the resource being acted on (or be \"*\")."
+    },
+    "approval_task": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Binds the token to a specific xAgent/Workflow task (matched against header X-Task-ID). A token cannot be reused on a different task."
+    },
+    "step_up_method": {
+      "type": "string",
+      "enum": ["webauthn", "mfa", "password", "sso-reauth"],
+      "description": "The step-up authentication method satisfied by the approver. Must satisfy tenant policy at verification time."
+    },
+    "one_shot": {
+      "type": "boolean",
+      "description": "Default true. When true the grant is atomically consumed on first use (≤ 15 min TTL, concrete approval_resource). Multi-shot (false) requires explicit grant-time opt-in and a documented business reason (≤ 1 hour TTL)."
+    }
+  }
+}

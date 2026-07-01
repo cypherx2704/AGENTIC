@@ -1,0 +1,317 @@
+openapi: 3.1.0
+info:
+  title: CypherX AI — OpenAPI Base Template (Contract 10)
+  version: 1.0.0
+  description: >
+    Component library shared by every CypherX service. Services do NOT extend this file by
+    inheritance; instead they `$ref` its reusable components (securitySchemes, schemas,
+    parameters, headers, responses) so that error shapes, headers and pagination stay
+    identical across the platform. This file pre-defines:
+      * Auth (Bearer JWT) security scheme — Contract 1.
+      * Standard error response component — Contract 2.
+      * /livez, /readyz, /metrics endpoint definitions — Contract 7.
+      * Standard request headers (traceparent, X-Request-ID, Idempotency-Key) — Contracts 8 and 9.
+      * Pagination request params and response component — Contract 9.
+      * Standard response headers (Sunset, Deprecation, X-RateLimit-*, Retry-After, X-Quota-*) — Contracts 2 and 9.
+    CI lints each service spec against this base; a PR cannot merge if base components are
+    overridden incompatibly.
+
+servers:
+  - url: https://api.cypherx.ai
+    description: Deployment-neutral placeholder; real services supply their own server URL.
+
+security:
+  - bearerJWT: []
+
+tags:
+  - name: health
+    description: Liveness, readiness and metrics endpoints (Contract 7).
+
+paths:
+  /livez:
+    get:
+      tags:
+        - health
+      operationId: getLivez
+      summary: Liveness probe
+      description: >
+        Liveness: confirms the process is alive and the event loop is responsive. MUST NOT
+        depend on downstreams (DB, Kafka, external deps). K8s livenessProbe targets this.
+        Returns 503 only if the process itself is broken (deadlock, OOM imminent).
+      security: []
+      responses:
+        '200':
+          description: Process is alive.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - status
+                  - version
+                  - uptime_seconds
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - ok
+                  version:
+                    type: string
+                    description: Service semantic version.
+                    example: 1.2.3
+                  uptime_seconds:
+                    type: integer
+                    minimum: 0
+                    example: 3600
+        '503':
+          description: Process itself is broken (deadlock, OOM imminent).
+
+  /readyz:
+    get:
+      tags:
+        - health
+      operationId: getReadyz
+      summary: Readiness probe
+      description: >
+        Readiness: confirms downstream dependencies are healthy and the service can serve
+        traffic. DOES check downstreams. K8s readinessProbe targets this; the pod is pulled
+        from the load balancer while this returns 503.
+      security: []
+      responses:
+        '200':
+          description: Dependencies healthy; ready to serve traffic.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - ready
+                  - checks
+                properties:
+                  ready:
+                    type: boolean
+                    enum:
+                      - true
+                  checks:
+                    type: object
+                    description: Per-dependency status map.
+                    additionalProperties:
+                      type: string
+                    example:
+                      database: ok
+                      kafka: ok
+        '503':
+          description: One or more dependencies unhealthy; pod pulled from service.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - ready
+                  - checks
+                properties:
+                  ready:
+                    type: boolean
+                    enum:
+                      - false
+                  checks:
+                    type: object
+                    additionalProperties:
+                      type: string
+                    example:
+                      database: failed
+                      kafka: ok
+
+  /metrics:
+    get:
+      tags:
+        - health
+      operationId: getMetrics
+      summary: Prometheus metrics exposition
+      description: >
+        Prometheus exposition format. Access is restricted to in-cluster scrapers via
+        NetworkPolicy (Prometheus namespace only).
+      security: []
+      responses:
+        '200':
+          description: Prometheus exposition body.
+          content:
+            text/plain:
+              schema:
+                type: string
+                description: 'Prometheus exposition format; Content-Type: text/plain; version=0.0.4'
+
+components:
+  securitySchemes:
+    bearerJWT:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        Platform JWT bearer token — see Contract 1 (JWT claims). The token is validated for
+        issuer, audience, expiry, tenant_id, agent_id, kid resolution and signature.
+
+  schemas:
+    Error:
+      $ref: ./error-format.schema.json
+    Pagination:
+      $ref: ./pagination.schema.json
+
+  parameters:
+    traceparent:
+      name: traceparent
+      in: header
+      required: true
+      description: >
+        W3C trace context (Contract 8). Format 00-{32-hex-trace-id}-{16-hex-span-id}-{2-hex-flags}.
+        Inbound value MUST be forwarded on all outbound calls.
+      schema:
+        type: string
+        pattern: '^[0-9a-f]{2}-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$'
+        example: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+    XRequestID:
+      name: X-Request-ID
+      in: header
+      required: false
+      description: >
+        Per external request UUID injected by Kong at the edge (Contract 8). Forwarded by all
+        services.
+      schema:
+        type: string
+        format: uuid
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: >
+        Client-generated UUIDv4 enabling idempotent replay of mutation requests within 24h
+        (Contract 9). Required-or-not-supported declaration governs whether a mutation route
+        honours it.
+      schema:
+        type: string
+        format: uuid
+    limit:
+      name: limit
+      in: query
+      required: false
+      description: Page size for cursor-paginated list endpoints (Contract 9).
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    cursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque cursor for the next page (Contract 9). Cursor-based pagination only; no offset.
+      schema:
+        type: string
+
+  headers:
+    Sunset:
+      description: >
+        RFC 8594 Sunset header. Present on deprecated API versions; carries the date/time after
+        which the version is removed (minimum 90 days' notice — Contract 9).
+      schema:
+        type: string
+    Deprecation:
+      description: >
+        RFC 8594 Deprecation header. Indicates the resource/version is deprecated (Contract 9).
+      schema:
+        type: string
+    X-RateLimit-Limit:
+      description: Maximum requests permitted in the current window (Contract 2).
+      schema:
+        type: integer
+    X-RateLimit-Remaining:
+      description: Requests remaining in the current window (Contract 2).
+      schema:
+        type: integer
+    X-RateLimit-Reset:
+      description: Unix epoch seconds when the current rate-limit window resets (Contract 2).
+      schema:
+        type: integer
+    X-RateLimit-Resource:
+      description: 'Scope of the limit (Contract 2): request, tokens, cost_usd or storage_bytes.'
+      schema:
+        type: string
+        enum:
+          - request
+          - tokens
+          - cost_usd
+          - storage_bytes
+    Retry-After:
+      description: >
+        Delta-seconds before retrying (or an HTTP-date per RFC 7231). Present on 429 and 503
+        (Contract 2).
+      schema:
+        type: string
+    X-Quota-Limit:
+      description: Hard quota cap for the period (Contract 2).
+      schema:
+        type: integer
+    X-Quota-Remaining:
+      description: Quota units remaining (Contract 2).
+      schema:
+        type: integer
+    X-Quota-Period:
+      description: 'Quota period (Contract 2): minute, hour, day or month.'
+      schema:
+        type: string
+        enum:
+          - minute
+          - hour
+          - day
+          - month
+
+  responses:
+    Unauthorized:
+      description: '401 — JWT missing or invalid (Contract 2: UNAUTHORIZED).'
+      content:
+        application/json:
+          schema:
+            $ref: ./error-format.schema.json
+    Forbidden:
+      description: '403 — Valid JWT but insufficient scope (Contract 2: FORBIDDEN).'
+      content:
+        application/json:
+          schema:
+            $ref: ./error-format.schema.json
+    NotFound:
+      description: '404 — Resource does not exist (Contract 2: NOT_FOUND).'
+      content:
+        application/json:
+          schema:
+            $ref: ./error-format.schema.json
+    ValidationError:
+      description: '422 — Request body fails schema validation (Contract 2: VALIDATION_ERROR).'
+      content:
+        application/json:
+          schema:
+            $ref: ./error-format.schema.json
+    RateLimited:
+      description: >
+        429 — Rate or quota limit hit (Contract 2: RATE_LIMIT_EXCEEDED / QUOTA_EXCEEDED).
+        MUST carry the rate-limit and (when quota-bound) quota headers, plus Retry-After.
+      headers:
+        Retry-After:
+          $ref: '#/components/headers/Retry-After'
+        X-RateLimit-Limit:
+          $ref: '#/components/headers/X-RateLimit-Limit'
+        X-RateLimit-Remaining:
+          $ref: '#/components/headers/X-RateLimit-Remaining'
+        X-RateLimit-Reset:
+          $ref: '#/components/headers/X-RateLimit-Reset'
+        X-RateLimit-Resource:
+          $ref: '#/components/headers/X-RateLimit-Resource'
+        X-Quota-Limit:
+          $ref: '#/components/headers/X-Quota-Limit'
+        X-Quota-Remaining:
+          $ref: '#/components/headers/X-Quota-Remaining'
+        X-Quota-Period:
+          $ref: '#/components/headers/X-Quota-Period'
+      content:
+        application/json:
+          schema:
+            $ref: ./error-format.schema.json

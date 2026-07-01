@@ -1,0 +1,19 @@
+apiVersion: v2
+name: smoketest-echo
+description: |
+  Phase 1 Component 21 infra smoke-test deployment. A values-only consumer of the
+  charts/cypherx-service base chart (same pattern as charts/example-service),
+  pinned to deploy the throwaway echo-service into the `smoketest` namespace.
+
+  This chart is for the smoke GATE only — it is deployed by
+  infra/scripts/infra-smoke-test.sh and deleted immediately after. It must never
+  be promoted to a real environment.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+dependencies:
+  # The cypherx-service base chart bakes in Contracts 6/7/8/13/14 (Deployment,
+  # Service, ServiceAccount, DopplerSecret, ServiceMonitor, NetworkPolicy, HPA).
+  - name: cypherx-service
+    version: "0.1.0"
+    repository: "file://../../charts/cypherx-service"

@@ -1,0 +1,54 @@
+# =============================================================================
+# dev-apps.yaml — ArgoCD App-of-Apps ROOT for the DEV environment (Component 19).
+# =============================================================================
+# This single Application is the root of the App-of-Apps tree for dev. ArgoCD
+# watches `envs/dev/` in the gitops repo; every child Application manifest that
+# appears under that path is created automatically. Service teams add their app
+# under `envs/dev/<namespace>/<service>/` in their deploy phase — they never
+# touch this root.
+#
+# Sync policy (dev): AUTOMATED with self-heal + prune (Component 12).
+#   - dev redeploys itself the moment a gitops PR merges (CI auto-merges dev PRs).
+#   - self-heal reverts manual drift; prune removes resources deleted from git.
+#
+# Apply this root ONCE per cluster at bootstrap:
+#   kubectl apply -n argocd -f apps/dev-apps.yaml
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cypherx-platform-dev
+  namespace: argocd
+  # Keep the root app itself from being pruned by a parent (it has no parent).
+  finalizers:
+    - resources-finalizer.argocd.io
+  labels:
+    app.kubernetes.io/part-of: cypherx-platform
+    cypherx.ai/env: dev
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/cypherx-ai/cypherx-gitops.git
+    targetRevision: main
+    # The root watches the env dir. Each child Application manifest committed
+    # here is reconciled by ArgoCD into its own Application.
+    path: envs/dev
+    directory:
+      recurse: true
+      include: "{*.yaml,**/*.yaml}"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ApplyOutOfSyncOnly=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m

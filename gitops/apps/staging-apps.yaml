@@ -1,0 +1,47 @@
+# =============================================================================
+# staging-apps.yaml — ArgoCD App-of-Apps ROOT for STAGING (Component 19).
+# =============================================================================
+# Same shape as dev: ArgoCD watches `envs/staging/` and auto-creates child apps.
+#
+# Sync policy (staging): AUTOMATED with self-heal + prune (Component 12 — dev and
+# staging are both auto-synced; only prod is manual). Staging gitops PRs are also
+# auto-merged by CI, so staging tracks merged-to-main image tags automatically.
+#
+# Apply ONCE per staging cluster at bootstrap:
+#   kubectl apply -n argocd -f apps/staging-apps.yaml
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cypherx-platform-staging
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.io
+  labels:
+    app.kubernetes.io/part-of: cypherx-platform
+    cypherx.ai/env: staging
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/cypherx-ai/cypherx-gitops.git
+    targetRevision: main
+    path: envs/staging
+    directory:
+      recurse: true
+      include: "{*.yaml,**/*.yaml}"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ApplyOutOfSyncOnly=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m

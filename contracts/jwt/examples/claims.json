@@ -1,0 +1,57 @@
+{
+  "$schemaRef": "../claims.schema.json",
+  "valid": [
+    {
+      "iss": "https://auth.cypherx.ai",
+      "sub": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "aud": ["cypherx-platform"],
+      "iat": 1779840000,
+      "exp": 1779843600,
+      "jti": "9b2e1c44-3c1a-4f7e-8a6b-2d4f5e6a7b8c",
+      "tenant_id": "3f9a7c2e-1b4d-4e8a-9c6f-7a2b3c4d5e6f",
+      "agent_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "agent_version": "1.0.0",
+      "api_key_id": "11111111-2222-4333-8444-555555555555",
+      "deployment_id": "cypherx-prod",
+      "scopes": ["llm:invoke", "memory:read", "memory:write", "rag:query", "tool:invoke", "guardrails:check"],
+      "plan": "pro",
+      "region": "us-east-1",
+      "cnf": null,
+      "wkl_id": null,
+      "behavior_policy_id": null
+    },
+    {
+      "iss": "https://auth.acme-selfhosted.example",
+      "sub": "a1b2c3d4-e5f6-4789-8abc-def012345678",
+      "aud": ["acme-platform", "cypherx-platform"],
+      "iat": 1779840000,
+      "exp": 1779843600,
+      "jti": "7c9e8d6f-5a4b-4c3d-9e2f-1a0b9c8d7e6f",
+      "tenant_id": "00000000-0000-0000-0000-000000000001",
+      "agent_id": "a1b2c3d4-e5f6-4789-8abc-def012345678",
+      "scopes": ["llm:invoke"],
+      "future_claim_added_in_phase_9": "verifiers must ignore, not reject this unknown optional claim"
+    }
+  ],
+  "invalid": [
+    {
+      "iss": "https://auth.cypherx.ai",
+      "sub": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "aud": ["cypherx-platform"],
+      "iat": 1779840000,
+      "exp": 1779843600,
+      "jti": "9b2e1c44-3c1a-4f7e-8a6b-2d4f5e6a7b8c",
+      "agent_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+    },
+    {
+      "iss": "https://auth.cypherx.ai",
+      "sub": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "aud": "cypherx-platform",
+      "iat": 1779840000,
+      "exp": 1779843600,
+      "jti": "9b2e1c44-3c1a-4f7e-8a6b-2d4f5e6a7b8c",
+      "tenant_id": "3f9a7c2e-1b4d-4e8a-9c6f-7a2b3c4d5e6f",
+      "agent_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+    }
+  ]
+}

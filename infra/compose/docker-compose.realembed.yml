@@ -1,0 +1,20 @@
+# =====================================================================================================================
+# TEMPORARY Pass-B override — enables REAL OpenAI embeddings (text-embedding-3-small) on llms/rag/memory for the
+# semantic-quality eval. Layer LAST (after docker-compose.yml + docker-compose.override.yml). Costs ~<1¢ of OpenAI
+# embeddings. REVERT by recreating these 3 services WITHOUT this file (back to keyless mock).
+#   doppler run -p cypherx-ai -c dev_local -- docker compose -f docker-compose.yml -f docker-compose.override.yml \
+#       -f docker-compose.realembed.yml up -d llms-gateway rag memory
+# OPENAI_API_KEY flows from Doppler via the base file's ${OPENAI_API_KEY}. Chat stays unused (no spine tasks during eval).
+# =====================================================================================================================
+services:
+  llms-gateway:
+    environment:
+      MOCK_PROVIDERS: "false"          # real providers; embeddings -> OpenAI text-embedding-3-small (alias 'embed')
+  rag:
+    environment:
+      MOCK_EMBEDDINGS: "false"         # call llms-gateway /v1/embeddings (real) instead of the in-process hash
+      EMBEDDINGS_FALLBACK_TO_MOCK: "false"  # surface failures instead of silently reverting to mock
+  memory:
+    environment:
+      MOCK_PROVIDERS: "false"
+      EMBEDDINGS_MOCK_FALLBACK: "false"

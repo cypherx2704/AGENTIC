@@ -1,0 +1,7 @@
+{
+  "extends": ["next/core-web-vitals", "next/typescript"],
+  "ignorePatterns": [".next/", "node_modules/", "next.config.mjs", "vitest.config.ts", "vitest.setup.ts"],
+  "rules": {
+    "@typescript-eslint/no-explicit-any": "off"
+  }
+}

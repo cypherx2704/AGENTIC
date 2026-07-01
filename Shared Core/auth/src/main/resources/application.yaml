@@ -1,0 +1,216 @@
+# auth-service base config. Profiles: default (cloud, env-driven), local (dev/local stack), test (Testcontainers).
+spring:
+  # Platform API convention is snake_case (contracts). One global strategy keeps every request/
+  # response body consistent; explicit @JsonProperty annotations still override where set.
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+  application:
+    name: auth-service
+  threads:
+    virtual:
+      enabled: true
+  # Contract 2: an unknown path must surface as NoHandlerFoundException so GlobalExceptionHandler can
+  # render a 404 envelope (otherwise the DispatcherServlet forwards to the default/static handler and
+  # the request falls through to a 500). Disabling static resource auto-mapping ensures unmatched
+  # paths reach the no-handler branch rather than the (empty) static resource resolver.
+  mvc:
+    throw-exception-if-no-handler-found: true
+  web:
+    resources:
+      add-mappings: false
+  datasource:
+    # PgBouncer (transaction pool mode) in cloud; localhost in local profile. currentSchema=auth (Contract 13).
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/cypherx_platform?currentSchema=auth}
+    username: ${DB_USERNAME:auth_user}
+    password: ${DB_PASSWORD:}
+    hikari:
+      # PgBouncer is the pooler; keep the app-side pool small and DO NOT use server-side prepared statements
+      # that break transaction pooling (handled at the JDBC URL level too).
+      maximum-pool-size: ${DB_POOL_MAX:10}
+      minimum-idle: 2
+      pool-name: auth-hikari
+  kafka:
+    bootstrap-servers: ${KAFKA_BROKERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+      properties:
+        enable.idempotence: true
+    # WP04 consumers (audit-mirror, usage-rollup) read String-valued Contract 5 envelopes. They are
+    # OFF by default (see cypherx.auth.audit-pipeline.*.enabled) so no consumer connects on a
+    # broker-less boot; these settings apply only when a consumer is enabled.
+    consumer:
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      auto-offset-reset: latest
+    client-id: auth-service
+  data:
+    redis:
+      url: ${VALKEY_URL:redis://localhost:6379}
+      timeout: 500ms
+
+server:
+  port: 8080
+  forward-headers-strategy: framework
+  shutdown: graceful
+
+# Contract 7: /metrics (Prometheus) + /livez,/readyz (custom controllers). Health probes enabled for groups.
+management:
+  endpoints:
+    web:
+      base-path: ""
+      exposure:
+        include: prometheus,health
+      path-mapping:
+        prometheus: metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+  metrics:
+    tags:
+      application: auth-service
+  prometheus:
+    metrics:
+      export:
+        enabled: true
+
+# ── auth-service application config ──────────────────────────────────────────
+cypherx:
+  auth:
+    # Contract 1: iss/aud are deployment-configurable; verifiers read these, never a literal.
+    issuer-url: ${AUTH_ISSUER_URL:http://localhost:8080}
+    platform-audience: ${AUTH_PLATFORM_AUDIENCE:cypherx-platform}
+    deployment-id: ${DEPLOYMENT_ID:cypherx-local}
+    environment: ${ENVIRONMENT:local}
+    agent-token-ttl-seconds: 3600          # Contract 1: agent token <= 1h
+    service-token-ttl-seconds: 300         # Contract 12: internal service token = 5m
+    clock-skew-seconds: 60
+    # Signing-key envelope encryption: "kms" (cloud) or "local" (dev — AES via a local master key).
+    key-encryptor: ${AUTH_KEY_ENCRYPTOR:local}
+    kms-signing-cmk-arn: ${KMS_SIGNING_CMK_ARN:}
+    # Local-only AES master key (base64, 32 bytes). NEVER set in cloud — KMS is used there.
+    local-master-key-b64: ${AUTH_LOCAL_MASTER_KEY_B64:}
+    # One-time bootstrap token (mounted file in cloud; env for local). Gone after first super-admin.
+    bootstrap-token: ${AUTH_BOOTSTRAP_TOKEN:}
+    signing-key-rotation-days: 90
+    # WP03 signing-key retirement: a demoted key stays `verifying` (in JWKS) this long before being
+    # retired, so any in-flight token it signed (<=1h agent TTL) still validates until it expires.
+    verifying-key-retention-hours: ${AUTH_VERIFYING_KEY_RETENTION_HOURS:48}
+    # Fixed-delay cadence (ms) of the verifying-key retirement sweep.
+    verifying-key-retirement-sweep-ms: ${AUTH_VERIFYING_KEY_RETIREMENT_SWEEP_MS:3600000}
+    # Out-of-band gate file for POST /v1/admin/signing-keys/emergency-rotate (X-Emergency-Token must
+    # match this file's contents). Mounted secret in cloud; absent/empty => emergency-rotate is 403.
+    emergency-rotate-token-file: ${AUTH_EMERGENCY_ROTATE_TOKEN_FILE:/etc/cypherx/auth/emergency-rotate-token}
+    # Contract 13: tenant soft-delete grace window (drives pending_deletion's grace_until).
+    tenant-deletion-grace-days: ${AUTH_TENANT_DELETION_GRACE_DAYS:30}
+    # Transactional outbox relay (Phase 2 Amendment Log 2026-06): durable cypherx.tenant.* /
+    # token.revoked / policy.changed / config.updated rows drained from auth.outbox to Kafka.
+    outbox:
+      enabled: ${AUTH_OUTBOX_RELAY_ENABLED:true}
+      relay-delay-ms: ${AUTH_OUTBOX_RELAY_DELAY_MS:1000}
+      batch-size: ${AUTH_OUTBOX_BATCH_SIZE:100}
+      send-timeout-ms: ${AUTH_OUTBOX_SEND_TIMEOUT_MS:10000}
+      backoff-cap-ms: ${AUTH_OUTBOX_BACKOFF_CAP_MS:60000}
+    # Audit pipeline (WP04): audit-log export/mirror to object storage + the /v1/usage rollup.
+    # FAIL-SOFT: store defaults to the local filesystem (no AWS needed); the two Kafka consumers
+    # are OFF by default so a broker-less boot / the test profile starts with no listener.
+    audit-pipeline:
+      # ObjectStore backend: "local" (dev/test filesystem) | "s3" (AWS) | "minio" (S3-compatible).
+      store: ${AUDIT_EXPORT_STORE:local}
+      # Presigned download-URL TTL. Contract default = 7 days (max SigV4 presign window).
+      export-url-ttl-seconds: ${AUDIT_EXPORT_URL_TTL_SECONDS:604800}
+      # Cap on rows streamed into one export object (guards object size / scan).
+      export-max-rows: ${AUDIT_EXPORT_MAX_ROWS:1000000}
+      export-key-prefix: ${AUDIT_EXPORT_KEY_PREFIX:audit-exports}
+      mirror-key-prefix: ${AUDIT_MIRROR_KEY_PREFIX:audit-mirror}
+      local:
+        # Filesystem root for the local store (used when store=local).
+        base-path: ${AUDIT_EXPORT_LOCAL_DIR:/var/lib/cypherx/auth/audit-export}
+      s3:
+        # S3/MinIO via SigV4-signed HTTP (no AWS SDK). Blank bucket/creds => store disabled (no-op).
+        bucket: ${AWS_S3_BUCKET:}
+        region: ${AWS_REGION:us-east-1}
+        access-key-id: ${AWS_ACCESS_KEY_ID:}
+        secret-access-key: ${AWS_SECRET_ACCESS_KEY:}
+        session-token: ${AWS_SESSION_TOKEN:}
+        # Custom endpoint for MinIO/S3-compatible (path-style), e.g. http://minio:9000. Empty = AWS S3.
+        endpoint: ${AWS_S3_ENDPOINT:}
+        http-timeout-ms: ${AUDIT_EXPORT_S3_HTTP_TIMEOUT_MS:10000}
+      # Audit-mirror Kafka consumer: mirrors the audit-append stream to object storage. OFF by default.
+      audit-mirror:
+        enabled: ${AUDIT_MIRROR_ENABLED:false}
+        topic: ${AUDIT_MIRROR_TOPIC:cypherx.auth.audit.appended}
+        group-id: ${AUDIT_MIRROR_GROUP_ID:auth-audit-mirror}
+      # Usage-rollup Kafka consumer: cypherx.llms.usage.recorded -> tenant_usage_counters. OFF by default.
+      usage-rollup:
+        enabled: ${USAGE_ROLLUP_ENABLED:false}
+        topic: ${USAGE_ROLLUP_TOPIC:cypherx.llms.usage.recorded}
+        group-id: ${USAGE_ROLLUP_GROUP_ID:auth-usage-rollup}
+      # Hourly per-tenant audit chain-verification job (DB-only; safe on any boot).
+      chain-verify:
+        enabled: ${AUDIT_CHAIN_VERIFY_ENABLED:true}
+        sweep-ms: ${AUDIT_CHAIN_VERIFY_SWEEP_MS:3600000}
+        window-hours: ${AUDIT_CHAIN_VERIFY_WINDOW_HOURS:24}
+        max-tenants-per-sweep: ${AUDIT_CHAIN_VERIFY_MAX_TENANTS:5000}
+    # Outbound webhooks + signed-delivery worker (WP04 / Contract 21): the worker drains
+    # auth.webhook_deliveries, POSTing each payload with an HMAC-SHA256 signature header and
+    # exponential-backoff retry until delivered (2xx) or dead (max-attempts exhausted).
+    webhooks:
+      enabled: ${AUTH_WEBHOOKS_ENABLED:true}
+      poll-delay-ms: ${AUTH_WEBHOOKS_POLL_DELAY_MS:5000}
+      batch-size: ${AUTH_WEBHOOKS_BATCH_SIZE:100}
+      connect-timeout-ms: ${AUTH_WEBHOOKS_CONNECT_TIMEOUT_MS:5000}
+      request-timeout-ms: ${AUTH_WEBHOOKS_REQUEST_TIMEOUT_MS:10000}
+      max-attempts: ${AUTH_WEBHOOKS_MAX_ATTEMPTS:8}
+      backoff-base-ms: ${AUTH_WEBHOOKS_BACKOFF_BASE_MS:30000}
+      backoff-cap-ms: ${AUTH_WEBHOOKS_BACKOFF_CAP_MS:3600000}
+      secret-bytes: ${AUTH_WEBHOOKS_SECRET_BYTES:32}
+      user-agent: ${AUTH_WEBHOOKS_USER_AGENT:CypherX-Webhooks/1.0}
+    # Self-serve onboarding (WP04 Component 1c). Pluggable email + captcha providers select by env.
+    onboarding:
+      # EmailEmitter selection: "smtp" (prod / mailhog locally) | "mock" (tests / no-SMTP local).
+      email-provider: ${ONBOARDING_EMAIL_PROVIDER:mock}
+      # CaptchaVerifier selection: "turnstile" (prod) | "mock" (tests / local).
+      captcha-provider: ${ONBOARDING_CAPTCHA_PROVIDER:mock}
+      # Verification-token lifetime before a pending signup expires (verify -> 410). Default 24h.
+      verification-ttl-minutes: ${ONBOARDING_VERIFICATION_TTL_MINUTES:1440}
+      # Self-serve tenant defaults (plan must exist in auth.plan_defaults).
+      default-plan: ${ONBOARDING_DEFAULT_PLAN:free}
+      default-region: ${ONBOARDING_DEFAULT_REGION:us-east-1}
+      # Velocity / abuse caps (application-level second line after the rate-limit filter).
+      max-signups-per-ip-per-hour: ${ONBOARDING_MAX_SIGNUPS_PER_IP_PER_HOUR:5}
+      max-signups-per-email-per-day: ${ONBOARDING_MAX_SIGNUPS_PER_EMAIL_PER_DAY:3}
+      max-resend-attempts: ${ONBOARDING_MAX_RESEND_ATTEMPTS:5}
+      # Risk score [0,1] at/above which a signup is held for manual review instead of emailing.
+      manual-review-risk-threshold: ${ONBOARDING_MANUAL_REVIEW_RISK_THRESHOLD:0.80}
+      # Public base URL used to build the verification link in the email body.
+      verification-base-url: ${ONBOARDING_VERIFICATION_BASE_URL:http://localhost:8080}
+      # SMTP transport (used only when email-provider == smtp). Local default = mailhog.
+      smtp:
+        host: ${ONBOARDING_SMTP_HOST:localhost}
+        port: ${ONBOARDING_SMTP_PORT:1025}
+        username: ${ONBOARDING_SMTP_USERNAME:}
+        password: ${ONBOARDING_SMTP_PASSWORD:}
+        start-tls: ${ONBOARDING_SMTP_START_TLS:false}
+        from: ${ONBOARDING_SMTP_FROM:no-reply@cypherx.local}
+        timeout-ms: ${ONBOARDING_SMTP_TIMEOUT_MS:5000}
+    # Secret redaction in structured logs (Contract 6 + Phase 2 checklist). Consumed by
+    # logback-spring.xml via <springProperty>; overridable through standard Spring env binding
+    # (e.g. CYPHERX_AUTH_LOGGING_REDACTION_VALUE_PATTERN). The XML carries identical defaults as
+    # the documented last-resort fallback for pre-Spring logback initialisation.
+    logging:
+      # Exact JSON field names (any depth) whose values are always masked.
+      redaction-field-names: password,passwd,secret,client_secret,api_key,apiKey,token,access_token,refresh_token,authorization,credential,credentials
+      # Masks `<secret-ish name>=<value>` / `: <value>` fragments inside string values
+      # (group 1 = the field name, kept readable; the value is replaced).
+      redaction-value-pattern: '(?i)\b(password|passwd|secret|client[-_]?secret|api[-_]?key|apikey|access[-_]?token|refresh[-_]?token|token|authorization|credentials?)\b["'']?\s*[=:]\s*["'']?(?:bearer\s+)?[^\s"'',;]+'
+      # Masks bare `Bearer <token>` fragments (no name= prefix).
+      redaction-bearer-pattern: '(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+'
+
+logging:
+  level:
+    root: INFO
+    ai.cypherx.auth: ${LOG_LEVEL:INFO}

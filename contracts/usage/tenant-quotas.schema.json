@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.cypherx.ai/v1/usage/tenant-quotas.schema.json",
+  "title": "Tenant Quotas — limits JSON (Contract 19.2)",
+  "description": "Schema for the auth.tenant_quotas.limits JSONB column (canonical, owned by Auth; replicated to services via cache). Optional per-service blocks; every key is OPTIONAL and absence means 'inherit from plan default' (auth.plan_defaults merged with the tenant row, tenant row wins per-key). additionalProperties:true at every level for forward-compatibility (new limit keys / new service blocks may appear without a schema bump).",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "auth": {
+      "type": "object",
+      "description": "Auth-service limits. Every key optional.",
+      "additionalProperties": true,
+      "properties": {
+        "agents_max": { "type": "integer", "minimum": 0, "description": "Max agents the tenant may create." },
+        "api_keys_per_agent_max": { "type": "integer", "minimum": 0, "description": "Max API keys per agent." },
+        "tokens_issued_per_min": { "type": "integer", "minimum": 0, "description": "Max tokens minted per minute." }
+      }
+    },
+    "llms": {
+      "type": "object",
+      "description": "LLMs-service limits. Every key optional.",
+      "additionalProperties": true,
+      "properties": {
+        "requests_per_min": { "type": "integer", "minimum": 0, "description": "Max completion/embedding requests per minute." },
+        "prompt_tokens_per_min": { "type": "integer", "minimum": 0, "description": "Max prompt tokens per minute." },
+        "completion_tokens_per_min": { "type": "integer", "minimum": 0, "description": "Max completion tokens per minute." },
+        "cost_usd_per_hour": { "type": "number", "minimum": 0, "description": "Max spend in USD per rolling hour." },
+        "cost_usd_per_day": { "type": "number", "minimum": 0, "description": "Max spend in USD per day." },
+        "cost_usd_per_month": { "type": "number", "minimum": 0, "description": "Max spend in USD per month." },
+        "byok_keys_max": { "type": "integer", "minimum": 0, "description": "Max bring-your-own-key provider keys." }
+      }
+    },
+    "guardrails": {
+      "type": "object",
+      "description": "Guardrails-service limits. Every key optional.",
+      "additionalProperties": true,
+      "properties": {
+        "checks_per_min": { "type": "integer", "minimum": 0, "description": "Max guardrail checks per minute." },
+        "input_bytes_per_min": { "type": "integer", "minimum": 0, "description": "Max inspected input bytes per minute." },
+        "custom_rules_max": { "type": "integer", "minimum": 0, "description": "Max custom rules." },
+        "custom_policies_max": { "type": "integer", "minimum": 0, "description": "Max custom policies." }
+      }
+    },
+    "rag": {
+      "type": "object",
+      "description": "RAG-service limits. Every key optional.",
+      "additionalProperties": true,
+      "properties": {
+        "kbs_max": { "type": "integer", "minimum": 0, "description": "Max knowledge bases." },
+        "documents_per_kb_max": { "type": "integer", "minimum": 0, "description": "Max documents per knowledge base." },
+        "storage_bytes_max": { "type": "integer", "minimum": 0, "description": "Max RAG storage in bytes." },
+        "queries_per_min": { "type": "integer", "minimum": 0, "description": "Max RAG queries per minute." },
+        "ingest_jobs_per_hour": { "type": "integer", "minimum": 0, "description": "Max ingest jobs per hour." }
+      }
+    },
+    "memory": {
+      "type": "object",
+      "description": "Memory-service limits. Every key optional.",
+      "additionalProperties": true,
+      "properties": {
+        "memories_max": { "type": "integer", "minimum": 0, "description": "Max stored memories." },
+        "storage_bytes_max": { "type": "integer", "minimum": 0, "description": "Max memory storage in bytes." },
+        "stores_per_min": { "type": "integer", "minimum": 0, "description": "Max memory store operations per minute." },
+        "retrieves_per_min": { "type": "integer", "minimum": 0, "description": "Max memory retrieve operations per minute." }
+      }
+    },
+    "tools": {
+      "type": "object",
+      "description": "Tools-service limits. Every key optional.",
+      "additionalProperties": true,
+      "properties": {
+        "private_tools_max": { "type": "integer", "minimum": 0, "description": "Max private tools." },
+        "invocations_per_min": { "type": "integer", "minimum": 0, "description": "Max tool invocations per minute." },
+        "publishable_versions_max": { "type": "integer", "minimum": 0, "description": "Max publishable tool versions." }
+      }
+    },
+    "skills": {
+      "type": "object",
+      "description": "Skills-service limits. Every key optional.",
+      "additionalProperties": true,
+      "properties": {
+        "private_skills_max": { "type": "integer", "minimum": 0, "description": "Max private skills." },
+        "executions_per_min": { "type": "integer", "minimum": 0, "description": "Max skill executions per minute." }
+      }
+    },
+    "xagent": {
+      "type": "object",
+      "description": "xAgent-service limits. Every key optional.",
+      "additionalProperties": true,
+      "properties": {
+        "agents_max": { "type": "integer", "minimum": 0, "description": "Max xAgents." },
+        "concurrent_tasks_max": { "type": "integer", "minimum": 0, "description": "Max concurrent tasks." },
+        "workflow_depth_max": { "type": "integer", "minimum": 0, "description": "Max workflow nesting depth." }
+      }
+    }
+  }
+}

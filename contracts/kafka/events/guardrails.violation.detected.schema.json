@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.cypherx.ai/v1/kafka/events/guardrails.violation.detected.json",
+  "title": "Payload — cypherx.guardrails.violation.detected",
+  "description": "Contract 5 first-cycle payload. Emitted by the Guardrails service when a policy violation is detected on an inbound or outbound payload. Carried inside the Kafka event envelope `payload` field. Forward-compatible: tolerates unknown fields (additionalProperties:true).",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "agent_id",
+    "tenant_id",
+    "policy",
+    "direction",
+    "decision",
+    "trace_id"
+  ],
+  "properties": {
+    "agent_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Agent whose traffic triggered the guardrail."
+    },
+    "tenant_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Isolation-boundary UUID (Contract 13)."
+    },
+    "policy": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Identifier of the guardrail policy that fired."
+    },
+    "direction": {
+      "type": "string",
+      "enum": ["input", "output"],
+      "description": "Whether the violation was detected on the request `input` to the model or the `output` returned from it."
+    },
+    "decision": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Action the guardrail took (e.g. `block`, `redact`, `flag`, `allow-with-warning`)."
+    },
+    "trace_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Distributed-tracing correlation id (Contract 8)."
+    }
+  }
+}

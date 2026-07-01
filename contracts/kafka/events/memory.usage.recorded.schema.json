@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.cypherx.ai/v1/kafka/events/memory.usage.recorded.json",
+  "title": "Payload — cypherx.memory.usage.recorded",
+  "description": "Contract 19.1 usage-metering payload emitted by the Memory service as the body of the cypherx.memory.usage.recorded Kafka event (Contract 5 envelope wraps it). Member of the usage-event family: shares the common metering shape (tenant_id + operation + units required) defined in usage/usage-event.schema.json, specialised for Memory operations (e.g. 'write', 'recall', 'score'). Metering events are NEVER sampled and MUST be produced via the transactional outbox pattern. Forward-compatible: tolerates unknown fields (additionalProperties:true). The MEMORY_SCORING_ENABLED flag defaults off; when off, Memory still emits write/recall metering exactly as today and never emits 'score' operations.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["tenant_id", "operation", "units"],
+  "properties": {
+    "tenant_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The isolation boundary that consumed the billable Memory operation (Contract 13). Resolved from the JWT, never from a request body. Also the Kafka message key and envelope partition_key for this topic."
+    },
+    "api_key_id": {
+      "type": ["string", "null"],
+      "format": "uuid",
+      "description": "The API key that authenticated the operation (Contract 18), or null when not key-authenticated."
+    },
+    "agent_id": {
+      "type": ["string", "null"],
+      "format": "uuid",
+      "description": "The agent that performed the Memory operation, or null for non-agent callers."
+    },
+    "principal_id": {
+      "type": ["string", "null"],
+      "format": "uuid",
+      "description": "The principal (human/service user) for non-agent callers, or null when an agent_id is present."
+    },
+    "operation": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Memory operation being metered (e.g. 'write', 'recall', 'score'). 'score' is only emitted when MEMORY_SCORING_ENABLED is on."
+    },
+    "units": {
+      "type": "object",
+      "description": "Map of unit_type -> numeric quantity consumed (e.g. {\"items_written\": 3, \"embedding_tokens\": 512} or {\"items_recalled\": 5}). Unit types are Memory-defined. Must contain at least one entry; every value is a number.",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "number",
+        "description": "Quantity consumed for this unit_type."
+      }
+    },
+    "cost_usd": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Computed monetary cost of the Memory operation in USD."
+    },
+    "duration_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Wall-clock duration of the metered operation in milliseconds."
+    },
+    "request_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Correlates this metering event to the originating API request."
+    },
+    "trace_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Distributed-trace identifier (Contract 8) for the operation."
+    }
+  }
+}

@@ -1,0 +1,14 @@
+# Throwaway smoke-test namespace (Phase 1 Component 21).
+# Istio-injected so the echo-service pod gets an Envoy sidecar — this is what
+# populates `traceparent` (assertion 1) and produces the Kong->echo spans
+# (assertion 4). `kubectl delete ns smoketest` is the teardown (assertion 10).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: smoketest
+  labels:
+    istio-injection: enabled
+    app.kubernetes.io/part-of: cypherx
+    cypherx.ai/purpose: infra-smoke-test
+    # Marks this ns as ephemeral so a sweep can find/clean leftovers.
+    cypherx.ai/ephemeral: "true"

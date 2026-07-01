@@ -1,0 +1,50 @@
+{
+  "$schemaRef": "../service-token.schema.json",
+  "valid": [
+    {
+      "iss": "https://auth.cypherx.ai",
+      "sub": "svc:xagent",
+      "aud": ["llms", "guardrails"],
+      "iat": 1716384000,
+      "exp": 1716384300,
+      "jti": "c1a2b3d4-e5f6-4789-8abc-def012345678",
+      "service_name": "xagent",
+      "service_version": "1.0.0",
+      "tenant_id": "3f9a7c2e-1b4d-4e8a-9c6f-7a2b3c4d5e6f",
+      "on_behalf_of": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "scopes": ["internal:read", "internal:write"]
+    },
+    {
+      "iss": "https://auth.cypherx.ai",
+      "sub": "svc-ext:client_8f3a92c1",
+      "aud": "*",
+      "iat": 1716384000,
+      "exp": 1716387600,
+      "jti": "d4c3b2a1-f6e5-4987-8cba-876543210fed",
+      "service_name": "acme-partner-backend",
+      "scopes": ["llm:invoke"]
+    }
+  ],
+  "invalid": [
+    {
+      "iss": "https://auth.cypherx.ai",
+      "sub": "svc:xagent",
+      "aud": ["llms"],
+      "iat": 1716384000,
+      "exp": 1716384300,
+      "jti": "c1a2b3d4-e5f6-4789-8abc-def012345678",
+      "service_version": "1.0.0",
+      "scopes": ["internal:read"]
+    },
+    {
+      "iss": "https://auth.cypherx.ai",
+      "sub": "user:not-a-service",
+      "aud": "*",
+      "iat": 1716384000,
+      "exp": 1716384300,
+      "jti": "c1a2b3d4-e5f6-4789-8abc-def012345678",
+      "service_name": "xagent",
+      "scopes": ["internal:read"]
+    }
+  ]
+}

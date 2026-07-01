@@ -1,0 +1,401 @@
+openapi: 3.1.0
+info:
+  title: CypherX Auth Service API
+  description: >
+    Agent identity & access management for the CypherX platform (Phase 2). This document covers the
+    ⚡ first-cycle endpoints implemented in the kafka+audit feature slice: live token revocation and
+    the audit-log read/verify surface, plus the always-public health and JWKS endpoints they sit
+    beside. Every error response uses the Contract 2 envelope (`#/components/schemas/Error`). Every
+    protected route is authenticated with a Bearer agent JWT (Contract 1 — `bearerAuth`).
+  version: 0.1.0
+  contact:
+    name: CypherX Platform / Auth
+servers:
+  - url: https://auth.cypherx.ai
+    description: Production (issuer-configurable per deployment)
+  - url: http://localhost:8080
+    description: Local dev stack
+
+tags:
+  - name: revocation
+    description: Live token revocation (Component 3c).
+  - name: audit
+    description: Tamper-evident audit log read & verification (Component 6).
+  - name: health
+    description: Liveness / readiness (Contract 7).
+  - name: well-known
+    description: JWKS / OIDC discovery (RFC 8414 / 8615).
+
+paths:
+  /v1/tokens/revoke:
+    post:
+      tags: [revocation]
+      summary: Revoke a single token by jti
+      description: >
+        Inserts a durable `auth.revoked_tokens` row, sets the Valkey `jti-revoked:{jti}` hot-path
+        deny entry (TTL = remaining token lifetime), publishes `cypherx.auth.token.revoked`, and
+        writes an append-only audit row. Requires scope `agent:revoke` OR `platform:admin`. The
+        token's tenant is taken from the CALLER's verified JWT, never the body (Contract 13).
+      operationId: revokeToken
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevokeTokenRequest'
+      responses:
+        '204':
+          description: Revoked (idempotent — revoking an already-revoked jti also returns 204).
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  /v1/agents/{agent_id}/revoke-all-tokens:
+    post:
+      tags: [revocation]
+      summary: Revoke every live token for an agent and suspend it
+      description: >
+        Enumerates the agent's live jtis from the Valkey `agent-active-jtis:{agent_id}` set, revokes
+        each (DB + Valkey + Kafka), marks `auth.agents.status = 'suspended'` so no new tokens mint,
+        and emits the compact `cypherx.auth.agent.deactivated` state event. Requires scope
+        `agent:revoke` OR `platform:admin`.
+      operationId: revokeAllTokens
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevokeAllRequest'
+      responses:
+        '200':
+          description: Number of live tokens revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revoked_count]
+                properties:
+                  revoked_count:
+                    type: integer
+                    format: int32
+                    minimum: 0
+                    example: 3
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  /v1/audit-log:
+    get:
+      tags: [audit]
+      summary: Read the caller tenant's audit log (cursor-paginated)
+      description: >
+        Returns audit rows for the caller's tenant (RLS enforces the tenant filter). Cursor-paginated
+        (Contract 9) by ascending row id. Requires scope `tenant:admin` (own tenant) or
+        `platform:admin` (any tenant via `tenant_id`). Default limit 50, max 500.
+      operationId: listAuditLog
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+          description: Inclusive lower bound on `created_at` (RFC 3339).
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+          description: Inclusive upper bound on `created_at` (RFC 3339).
+        - name: event_type
+          in: query
+          schema: { type: string }
+          description: Exact `event_type` filter (e.g. `token.revoked`, `authz.denied`).
+        - name: agent_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: cursor
+          in: query
+          schema: { type: string }
+          description: Keyset cursor — the `id` of the last row from the previous page (exclusive).
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 500, default: 50 }
+      responses:
+        '200':
+          description: A page of audit rows plus the next cursor.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/AuditRow' }
+                  next_cursor:
+                    type: [string, 'null']
+                    description: Pass as `cursor` to fetch the next page; null when exhausted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /v1/audit-log/verify:
+    get:
+      tags: [audit]
+      summary: Verify the per-tenant audit hash chain over a window
+      description: >
+        Re-walks the per-tenant SHA-256 hash chain (`row_hash = sha256(canonical(row) ||
+        prev_row_hash)`) and reports whether it is intact. Auditors and customers use this to verify
+        tamper-evidence themselves. Requires scope `tenant:admin` or `platform:admin`.
+      operationId: verifyAuditLog
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Verification result.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ChainOk'
+                  - $ref: '#/components/schemas/ChainBroken'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /livez:
+    get:
+      tags: [health]
+      summary: Liveness probe (Contract 7)
+      description: Process-only; never touches DB/Kafka/Valkey. Always 200 while the JVM can serve.
+      operationId: livez
+      security: []
+      responses:
+        '200':
+          description: Process alive.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  version: { type: string, example: 0.1.0 }
+                  uptime_seconds: { type: integer, format: int64 }
+
+  /readyz:
+    get:
+      tags: [health]
+      summary: Readiness probe (Contract 7)
+      description: DB `SELECT 1` + signing-key encryptor readiness. 200 when ready, else 503.
+      operationId: readyz
+      security: []
+      responses:
+        '200':
+          description: Ready.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Readiness' }
+        '503':
+          description: Not ready.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Readiness' }
+
+  /.well-known/jwks.json:
+    get:
+      tags: [well-known]
+      summary: JWKS public keys (RFC 8615)
+      description: Public RSA keys (signing + verifying) every verifier uses to validate RS256 JWTs.
+      operationId: jwks
+      security: []
+      responses:
+        '200':
+          description: JWK Set.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  keys:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        kty: { type: string, example: RSA }
+                        kid: { type: string }
+                        use: { type: string, example: sig }
+                        alg: { type: string, example: RS256 }
+                        n: { type: string }
+                        e: { type: string, example: AQAB }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        Contract 1 agent/service JWT. RS256, `kid` header resolves against `/.well-known/jwks.json`.
+        Claims include `iss`, `sub`, `aud`, `iat`, `exp`, `jti`, `tenant_id`, `agent_id`, `scopes`,
+        `deployment_id`. Scope authorities are derived from the `scopes` claim (e.g. `agent:revoke`,
+        `platform:admin`, `tenant:admin`). Forward-compatible: verifiers MUST accept unknown claims.
+
+  parameters:
+    AgentId:
+      name: agent_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+      description: Target agent's UUID.
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid credentials (Contract 2 envelope).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              code: UNAUTHORIZED
+              message: Authentication required
+              request_id: 7f1c4a2e-1d3b-4f0a-9c2e-0b9a1c2d3e4f
+              trace_id: 4bf92f3577b34da6a3ce929d0e0e4736
+              timestamp: '2026-06-06T10:00:00.000Z'
+    Forbidden:
+      description: Authenticated but lacking the required scope (Contract 2 envelope).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              code: FORBIDDEN
+              message: Caller lacks token-revocation scope
+              details:
+                required_any: [agent:revoke, platform:admin]
+              request_id: 7f1c4a2e-1d3b-4f0a-9c2e-0b9a1c2d3e4f
+              trace_id: 4bf92f3577b34da6a3ce929d0e0e4736
+              timestamp: '2026-06-06T10:00:00.000Z'
+    ValidationError:
+      description: Request failed validation (Contract 2 envelope).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              code: VALIDATION_ERROR
+              message: 'Invalid UUID for jti'
+              details: { field: jti }
+              request_id: 7f1c4a2e-1d3b-4f0a-9c2e-0b9a1c2d3e4f
+              trace_id: 4bf92f3577b34da6a3ce929d0e0e4736
+              timestamp: '2026-06-06T10:00:00.000Z'
+
+  schemas:
+    Error:
+      type: object
+      description: Contract 2 canonical error envelope (contracts/api/error-format.schema.json).
+      required: [error]
+      additionalProperties: true
+      properties:
+        error:
+          type: object
+          required: [code, message, request_id, trace_id, timestamp]
+          additionalProperties: true
+          properties:
+            code:
+              type: string
+              pattern: '^[A-Z][A-Z0-9_]*$'
+              description: SCREAMING_SNAKE_CASE reserved code (e.g. UNAUTHORIZED, FORBIDDEN, VALIDATION_ERROR, TOKEN_REVOKED).
+            message: { type: string }
+            details:
+              type: object
+              additionalProperties: true
+            request_id: { type: string, format: uuid }
+            trace_id: { type: string }
+            timestamp: { type: string, format: date-time }
+
+    RevokeTokenRequest:
+      type: object
+      required: [jti, reason]
+      properties:
+        jti:
+          type: string
+          format: uuid
+          description: The token id to revoke.
+        reason:
+          type: string
+          enum: [compromised, rotated, deactivated, policy_violation, admin_action]
+
+    RevokeAllRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          enum: [compromised, rotated, deactivated, policy_violation, admin_action]
+          default: compromised
+
+    AuditRow:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        event_type: { type: string, example: token.revoked }
+        agent_id: { type: [string, 'null'], format: uuid }
+        tenant_id: { type: string, format: uuid }
+        action: { type: [string, 'null'] }
+        resource: { type: [string, 'null'] }
+        decision: { type: [string, 'null'], enum: [allow, deny, null] }
+        policy_ids:
+          type: array
+          items: { type: string }
+        request_id: { type: [string, 'null'], format: uuid }
+        trace_id: { type: [string, 'null'], format: uuid }
+        ip_address: { type: [string, 'null'] }
+        created_at: { type: string, format: date-time }
+        row_hash: { type: string, description: Hex-encoded SHA-256 row hash. }
+        prev_row_hash: { type: string, description: Hex-encoded previous row hash (genesis = 64 zero hex). }
+
+    ChainOk:
+      type: object
+      required: [ok, rows_verified]
+      properties:
+        ok: { type: boolean, enum: [true] }
+        rows_verified: { type: integer, format: int64 }
+        from_hash: { type: [string, 'null'] }
+        to_hash: { type: [string, 'null'] }
+
+    ChainBroken:
+      type: object
+      required: [ok, broken_at_row_id]
+      properties:
+        ok: { type: boolean, enum: [false] }
+        broken_at_row_id: { type: integer, format: int64 }
+        expected_prev_hash: { type: string }
+        actual_prev_hash: { type: string }
+
+    Readiness:
+      type: object
+      properties:
+        ready: { type: boolean }
+        checks:
+          type: object
+          properties:
+            database: { type: string, enum: [ok, failed] }
+            encryptor: { type: string, enum: [ok, failed] }

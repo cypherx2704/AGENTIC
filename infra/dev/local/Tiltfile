@@ -1,0 +1,159 @@
+# =====================================================================================================================
+# dev/local/Tiltfile — CypherX local development loop (Phase 1, Component 17c).
+#
+# `tilt up` brings up:
+#   1. The backing dependencies (Postgres, Valkey, Redpanda, MinIO) via docker-compose.yml.
+#   2. A one-shot Kafka topic bootstrap (seed/kafka-topics.sh) once Redpanda is healthy.
+#   3. The SharedCore + xAgent services with live-update, each wired to the deps above.
+#
+# DESIGN NOTES — READ BEFORE EDITING:
+#   * Istio and Kong are NOT part of the local stack (Component 17c). Services reach each other DIRECTLY by DNS
+#     (http://auth-service:8080) — there is no mesh mTLS and no API gateway locally. The cloud-only ALB->Kong
+#     plaintext boundary and Kong->backend mTLS do not exist here by design; do not add them.
+#   * The service CODE DOES NOT EXIST YET. Services land in Phase 2+. So every service block below is GUARDED by a
+#     check that its source directory exists. Until a service dir appears, `tilt up` brings up ONLY the deps +
+#     topic bootstrap — which is exactly what a platform/infra engineer needs on day one. As each Phase-2+ team adds
+#     their service repo under ../../services/<name>, that block activates automatically with no Tiltfile edit.
+#   * Local cluster is `kind` (single node). The deps run in docker-compose on the SAME docker network as kind so
+#     in-cluster pods resolve `postgres`, `valkey`, `redpanda`, `minio` by name. See README for the kind network note.
+#
+# Quick reference:
+#   tilt up            → start everything (deps + topics + any present services)
+#   tilt down          → stop the Tilt-managed resources (compose deps are torn down too)
+#   tilt up -- --deps-only   → bring up ONLY the dependencies (skip service builds); see config below
+# =====================================================================================================================
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Config — allow `tilt up -- --deps-only` to skip service builds (useful for infra/platform work).
+# ---------------------------------------------------------------------------------------------------------------------
+config.define_bool("deps-only")
+cfg = config.parse()
+DEPS_ONLY = cfg.get("deps-only", False)
+
+# Repo root relative to this Tiltfile (infra/dev/local/Tiltfile -> repo root is ../../..).
+# Service source is expected at <repo>/services/<name> (Phase 2+ teams create these).
+SERVICES_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "services"))
+
+# ---------------------------------------------------------------------------------------------------------------------
+# 1. Dependencies via docker-compose. Tilt natively understands compose files and shows their health in the UI.
+#    These are LOCAL substitutes for RDS / ElastiCache / MSK / S3 (see docker-compose.yml header).
+# ---------------------------------------------------------------------------------------------------------------------
+docker_compose("./docker-compose.yml")
+
+# Group the compose services in the Tilt UI and tag them as infra so they sort to the top.
+dc_resource("postgres", labels=["1-deps"])
+dc_resource("valkey", labels=["1-deps"])
+dc_resource("redpanda", labels=["1-deps"])
+dc_resource("minio", labels=["1-deps"])
+dc_resource("minio-init", labels=["1-deps"])
+
+# ---------------------------------------------------------------------------------------------------------------------
+# 2. Kafka topic bootstrap — one-shot, runs seed/kafka-topics.sh inside the redpanda container once it is healthy.
+#    `rpk topic create` is idempotent, so re-triggering this resource is safe.
+# ---------------------------------------------------------------------------------------------------------------------
+local_resource(
+    name="redpanda-topics",
+    cmd="docker compose -f ./docker-compose.yml exec -T redpanda bash < ./seed/kafka-topics.sh",
+    # Re-run automatically if the topic list changes; manual trigger otherwise.
+    deps=["./seed/kafka-topics.sh"],
+    resource_deps=["redpanda"],
+    labels=["1-deps"],
+    allow_parallel=True,
+)
+
+# ---------------------------------------------------------------------------------------------------------------------
+# 3. SharedCore + xAgent services.
+#
+# The SharedCore stack (per Phase 1 HLD): auth, llms, guardrails, memory, rag. Plus xAgent's agent-runtime.
+# Each entry maps a service to its source dir, container image, and the host port it is published on (localhost:808N).
+#
+# Host ports MUST avoid 8081/8082 — Redpanda publishes Schema Registry on 8081 and Pandaproxy
+# on 8082 (see docker-compose). This map matches the proven host-shell run recipe + the demo BFF.
+#   name            dir (under services/)   image                         port    notes
+#   --------------- ----------------------- ----------------------------- ------- --------------------------------------
+#   auth-service    auth-service            cypherx/auth-service:dev      8080    Auth owns /v1/agents, /v1/tokens, JWKS
+#   xagent          xagent                  cypherx/xagent:dev            8083    xAgent owns /v1/tasks, /v1/workflows
+#   llms-gateway    llms-gateway            cypherx/llms-gateway:dev      8085    needs ANTHROPIC/OPENAI keys for live LLM
+#   guardrails      guardrails-service      cypherx/guardrails-service:dev 8086
+#   memory-service  memory-service          cypherx/memory-service:dev    8087    uses pgvector (memory schema)
+#   rag-service     rag-service             cypherx/rag-service:dev       8088    uses pgvector + MinIO bucket
+#
+# All services connect to the deps by DNS name (postgres / valkey / redpanda / minio) using the env in
+# seed/doppler.env.example. Each service depends on postgres + valkey + redpanda being up first.
+# ---------------------------------------------------------------------------------------------------------------------
+
+SHARED_CORE_SERVICES = [
+    {"name": "auth-service",   "dir": "auth-service",        "port": 8080},
+    {"name": "xagent",         "dir": "xagent",              "port": 8083},
+    {"name": "llms-gateway",   "dir": "llms-gateway",        "port": 8085},
+    {"name": "guardrails",     "dir": "guardrails-service",  "port": 8086},
+    {"name": "memory-service", "dir": "memory-service",      "port": 8087},
+    {"name": "rag-service",    "dir": "rag-service",         "port": 8088},
+]
+
+def load_service(svc):
+    """Register one service with docker_build + k8s_yaml IF its source + k8s manifests exist; else print a hint.
+
+    The service team is expected to provide, under services/<dir>/:
+      - Dockerfile               (multi-stage; the runtime stage is what Tilt builds)
+      - deploy/local/*.yaml      (a Deployment + Service for local kind; Service name MUST equal svc['name'] so peers
+                                   resolve http://<name>:8080 — matches the cloud in-cluster Service name)
+    Live-update syncs source into the running container for fast reloads (per the service's language; e.g. Go air,
+    Python uvicorn --reload, Node nodemon). The exact sync/run rules live with the service so this Tiltfile stays
+    language-agnostic — the service's own dev tooling decides how it hot-reloads.
+    """
+    src = os.path.join(SERVICES_ROOT, svc["dir"])
+    k8s_dir = os.path.join(src, "deploy", "local")
+
+    if not os.path.exists(src):
+        # Phase 1 reality: the service does not exist yet. Surface a friendly note in the Tilt log, then skip.
+        print("skip {}: source not found at {} (lands in Phase 2+)".format(svc["name"], src))
+        return
+
+    if not os.path.exists(k8s_dir):
+        print("skip {}: source present but no deploy/local k8s manifests at {}".format(svc["name"], k8s_dir))
+        return
+
+    # Build the image. The service's Dockerfile is authoritative; Tilt rebuilds on source change. Service teams add
+    # a `live_update` block (sync + restart) to their own build helper; the default here is a plain rebuild.
+    docker_build(
+        ref="cypherx/{}:dev".format(svc["name"]),
+        context=src,
+        dockerfile=os.path.join(src, "Dockerfile"),
+    )
+
+    # Apply the local Deployment + Service manifests. Prefer kustomize if the team ships a kustomization.yaml,
+    # otherwise load every *.yaml in deploy/local/ (Tilt's glob via the `*` is resolved by k8s_yaml's listdir helper).
+    if os.path.exists(os.path.join(k8s_dir, "kustomization.yaml")):
+        k8s_yaml(kustomize(k8s_dir))
+    else:
+        manifests = [os.path.join(k8s_dir, f) for f in listdir(k8s_dir) if f.endswith(".yaml")]
+        k8s_yaml(manifests)
+
+    # Port-forward localhost:<port> -> container 8080, and order startup after the deps.
+    k8s_resource(
+        workload=svc["name"],
+        port_forwards="{}:8080".format(svc["port"]),
+        resource_deps=["postgres", "valkey", "redpanda", "redpanda-topics"],
+        labels=["2-shared-core"],
+    )
+
+if not DEPS_ONLY:
+    for svc in SHARED_CORE_SERVICES:
+        load_service(svc)
+else:
+    print("deps-only mode: skipping all service builds (Postgres/Valkey/Redpanda/MinIO + topics only)")
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Helpful end-of-load summary printed in the Tilt log.
+# ---------------------------------------------------------------------------------------------------------------------
+print("""
+CypherX local dev is starting.
+  Postgres   localhost:5432   (db: cypherx_platform, admin: cypherx_admin / localdev)
+  Valkey     localhost:6379
+  Redpanda   localhost:9092   (Kafka API)   localhost:8081 (Schema Registry)   localhost:9644 (admin)
+  MinIO      localhost:9000   (S3 API)      localhost:9001 (console: cypherxlocal / cypherxlocal)
+  Services   auth:8080  xagent:8083  llms:8085  guardrails:8086  memory:8087  rag:8088  (each activates once its code lands under services/<name>/ in Phase 2+)
+
+Copy dev/local/seed/doppler.env.example -> dev/local/.env before first run.
+""")

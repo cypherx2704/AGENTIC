@@ -1,0 +1,56 @@
+{
+  "$schemaRef": "../task-request.schema.json",
+  "valid": [
+    {
+      "task_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+      "schema_version": "1.0.0",
+      "idempotency_key": "1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed",
+      "sender_agent_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "receiver_agent_id": "9f8b5d2e-1c3a-4f6b-8a7e-2d4c6e8f0a1b",
+      "tenant_id": "550e8400-e29b-41d4-a716-446655440000",
+      "task_type": "research",
+      "mode": "async",
+      "priority": "high",
+      "input": { "query": "Latest advances in retrieval-augmented generation" },
+      "callback_url": "https://agents.example.com/v1/callbacks/7c9e6679",
+      "timeout_seconds": 120,
+      "trace_id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+      "span_id": "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e",
+      "produced_at": "2026-05-22T10:00:00.000Z",
+      "metadata": { "origin": "workflow-engine", "experiment_flag": true }
+    },
+    {
+      "task_id": "0a1b2c3d-4e5f-4061-8273-849506afb1c2",
+      "schema_version": "1.0.0",
+      "sender_agent_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "receiver_agent_id": "9f8b5d2e-1c3a-4f6b-8a7e-2d4c6e8f0a1b",
+      "tenant_id": "550e8400-e29b-41d4-a716-446655440000",
+      "task_type": "summarise",
+      "mode": "sync",
+      "input": { "text": "A long document body to be summarised." }
+    }
+  ],
+  "invalid": [
+    {
+      "task_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+      "schema_version": "1.0.0",
+      "sender_agent_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "receiver_agent_id": "9f8b5d2e-1c3a-4f6b-8a7e-2d4c6e8f0a1b",
+      "tenant_id": "550e8400-e29b-41d4-a716-446655440000",
+      "task_type": "research",
+      "mode": "turbo",
+      "input": { "query": "bad mode enum" }
+    },
+    {
+      "task_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+      "schema_version": "1.0.0",
+      "sender_agent_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "receiver_agent_id": "9f8b5d2e-1c3a-4f6b-8a7e-2d4c6e8f0a1b",
+      "tenant_id": "550e8400-e29b-41d4-a716-446655440000",
+      "task_type": "research",
+      "mode": "sync",
+      "input": { "query": "timeout out of range" },
+      "timeout_seconds": 1200
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "$schemaRef": "../error-format.schema.json",
+  "valid": [
+    {
+      "error": {
+        "code": "RATE_LIMIT_EXCEEDED",
+        "message": "You have exceeded the rate limit of 1000 requests per minute.",
+        "details": {
+          "limit": 1000,
+          "window": "60s",
+          "retry_after": 42
+        },
+        "request_id": "3f1d9c2a-8b6e-4a1d-9f0c-2b7e5d4a1c33",
+        "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "timestamp": "2026-05-22T10:00:00.000Z"
+      }
+    },
+    {
+      "error": {
+        "code": "VALIDATION_ERROR",
+        "message": "Request body fails schema validation.",
+        "request_id": "9a8b7c6d-5e4f-4321-8a9b-0c1d2e3f4a5b",
+        "trace_id": "0af7651916cd43dd8448eb211c80319c",
+        "timestamp": "2026-06-05T08:15:30.250Z"
+      },
+      "unexpected_future_envelope_field": "tolerated"
+    }
+  ],
+  "invalid": [
+    {
+      "error": {
+        "code": "RATE_LIMIT_EXCEEDED",
+        "message": "Missing request_id, trace_id and timestamp.",
+        "request_id": "3f1d9c2a-8b6e-4a1d-9f0c-2b7e5d4a1c33"
+      }
+    },
+    {
+      "error": {
+        "code": "not-a-reserved-code",
+        "message": "Bad code format — lowercase and hyphen violate the SCREAMING_SNAKE_CASE pattern.",
+        "request_id": "3f1d9c2a-8b6e-4a1d-9f0c-2b7e5d4a1c33",
+        "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+        "timestamp": "2026-05-22T10:00:00.000Z"
+      }
+    }
+  ]
+}

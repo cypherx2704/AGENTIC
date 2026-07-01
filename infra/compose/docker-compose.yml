@@ -1,0 +1,1081 @@
+# =====================================================================================================================
+# infra/compose/docker-compose.yml — CypherX FULL-STACK local/dev orchestration (all services in Docker).
+#
+# Topology (canonical):
+#   * Every APP service listens on PORT=8080 INSIDE its container and is addressed by its compose DNS name on the
+#     'cypherx' network (http://auth-service:8080, http://llms-gateway:8080, http://guardrails-service:8080,
+#     http://xagent:8080). Host port-forwards (for humans) map:
+#       auth-service 8080->8080, xagent 8083->8080, llms-gateway 8085->8080, guardrails-service 8086->8080,
+#       demo 8090->8090 (demo predates the 8080 rule and listens on 8090 in-container by design).
+#   * POSTGRES IS EXTERNAL (Neon serverless) — there is NO postgres container. Each service reads its DB DSN from
+#     env (see .env / .env.example). Apps use the Neon POOLED endpoint (transaction mode); migrations use the
+#     Neon DIRECT endpoint (session-level advisory locks). sslmode=require is MANDATORY for Neon.
+#   * Backing deps that DO run as containers: redpanda (Kafka), valkey, minio (+ minio-init bucket bootstrap).
+#     These mirror infra/dev/local/docker-compose.yml.
+#
+# Profiles:
+#   (default)            redpanda, valkey, minio, minio-init, topics-init + the full platform:
+#                        auth/llms/guardrails/xagent + rag/memory/tool-registry/tool-web-search (WP09-11) +
+#                        frontend-bff/frontend-app (WP13) + the always-on 'edge' reverse proxy (Kong substitute).
+#   --profile demo       adds the legacy demo BFF (opt-in; superseded by frontend-bff/app).
+#   --profile migrate    one-shot 'migrate' job: applies every service's db/migrations + provisions the new
+#                        runtime roles (rag_user/mem_user/tool_user) against Neon (DIRECT endpoint).
+#   --profile observability  OTLP collector + Tempo + Loki + Grafana + Prometheus (traces/logs/metrics + SLO alerts).
+#
+# NOTE: the 'edge' reverse proxy carries no profile (always-on) so a default `up` exposes the single entrypoint.
+# A topics-init one-shot creates every Kafka topic the services publish/consume before they start.
+#
+# First-run order (see README.md):
+#   1. cp .env.example .env  and fill the Neon DSNs (POOLED for apps, DIRECT for migrate) + SESSION_KEK_BASE64.
+#   2. docker compose --profile migrate up migrate     # one-time schema/role/RLS/seed against Neon
+#   3. docker compose up -d --build                    # backing deps + topics-init + the full platform + edge
+#   4. docker compose --profile observability up -d    # optional: traces/logs/metrics/dashboards
+#
+# Validate with:
+#   docker compose -f infra/compose/docker-compose.yml config -q
+#   docker compose -f infra/compose/docker-compose.yml --profile demo --profile migrate --profile observability config -q
+# =====================================================================================================================
+
+name: cypherx
+
+# Repo roots are two levels up from infra/compose/. Build contexts are written relative to THIS file.
+networks:
+  cypherx:
+    name: cypherx
+
+volumes:
+  valkey-data:
+  redpanda-data:
+  minio-data:
+  # Observability profile (--profile observability) persistence.
+  prometheus-data:
+  grafana-data:
+  tempo-data:
+  loki-data:
+
+services:
+  # ===================================================================================================================
+  # BACKING DEPENDENCIES (containers). Mirrors infra/dev/local/docker-compose.yml. NO postgres (Neon is external).
+  # ===================================================================================================================
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # Redpanda — MSK Kafka substitute (Kafka API-compatible single binary). Internal listener redpanda:29092 for compose
+  # peers; host listener localhost:9092. Schema Registry 8081, Admin/Prometheus 9644.
+  # -------------------------------------------------------------------------------------------------------------------
+  redpanda:
+    image: redpandadata/redpanda:v24.2.7
+    container_name: cypherx-redpanda
+    restart: unless-stopped
+    networks: [cypherx]
+    command:
+      - redpanda
+      - start
+      - --mode dev-container
+      - --smp 1
+      - --memory 1G
+      - --reserve-memory 0M
+      - --overprovisioned
+      - --node-id 0
+      - --check=false
+      # Dual listeners: INTERNAL for compose peers (redpanda:29092), EXTERNAL for host clients (localhost:9092).
+      - --kafka-addr INTERNAL://0.0.0.0:29092,EXTERNAL://0.0.0.0:9092
+      - --advertise-kafka-addr INTERNAL://redpanda:29092,EXTERNAL://localhost:9092
+      - --pandaproxy-addr INTERNAL://0.0.0.0:28082,EXTERNAL://0.0.0.0:8082
+      - --advertise-pandaproxy-addr INTERNAL://redpanda:28082,EXTERNAL://localhost:8082
+      - --schema-registry-addr 0.0.0.0:8081
+      - --rpc-addr redpanda:33145
+      - --advertise-rpc-addr redpanda:33145
+    ports:
+      - "9092:9092"   # Kafka API (host)
+      - "9644:9644"   # Admin / Prometheus
+      - "8081:8081"   # Schema Registry
+      - "8082:8082"   # Pandaproxy (Kafka REST)
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health -X brokers=localhost:9092 | grep -q 'Healthy:.*true'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # Valkey 7 — ElastiCache substitute. Idempotency keys (Contract 9), JWKS cache, rate limits. No AUTH token locally.
+  # -------------------------------------------------------------------------------------------------------------------
+  valkey:
+    image: valkey/valkey:7-alpine
+    container_name: cypherx-valkey
+    restart: unless-stopped
+    networks: [cypherx]
+    command: ["valkey-server", "--save", "60", "1", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - valkey-data:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # MinIO — S3 substitute (loki/tempo/rag buckets). 9000 S3 API, 9001 console.
+  # -------------------------------------------------------------------------------------------------------------------
+  minio:
+    image: minio/minio:RELEASE.2024-10-13T13-34-11Z
+    container_name: cypherx-minio
+    restart: unless-stopped
+    networks: [cypherx]
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-cypherxlocal}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-cypherxlocal}
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Console
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local || curl -fsS http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # minio-init — one-shot bucket bootstrap. Creates the dev buckets then exits 0.
+  # -------------------------------------------------------------------------------------------------------------------
+  minio-init:
+    image: minio/mc:RELEASE.2024-10-08T09-37-26Z
+    container_name: cypherx-minio-init
+    networks: [cypherx]
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        mc alias set local http://minio:9000 "${S3_ACCESS_KEY:-cypherxlocal}" "${S3_SECRET_KEY:-cypherxlocal}"
+        mc mb --ignore-existing local/cypherx-loki-logs-dev
+        mc mb --ignore-existing local/cypherx-tempo-traces-dev
+        mc mb --ignore-existing local/cypherx-rag-documents-dev
+        echo "minio buckets ready"
+    restart: "no"
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # topics-init — one-shot Kafka topic bootstrap (idempotent). Creates EVERY topic the services publish/consume so a
+  # cold cluster has them ahead of the producers/consumers (Redpanda auto-creates topics, but we pre-create with
+  # explicit partition/retention so the names + config are deterministic and a consumer never races a missing topic).
+  # `rpk topic create` is idempotent for an already-existing topic (it reports "exists" and the loop continues).
+  # Topics gathered from the services' outbox/consumer code:
+  #   auth      cypherx.auth.token.revoked|policy.changed|config.updated|audit.appended|agent.deactivated|agent.updated
+  #             cypherx.tenant.* (Contract-13 backbone) — created|suspended|resumed|plan_changed|pending_deletion|deleted
+  #   llms      cypherx.llms.request.completed | cypherx.llms.usage.recorded
+  #   guardrails cypherx.guardrails.violation.detected|usage.recorded|policy.changed
+  #   xagent    cypherx.agent.task.completed|failed + cypherx.agent.tools.invocation.metered (tools metering)
+  #   rag       cypherx.rag.ingestion.requested|completed|failed + cypherx.rag.usage.recorded
+  #   memory    cypherx.memory.stored|deleted|gdpr.wiped
+  # -------------------------------------------------------------------------------------------------------------------
+  topics-init:
+    image: redpandadata/redpanda:v24.2.7
+    container_name: cypherx-topics-init
+    networks: [cypherx]
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    environment:
+      KAFKA_INIT_BROKER: ${KAFKA_INIT_BROKER:-redpanda:29092}
+      KAFKA_TOPIC_PARTITIONS: ${KAFKA_TOPIC_PARTITIONS:-1}
+      KAFKA_TOPIC_RETENTION_MS: ${KAFKA_TOPIC_RETENTION_MS:-604800000}
+    # Script is a MOUNTED file (not inline) so compose never tries to interpolate the shell $vars. rpk ships in the image.
+    entrypoint: ["/bin/sh", "/topics-init.sh"]
+    volumes:
+      - ./topics-init.sh:/topics-init.sh:ro
+    restart: "no"
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # mailpit — local SMTP catcher (SES/Mailgun-style relay substitute). Used by self-serve onboarding so the
+  # verification email is actually deliverable offline: auth-service sends to mailpit:1025, and the link is read
+  # from the mailpit web UI (host :8025). In PROD this service does not exist — point ONBOARDING_SMTP_* at SES/Resend.
+  # No DB, no auth (auth-service sends unauthenticated locally). Tiny + fast; brought up alongside the platform.
+  # -------------------------------------------------------------------------------------------------------------------
+  mailpit:
+    image: axllent/mailpit:v1.20
+    container_name: cypherx-mailpit
+    restart: unless-stopped
+    networks: [cypherx]
+    environment:
+      MP_SMTP_AUTH_ALLOW_INSECURE: "true"
+      MP_SMTP_AUTH_ACCEPT_ANY: "true"
+      MP_MAX_MESSAGES: "500"
+    ports:
+      - "1025:1025"   # SMTP (auth-service -> mailpit)
+      - "8025:8025"   # Web UI — open http://localhost:8025 to read the verification link
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8025/livez"]
+      interval: 15s
+      timeout: 5s
+      start_period: 5s
+      retries: 5
+
+  # ===================================================================================================================
+  # APP SERVICES. Each builds its repo dir. DB DSN is supplied per-service from env (Neon POOLED endpoint).
+  # ===================================================================================================================
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # auth-service — Kotlin/Spring (eclipse-temurin:21-jre). Listens on 8080. JDBC DSN + SEPARATE DB_USERNAME/DB_PASSWORD.
+  # Run WITHOUT the 'local' Spring profile so the env-supplied Neon DSN is used (application-local.yaml hardcodes
+  # localhost and would override the env). The default profile does NOT bake the AES key / bootstrap token /
+  # per-service bootstrap secrets, so we supply them explicitly via env + Spring relaxed binding.
+  # -------------------------------------------------------------------------------------------------------------------
+  auth-service:
+    build:
+      context: ../../Shared Core/auth
+      dockerfile: Dockerfile
+    image: cypherx/auth-service:local
+    container_name: cypherx-auth-service
+    restart: unless-stopped
+    networks: [cypherx]
+    environment:
+      # Empty profile => use base application.yaml (env-driven), NOT application-local.yaml (localhost-hardcoded).
+      SPRING_PROFILES_ACTIVE: ""
+      # JDBC URL (Neon DIRECT or POOLED host; sslmode=require; currentSchema=auth). Credentials are SEPARATE.
+      DATABASE_URL: ${AUTH_DATABASE_URL}
+      DB_USERNAME: ${AUTH_DB_USERNAME}
+      DB_PASSWORD: ${AUTH_DB_PASSWORD}
+      DB_POOL_MAX: ${DB_POOL_MAX:-10}
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-redpanda:29092}
+      VALKEY_URL: ${VALKEY_URL:-redis://valkey:6379}
+      AUTH_ISSUER_URL: ${AUTH_ISSUER_URL:-http://auth-service:8080}
+      AUTH_PLATFORM_AUDIENCE: ${AUTH_PLATFORM_AUDIENCE:-cypherx-platform}
+      DEPLOYMENT_ID: ${DEPLOYMENT_ID:-cypherx-local}
+      ENVIRONMENT: ${ENVIRONMENT:-local}
+      AUTH_KEY_ENCRYPTOR: ${AUTH_KEY_ENCRYPTOR:-local}
+      AUTH_LOCAL_MASTER_KEY_B64: ${AUTH_LOCAL_MASTER_KEY_B64}
+      AUTH_BOOTSTRAP_TOKEN: ${AUTH_BOOTSTRAP_TOKEN}
+      # Self-serve onboarding (Contract-20). Local default = SMTP -> the mailpit catcher so the public
+      # register -> verify -> auto-login flow works end-to-end offline. The verification link is built against
+      # the edge front door (:8000); the edge redirects /v1/onboarding/verify -> the SPA /register/verify page.
+      # For PROD: set ONBOARDING_EMAIL_PROVIDER=smtp with ONBOARDING_SMTP_HOST/PORT/USERNAME/PASSWORD pointed at
+      # SES or Resend SMTP (+ ONBOARDING_SMTP_START_TLS=true) and ONBOARDING_VERIFICATION_BASE_URL=<public origin>.
+      # Captcha stays mock locally; set ONBOARDING_CAPTCHA_PROVIDER=turnstile (+ keys) for prod.
+      ONBOARDING_EMAIL_PROVIDER: ${ONBOARDING_EMAIL_PROVIDER:-smtp}
+      ONBOARDING_SMTP_HOST: ${ONBOARDING_SMTP_HOST:-mailpit}
+      ONBOARDING_SMTP_PORT: ${ONBOARDING_SMTP_PORT:-1025}
+      ONBOARDING_SMTP_USERNAME: ${ONBOARDING_SMTP_USERNAME:-}
+      ONBOARDING_SMTP_PASSWORD: ${ONBOARDING_SMTP_PASSWORD:-}
+      ONBOARDING_SMTP_START_TLS: ${ONBOARDING_SMTP_START_TLS:-false}
+      ONBOARDING_SMTP_FROM: ${ONBOARDING_SMTP_FROM:-no-reply@cypherx.local}
+      ONBOARDING_VERIFICATION_BASE_URL: ${ONBOARDING_VERIFICATION_BASE_URL:-http://localhost:8000}
+      ONBOARDING_CAPTCHA_PROVIDER: ${ONBOARDING_CAPTCHA_PROVIDER:-mock}
+      # Google OAuth2 ("Sign in with Google"). Set CYPHERX_AUTH_GOOGLE_CLIENT_ID + _CLIENT_SECRET in
+      # Doppler (dev_local) to enable. REDIRECT_URI must match the URI registered in Google Cloud Console.
+      CYPHERX_AUTH_GOOGLE_CLIENT_ID: ${CYPHERX_AUTH_GOOGLE_CLIENT_ID:-}
+      CYPHERX_AUTH_GOOGLE_CLIENT_SECRET: ${CYPHERX_AUTH_GOOGLE_CLIENT_SECRET:-}
+      CYPHERX_AUTH_GOOGLE_REDIRECT_URI: ${CYPHERX_AUTH_GOOGLE_REDIRECT_URI:-http://localhost:8000/bff/auth/google/callback}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      JAVA_OPTS: ${JAVA_OPTS:--XX:MaxRAMPercentage=75.0}
+      # JVM DNS-cache hardening. Set via JAVA_TOOL_OPTIONS (NOT JAVA_OPTS): the env supplies JAVA_OPTS
+      # (Doppler), which overrides any ${JAVA_OPTS:-default}. The JVM ALWAYS reads JAVA_TOOL_OPTIONS and
+      # applies it additively, so these take effect regardless of how java is launched:
+      #  - negative.ttl=0 -> a transient Neon UnknownHostException is NOT cached (retried immediately, not
+      #    pinned ~10s); ttl=30 -> pick up a pooler IP change within 30s. Mitigates the DNS-blip failure mode.
+      JAVA_TOOL_OPTIONS: ${JAVA_TOOL_OPTIONS:--Dsun.net.inetaddr.ttl=30 -Dsun.net.inetaddr.negative.ttl=0}
+      # Per-service bootstrap secrets for POST /v1/service-tokens. Property is
+      # cypherx.service-auth.bootstrap-secrets.<service> with LOWERCASE keys (= X-Service-Name). The empty
+      # profile does not bake these, and Spring will NOT bind a hyphenated/uppercase env-var map key reliably,
+      # so inject the exact nested config (lowercase keys) via SPRING_APPLICATION_JSON. Must match what each
+      # service sends in X-Service-Bootstrap-Secret (xagent uses SERVICE_BOOTSTRAP_SECRET_XAGENT).
+      SPRING_APPLICATION_JSON: >-
+        {"cypherx":{"service-auth":{"bootstrap-secrets":{
+        "xagent":"${SERVICE_BOOTSTRAP_SECRET_XAGENT:-local-dev-xagent-secret}",
+        "llms":"${SERVICE_BOOTSTRAP_SECRET_LLMS:-local-dev-llms-secret}",
+        "guardrails":"${SERVICE_BOOTSTRAP_SECRET_GUARDRAILS:-local-dev-guardrails-secret}",
+        "rag":"${SERVICE_BOOTSTRAP_SECRET_RAG:-local-dev-rag-secret}",
+        "memory":"${SERVICE_BOOTSTRAP_SECRET_MEMORY:-local-dev-memory-secret}",
+        "cypherx-a1":"${SERVICE_BOOTSTRAP_SECRET_CYPHERXA1:-local-dev-cypherxa1-secret}"}}}}
+    ports:
+      - "8080:8080"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/readyz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 90s
+      retries: 5
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # llms-gateway — Python (uv). Listens on 8080 (PORT=8080 MUST be set). Host map 8085->8080.
+  # -------------------------------------------------------------------------------------------------------------------
+  llms-gateway:
+    build:
+      context: ../../Shared Core/llms
+      dockerfile: Dockerfile
+    image: cypherx/llms-gateway:local
+    container_name: cypherx-llms-gateway
+    restart: unless-stopped
+    networks: [cypherx]
+    environment:
+      PORT: "8080"
+      HOST: "0.0.0.0"
+      DATABASE_URL: ${LLMS_DATABASE_URL}
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-redpanda:29092}
+      AUTH_JWKS_URL: ${AUTH_JWKS_URL:-http://auth-service:8080/.well-known/jwks.json}
+      AUTH_ISSUER_URL: ${AUTH_ISSUER_URL:-http://auth-service:8080}
+      AUTH_PLATFORM_AUDIENCE: ${AUTH_PLATFORM_AUDIENCE:-cypherx-platform}
+      MOCK_PROVIDERS: ${MOCK_PROVIDERS:-true}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # BYOK master key-encryption-key. Non-empty => /v1/keys can register per-tenant provider
+      # keys, sealed (AES-256-GCM) at rest in llms.tenant_provider_keys. NOT a provider key.
+      BYOK_KEK: ${BYOK_KEK:-}
+      ENVIRONMENT: ${ENVIRONMENT:-local}
+      SERVICE_NAME: llms-gateway
+      SERVICE_VERSION: ${LLMS_SERVICE_VERSION:-0.1.0}
+    ports:
+      - "8085:8080"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/livez',timeout=3).status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # guardrails-service — Python (uv). Listens on 8080. Host map 8086->8080. CLASSIFIER_MODE=stub (no ml extra).
+  # -------------------------------------------------------------------------------------------------------------------
+  guardrails-service:
+    build:
+      context: ../../Shared Core/guardrails
+      dockerfile: Dockerfile
+    image: cypherx/guardrails-service:local
+    container_name: cypherx-guardrails-service
+    restart: unless-stopped
+    networks: [cypherx]
+    environment:
+      PORT: "8080"
+      HOST: "0.0.0.0"
+      DATABASE_URL: ${GUARDRAILS_DATABASE_URL}
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-redpanda:29092}
+      AUTH_JWKS_URL: ${AUTH_JWKS_URL:-http://auth-service:8080/.well-known/jwks.json}
+      AUTH_ISSUER_URL: ${AUTH_ISSUER_URL:-http://auth-service:8080}
+      AUTH_PLATFORM_AUDIENCE: ${AUTH_PLATFORM_AUDIENCE:-cypherx-platform}
+      REDACTION_HMAC_KEY_PLATFORM: ${REDACTION_HMAC_KEY_PLATFORM}
+      CLASSIFIER_MODE: ${CLASSIFIER_MODE:-stub}
+      ENVIRONMENT: ${ENVIRONMENT:-local}
+      SERVICE_NAME: guardrails-service
+    ports:
+      - "8086:8080"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/livez',timeout=3).status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # xagent — Python (uv). Listens on 8080. Host map 8083->8080. Calls auth (token mint), llms, guardrails.
+  # SERVICE_BOOTSTRAP_SECRET is REQUIRED (boot fails fast if unset) and must equal Auth's xagent bootstrap secret.
+  # -------------------------------------------------------------------------------------------------------------------
+  xagent:
+    build:
+      context: ../../xAgent/ax-1
+      dockerfile: Dockerfile
+    image: cypherx/xagent:local
+    container_name: cypherx-xagent
+    restart: unless-stopped
+    networks: [cypherx]
+    environment:
+      PORT: "8080"
+      HOST: "0.0.0.0"
+      DATABASE_URL: ${XAGENT_DATABASE_URL}
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-redpanda:29092}
+      AUTH_JWKS_URL: ${AUTH_JWKS_URL:-http://auth-service:8080/.well-known/jwks.json}
+      AUTH_ISSUER_URL: ${AUTH_ISSUER_URL:-http://auth-service:8080}
+      AUTH_PLATFORM_AUDIENCE: ${AUTH_PLATFORM_AUDIENCE:-cypherx-platform}
+      AUTH_SERVICE_URL: ${AUTH_SERVICE_URL:-http://auth-service:8080}
+      LLMS_GATEWAY_URL: ${LLMS_GATEWAY_URL:-http://llms-gateway:8080}
+      GUARDRAILS_SERVICE_URL: ${GUARDRAILS_SERVICE_URL:-http://guardrails-service:8080}
+      # WP12 enhancement-stage dependencies (RAG / Memory / Tool-Registry). Internal DNS, port 8080.
+      RAG_SERVICE_URL: ${RAG_SERVICE_URL:-http://rag:8080}
+      MEMORY_SERVICE_URL: ${MEMORY_SERVICE_URL:-http://memory:8080}
+      TOOL_REGISTRY_URL: ${TOOL_REGISTRY_URL:-http://tool-registry:8080}
+      # Phase 8 — SKILL_LOAD stage resolves skills here (disabled by default via STAGE_ENABLE_SKILL_LOAD).
+      SKILL_REGISTRY_URL: ${SKILL_REGISTRY_URL:-http://skill-registry:8080}
+      SERVICE_PRINCIPAL_NAME: ${XAGENT_SERVICE_PRINCIPAL_NAME:-xagent}
+      SERVICE_BOOTSTRAP_SECRET: ${SERVICE_BOOTSTRAP_SECRET_XAGENT:-local-dev-xagent-secret}
+      ENVIRONMENT: ${ENVIRONMENT:-local}
+      # OTel span export is OPT-IN (empty = complete no-op). Set under --profile observability via .env.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_PROTOCOL: ${OTEL_EXPORTER_OTLP_PROTOCOL:-grpc}
+      OTEL_SERVICE_NAME: ${XAGENT_OTEL_SERVICE_NAME:-agent-runtime}
+    ports:
+      - "8083:8080"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+      llms-gateway:
+        condition: service_healthy
+      guardrails-service:
+        condition: service_healthy
+      # WP12 enhancement-stage deps. service_healthy so xagent's RAG/Memory/Tool stages can reach them
+      # (the stages are gated OFF by default via STAGE_ENABLE_*, but the URLs are wired + ordered).
+      rag:
+        condition: service_healthy
+      memory:
+        condition: service_healthy
+      tool-registry:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/livez',timeout=3).status==200 else 1)\""]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  # ===================================================================================================================
+  # WP09-11 DATA + TOOL SERVICES — rag / memory / tool-registry (Python data svcs, own Neon runtime role) and the
+  # tool-web-search MCP server (no DB). All listen on 8080 in-container; host maps avoid the 8080-8089 collisions.
+  # ===================================================================================================================
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # rag — Python (uv). Knowledge-base retrieval + ingestion (WP09). Listens on 8080. Host map 8087->8080.
+  # Runtime role rag_user (Neon POOLED, search_path=rag). MOCK_EMBEDDINGS=true => keyless local (no llms call needed).
+  # -------------------------------------------------------------------------------------------------------------------
+  rag:
+    build:
+      context: ../../Shared Core/rag
+      dockerfile: Dockerfile
+    image: cypherx/rag-service:local
+    container_name: cypherx-rag
+    restart: unless-stopped
+    networks: [cypherx]
+    environment:
+      PORT: "8080"
+      HOST: "0.0.0.0"
+      DATABASE_URL: ${RAG_DATABASE_URL}
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-redpanda:29092}
+      VALKEY_URL: ${VALKEY_URL:-redis://valkey:6379}
+      AUTH_JWKS_URL: ${AUTH_JWKS_URL:-http://auth-service:8080/.well-known/jwks.json}
+      AUTH_ISSUER_URL: ${AUTH_ISSUER_URL:-http://auth-service:8080}
+      AUTH_PLATFORM_AUDIENCE: ${AUTH_PLATFORM_AUDIENCE:-cypherx-platform}
+      AUTH_SERVICE_URL: ${AUTH_SERVICE_URL:-http://auth-service:8080}
+      SERVICE_BOOTSTRAP_SECRET: ${SERVICE_BOOTSTRAP_SECRET_RAG:-local-dev-rag-secret}
+      LLMS_GATEWAY_URL: ${LLMS_GATEWAY_URL:-http://llms-gateway:8080}
+      # Keyless local: deterministic in-process embedder (no llms-gateway service token needed).
+      MOCK_EMBEDDINGS: ${MOCK_EMBEDDINGS:-true}
+      EMBEDDINGS_FALLBACK_TO_MOCK: ${EMBEDDINGS_FALLBACK_TO_MOCK:-true}
+      # Object storage (MinIO). NOTE: the first-cycle ObjectStore uses fixed minioadmin creds in code; S3 is only
+      # exercised on the presigned-upload path (not on cold bring-up), so this does not gate startup.
+      S3_BUCKET: ${RAG_S3_BUCKET:-cypherx-rag-documents-dev}
+      S3_ENDPOINT: ${RAG_S3_ENDPOINT:-http://minio:9000}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-cypherxlocal}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-cypherxlocal}
+      S3_SSE_MODE: ${RAG_S3_SSE_MODE:-none}
+      ENVIRONMENT: ${ENVIRONMENT:-local}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    ports:
+      - "8087:8080"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/livez',timeout=3).status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      start_period: 60s
+      retries: 5
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # memory — Python (uv). Episodic/semantic memory store + search (WP10). Listens on 8080. Host map 8088->8080.
+  # Runtime role mem_user (Neon POOLED, search_path=memory). EMBEDDINGS_MOCK_FALLBACK=true => keyless local.
+  # NOTE: memory's EMBEDDINGS_BASE_URL default is :8081 (collides with redpanda SR) — point it at llms-gateway:8080.
+  # -------------------------------------------------------------------------------------------------------------------
+  memory:
+    build:
+      context: ../../Shared Core/memory
+      dockerfile: Dockerfile
+    image: cypherx/memory-service:local
+    container_name: cypherx-memory
+    restart: unless-stopped
+    networks: [cypherx]
+    environment:
+      PORT: "8080"
+      HOST: "0.0.0.0"
+      DATABASE_URL: ${MEMORY_DATABASE_URL}
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-redpanda:29092}
+      VALKEY_URL: ${VALKEY_URL:-redis://valkey:6379}
+      AUTH_JWKS_URL: ${AUTH_JWKS_URL:-http://auth-service:8080/.well-known/jwks.json}
+      AUTH_ISSUER_URL: ${AUTH_ISSUER_URL:-http://auth-service:8080}
+      AUTH_PLATFORM_AUDIENCE: ${AUTH_PLATFORM_AUDIENCE:-cypherx-platform}
+      EMBEDDINGS_BASE_URL: ${MEMORY_EMBEDDINGS_BASE_URL:-http://llms-gateway:8080}
+      EMBEDDINGS_MOCK_FALLBACK: ${EMBEDDINGS_MOCK_FALLBACK:-true}
+      MOCK_PROVIDERS: ${MOCK_PROVIDERS:-true}
+      # Service-token mint (Contract-12) so Memory can forward the caller's tenant identity to
+      # llms-gateway embeddings (X-Forwarded-Agent-JWT) and inherit that tenant's BYOK key.
+      AUTH_SERVICE_URL: ${AUTH_SERVICE_URL:-http://auth-service:8080}
+      SERVICE_PRINCIPAL_NAME: ${MEMORY_SERVICE_PRINCIPAL_NAME:-memory}
+      SERVICE_BOOTSTRAP_SECRET: ${SERVICE_BOOTSTRAP_SECRET_MEMORY:-local-dev-memory-secret}
+      ENVIRONMENT: ${ENVIRONMENT:-local}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    ports:
+      - "8088:8080"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/livez',timeout=3).status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # tool-registry — Python (uv). Tool manifest registry + health poll (WP11). Listens on 8080. Host map 8089->8080.
+  # Runtime role tool_user (Neon POOLED, search_path=tools). Seeds the platform tool-web-search at startup.
+  # -------------------------------------------------------------------------------------------------------------------
+  tool-registry:
+    build:
+      context: ../../Tools/tool-registry
+      dockerfile: Dockerfile
+    image: cypherx/tool-registry:local
+    container_name: cypherx-tool-registry
+    restart: unless-stopped
+    networks: [cypherx]
+    environment:
+      PORT: "8080"
+      HOST: "0.0.0.0"
+      DATABASE_URL: ${TOOL_REGISTRY_DATABASE_URL}
+      VALKEY_URL: ${VALKEY_URL:-redis://valkey:6379}
+      AUTH_JWKS_URL: ${AUTH_JWKS_URL:-http://auth-service:8080/.well-known/jwks.json}
+      AUTH_ISSUER_URL: ${AUTH_ISSUER_URL:-http://auth-service:8080}
+      AUTH_PLATFORM_AUDIENCE: ${AUTH_PLATFORM_AUDIENCE:-cypherx-platform}
+      SEED_PLATFORM_TOOLS: ${SEED_PLATFORM_TOOLS:-true}
+      TOOL_WEB_SEARCH_BASE_URL: ${TOOL_WEB_SEARCH_BASE_URL:-http://tool-web-search:8080}
+      ENVIRONMENT: ${ENVIRONMENT:-local}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    ports:
+      - "8089:8080"
+    depends_on:
+      valkey:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/livez',timeout=3).status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # skill-registry — Python (uv). Skill manifest registry + per-agent access control (Phase 8). MIRROR of tool-registry
+  # over the `skills` schema (runtime role skill_user, Neon POOLED, search_path=skills). Listens on 8080. Host 8095->8080.
+  # Skills are DECLARATIVE (no live MCP server), so startup seeding is OFF (SEED_PLATFORM_SKILLS=false); the SQL seed
+  # registers a sample platform skill. xAgent's SKILL_LOAD stage resolves allowed_skills + access modes here.
+  # -------------------------------------------------------------------------------------------------------------------
+  skill-registry:
+    build:
+      context: ../../Skills/skill-registry
+      dockerfile: Dockerfile
+    image: cypherx/skill-registry:local
+    container_name: cypherx-skill-registry
+    restart: unless-stopped
+    networks: [cypherx]
+    environment:
+      PORT: "8080"
+      HOST: "0.0.0.0"
+      DATABASE_URL: ${SKILL_REGISTRY_DATABASE_URL}
+      VALKEY_URL: ${VALKEY_URL:-redis://valkey:6379}
+      AUTH_JWKS_URL: ${AUTH_JWKS_URL:-http://auth-service:8080/.well-known/jwks.json}
+      AUTH_ISSUER_URL: ${AUTH_ISSUER_URL:-http://auth-service:8080}
+      AUTH_PLATFORM_AUDIENCE: ${AUTH_PLATFORM_AUDIENCE:-cypherx-platform}
+      SEED_PLATFORM_SKILLS: ${SEED_PLATFORM_SKILLS:-false}
+      ENVIRONMENT: ${ENVIRONMENT:-local}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    ports:
+      - "8095:8080"
+    depends_on:
+      valkey:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/livez',timeout=3).status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # tool-web-search — Python (uv) MCP server (WP11). NO DB. Listens on 8080. Host map 8091->8080 (8090 = demo).
+  # SEARCH_PROVIDER=mock => deterministic, keyless, no outbound network.
+  # -------------------------------------------------------------------------------------------------------------------
+  tool-web-search:
+    build:
+      context: ../../Tools/tool-web-search
+      dockerfile: Dockerfile
+    image: cypherx/tool-web-search:local
+    container_name: cypherx-tool-web-search
+    restart: unless-stopped
+    networks: [cypherx]
+    environment:
+      PORT: "8080"
+      HOST: "0.0.0.0"
+      VALKEY_URL: ${VALKEY_URL:-redis://valkey:6379}
+      AUTH_JWKS_URL: ${AUTH_JWKS_URL:-http://auth-service:8080/.well-known/jwks.json}
+      AUTH_ISSUER_URL: ${AUTH_ISSUER_URL:-http://auth-service:8080}
+      AUTH_PLATFORM_AUDIENCE: ${AUTH_PLATFORM_AUDIENCE:-cypherx-platform}
+      SEARCH_PROVIDER: ${SEARCH_PROVIDER:-mock}
+      SERPAPI_API_KEY: ${SERPAPI_API_KEY:-}
+      BRAVE_API_KEY: ${BRAVE_API_KEY:-}
+      ENVIRONMENT: ${ENVIRONMENT:-local}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    ports:
+      - "8091:8080"
+    depends_on:
+      valkey:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/livez',timeout=3).status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
+
+  # ===================================================================================================================
+  # CoreProjects — cypherx-a1 (Autonomous Engineering Memory) + its stateless mcp-eng-memory MCP server.
+  # cypherx-a1 is a CONSUMING APP (peer of xagent): owns Postgres schema cypherx_a1 (runtime role cxa1_user, Neon
+  # POOLED), consumes auth/llms/guardrails/rag/memory via Contract-12 service tokens, exposes /v1/copilot + /v1/graph.
+  # mcp-eng-memory is a stateless facade (NO DB) proxying cypherx-a1's graph/copilot API over the MCP contract.
+  # ===================================================================================================================
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # cypherx-a1 — Python (uv). Listens on 8080 in-container. Host map 8093->8080. Runtime role cxa1_user (Neon POOLED,
+  # search_path=cypherx_a1). Keyless local: MOCK_PROVIDERS/MOCK_EMBEDDINGS upstream + CONNECTOR_MODE=mock here.
+  # -------------------------------------------------------------------------------------------------------------------
+  cypherx-a1:
+    build:
+      context: ../../CoreProjects/cypherx-a1
+      dockerfile: Dockerfile
+    image: cypherx/cypherx-a1:local
+    container_name: cypherx-a1
+    restart: unless-stopped
+    networks: [cypherx]
+    environment:
+      PORT: "8080"
+      HOST: "0.0.0.0"
+      DATABASE_URL: ${CYPHERXA1_DATABASE_URL}
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-redpanda:29092}
+      VALKEY_URL: ${VALKEY_URL:-redis://valkey:6379}
+      AUTH_JWKS_URL: ${AUTH_JWKS_URL:-http://auth-service:8080/.well-known/jwks.json}
+      AUTH_ISSUER_URL: ${AUTH_ISSUER_URL:-http://auth-service:8080}
+      AUTH_PLATFORM_AUDIENCE: ${AUTH_PLATFORM_AUDIENCE:-cypherx-platform}
+      AUTH_SERVICE_URL: ${AUTH_SERVICE_URL:-http://auth-service:8080}
+      SERVICE_PRINCIPAL_NAME: ${CYPHERXA1_SERVICE_PRINCIPAL_NAME:-cypherx-a1}
+      SERVICE_BOOTSTRAP_SECRET: ${SERVICE_BOOTSTRAP_SECRET_CYPHERXA1:-local-dev-cypherxa1-secret}
+      LLMS_GATEWAY_URL: ${LLMS_GATEWAY_URL:-http://llms-gateway:8080}
+      GUARDRAILS_SERVICE_URL: ${GUARDRAILS_SERVICE_URL:-http://guardrails-service:8080}
+      RAG_SERVICE_URL: ${RAG_SERVICE_URL:-http://rag:8080}
+      MEMORY_SERVICE_URL: ${MEMORY_SERVICE_URL:-http://memory:8080}
+      TOOL_REGISTRY_URL: ${TOOL_REGISTRY_URL:-http://tool-registry:8080}
+      # Keyless local default: replay bundled GitHub fixtures (no GitHub token). Flip to live + supply a token to go live.
+      CONNECTOR_MODE: ${CYPHERXA1_CONNECTOR_MODE:-mock}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-local-dev-webhook-secret}
+      RAG_EMBEDDING_MODEL: ${CYPHERXA1_RAG_EMBEDDING_MODEL:-text-embedding-3-small}
+      ENVIRONMENT: ${ENVIRONMENT:-local}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    ports:
+      - "8093:8080"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+      llms-gateway:
+        condition: service_healthy
+      guardrails-service:
+        condition: service_healthy
+      rag:
+        condition: service_healthy
+      memory:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/livez',timeout=3).status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      start_period: 40s
+      retries: 5
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # mcp-eng-memory — Python (uv). Stateless MCP server (NO DB). Listens on 8080 in-container. Host map 8094->8080.
+  # Proxies to cypherx-a1's /v1/graph + /v1/copilot. Registerable in tool-registry (mcp-eng-memory@1.0.0).
+  # -------------------------------------------------------------------------------------------------------------------
+  mcp-eng-memory:
+    build:
+      context: ../../CoreProjects/cypherx-a1/mcp-eng-memory
+      dockerfile: Dockerfile
+    image: cypherx/mcp-eng-memory:local
+    container_name: cypherx-mcp-eng-memory
+    restart: unless-stopped
+    networks: [cypherx]
+    environment:
+      PORT: "8080"
+      HOST: "0.0.0.0"
+      AUTH_JWKS_URL: ${AUTH_JWKS_URL:-http://auth-service:8080/.well-known/jwks.json}
+      AUTH_ISSUER_URL: ${AUTH_ISSUER_URL:-http://auth-service:8080}
+      AUTH_PLATFORM_AUDIENCE: ${AUTH_PLATFORM_AUDIENCE:-cypherx-platform}
+      VALKEY_URL: ${VALKEY_URL:-redis://valkey:6379}
+      CYPHERXA1_BASE_URL: ${CYPHERXA1_BASE_URL:-http://cypherx-a1:8080}
+      ENVIRONMENT: ${ENVIRONMENT:-local}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    ports:
+      - "8094:8080"
+    depends_on:
+      auth-service:
+        condition: service_healthy
+      cypherx-a1:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/livez',timeout=3).status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
+
+  # ===================================================================================================================
+  # WP13 FRONTEND — BFF (security boundary; Node/Fastify) + SPA (Next.js). The SPA talks ONLY to the BFF; the BFF
+  # proxies to the platform services and holds every secret + the httpOnly session cookie.
+  # ===================================================================================================================
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # frontend-bff — Node/Fastify (WP13). Listens on BFF_PORT=8088 IN-CONTAINER. Host map 8092->8088.
+  # Holds the SESSION_KEK + Valkey sessions; proxies to auth/llms/guardrails/xagent/rag. NO DB.
+  # -------------------------------------------------------------------------------------------------------------------
+  frontend-bff:
+    build:
+      context: ../../frontend/bff
+      dockerfile: Dockerfile
+    image: cypherx/frontend-bff:local
+    container_name: cypherx-frontend-bff
+    restart: unless-stopped
+    networks: [cypherx]
+    environment:
+      NODE_ENV: ${BFF_NODE_ENV:-production}
+      BFF_HOST: "0.0.0.0"
+      BFF_PORT: "8088"
+      BFF_ALLOWED_ORIGINS: ${BFF_ALLOWED_ORIGINS:-http://localhost:3000}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      VALKEY_URL: ${VALKEY_URL:-redis://valkey:6379}
+      # 32-byte AES-256-GCM KEK (base64, 44 chars). MUST be set in .env (no safe default for a secret).
+      SESSION_KEK_BASE64: ${SESSION_KEK_BASE64}
+      # local http dev: Secure cookies OFF, SameSite=lax (edge terminates a single http entrypoint).
+      COOKIE_SECURE: ${BFF_COOKIE_SECURE:-false}
+      COOKIE_SAMESITE: ${BFF_COOKIE_SAMESITE:-lax}
+      # Upstream platform services (internal DNS, port 8080).
+      AUTH_URL: ${AUTH_SERVICE_URL:-http://auth-service:8080}
+      LLMS_URL: ${LLMS_GATEWAY_URL:-http://llms-gateway:8080}
+      GUARDRAILS_URL: ${GUARDRAILS_SERVICE_URL:-http://guardrails-service:8080}
+      XAGENT_URL: ${XAGENT_URL:-http://xagent:8080}
+      RAG_URL: ${RAG_SERVICE_URL:-http://rag:8080}
+      # Tool Registry — backs the BFF /bff/api/tools/* proxy (per-agent tool access control UI).
+      TOOL_REGISTRY_URL: ${TOOL_REGISTRY_URL:-http://tool-registry:8080}
+      UPSTREAM_TIMEOUT_MS: ${UPSTREAM_TIMEOUT_MS:-120000}
+    ports:
+      - "8092:8088"
+    depends_on:
+      valkey:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+      llms-gateway:
+        condition: service_healthy
+      guardrails-service:
+        condition: service_healthy
+      xagent:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:8088/livez',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))\""]
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # frontend-app — Next.js SPA (WP13). Standalone server listens on 3000 (INTERNAL ONLY — no host port; the edge proxies '/' to frontend-app:3000). Talks ONLY to the BFF.
+  # NEXT_PUBLIC_BFF_URL is inlined at BUILD time. DEFAULT is EMPTY = same-origin: the SPA (served at :8000 by the
+  # edge) calls /bff/* on the SAME origin and Caddy proxies it to the BFF. A non-empty value (e.g. the :8092 host
+  # port) makes the browser issue a cross-origin request the BFF CORS-blocks (it registers no CORS plugin) — so
+  # keep this empty for the default compose topology. NOTE: ${VAR:-} keeps the default empty even when .env sets
+  # NEXT_PUBLIC_BFF_URL= to an empty string (the ':-' form treats unset AND empty alike).
+  # -------------------------------------------------------------------------------------------------------------------
+  frontend-app:
+    build:
+      context: ../../frontend/app
+      dockerfile: Dockerfile
+      args:
+        # Build-time public origin of the BFF (no secret). EMPTY (the default) => same-origin /bff/* via the edge.
+        NEXT_PUBLIC_BFF_URL: ${NEXT_PUBLIC_BFF_URL:-}
+        NEXT_PUBLIC_BFF_PREFIX: ${NEXT_PUBLIC_BFF_PREFIX:-/bff}
+    image: cypherx/frontend-app:local
+    container_name: cypherx-frontend-app
+    restart: unless-stopped
+    networks: [cypherx]
+    environment:
+      PORT: "3000"
+      HOSTNAME: "0.0.0.0"
+      NODE_ENV: production
+    depends_on:
+      frontend-bff:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3000/login',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
+
+  # ===================================================================================================================
+  # EDGE PROXY (always-on; Kong substitute). Single entrypoint at host 8000. Routes "/" -> SPA, "/bff/*" -> BFF, and
+  # (optionally) "/api/<svc>/*" -> the platform services. Passes X-RateLimit-* response headers through untouched and
+  # returns an EDGE 401 for a missing session cookie on protected /bff/api routes (Contract-15 case 5).
+  # Config: ./edge/Caddyfile. Caddy is a tiny single-binary reverse proxy — simple + documented.
+  # ===================================================================================================================
+  edge:
+    image: caddy:2.8-alpine
+    container_name: cypherx-edge
+    restart: unless-stopped
+    networks: [cypherx]
+    volumes:
+      - ./edge/Caddyfile:/etc/caddy/Caddyfile:ro
+    environment:
+      EDGE_SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-cypherx_sid}
+    ports:
+      - "8000:8000"   # single HTTP entrypoint (SPA + BFF + optional service routes)
+    depends_on:
+      frontend-bff:
+        condition: service_healthy
+      frontend-app:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8000/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # demo — BFF (opt-in via --profile demo). Listens on 8090 IN-CONTAINER (predates the 8080 rule). Host map 8090->8090.
+  # DEMO_DB_URL is the Neon ADMIN/OWNER DSN used ONLY for the best-effort bootstrap-sentinel reset via psql.
+  # -------------------------------------------------------------------------------------------------------------------
+  demo:
+    profiles: ["demo"]
+    build:
+      context: ../../frontend/demo
+      dockerfile: Dockerfile
+    image: cypherx/demo:local
+    container_name: cypherx-demo
+    restart: unless-stopped
+    networks: [cypherx]
+    environment:
+      PORT: "8090"
+      BIND: "0.0.0.0"
+      AUTH_URL: ${AUTH_SERVICE_URL:-http://auth-service:8080}
+      XAGENT_URL: ${XAGENT_URL:-http://xagent:8080}
+      LLMS_URL: ${LLMS_GATEWAY_URL:-http://llms-gateway:8080}
+      GUARDRAILS_URL: ${GUARDRAILS_SERVICE_URL:-http://guardrails-service:8080}
+      BOOTSTRAP_TOKEN: ${AUTH_BOOTSTRAP_TOKEN}
+      DEMO_DB_URL: ${DEMO_DB_URL}
+      DEMO_RESET_BOOTSTRAP: ${DEMO_RESET_BOOTSTRAP:-1}
+      DEMO_SYSTEM_PROMPT: ${DEMO_SYSTEM_PROMPT:-You are a helpful assistant. Answer concisely.}
+      DEMO_MODEL: ${DEMO_MODEL:-smart}
+    ports:
+      - "8090:8090"
+    depends_on:
+      auth-service:
+        condition: service_healthy
+      xagent:
+        condition: service_healthy
+      llms-gateway:
+        condition: service_healthy
+      guardrails-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8090/api/health',timeout=3).status==200 else 1)\""]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  # ===================================================================================================================
+  # migrate — one-shot schema/role/RLS/seed apply (opt-in via --profile migrate). Run ONCE on first setup, BEFORE the
+  # app services. Uses the Neon DIRECT endpoint (MIGRATE_DATABASE_URL) because migrations need session-level advisory
+  # locks, which the pooled (transaction-mode) endpoint cannot hold. Mounts each service's db/migrations read-only.
+  # Applies, in dependency order: auth, llms, guardrails, xagent, rag, memory, tool-registry, skill-registry — then
+  # provisions every runtime role's PASSWORD + search_path from env (so the apps can connect on the POOLED endpoint).
+  #   docker compose --profile migrate up migrate
+  # ===================================================================================================================
+  migrate:
+    profiles: ["migrate"]
+    image: postgres:16-alpine
+    container_name: cypherx-migrate
+    networks: [cypherx]
+    environment:
+      MIGRATE_DATABASE_URL: ${MIGRATE_DATABASE_URL}
+      # Runtime-role passwords (set on the Neon DIRECT endpoint as owner; the apps then connect as these non-owner
+      # roles so RLS stays enforced). Placeholders in .env.example — set REAL passwords (matching the per-service DSNs).
+      AUTH_DB_PASSWORD: ${AUTH_DB_PASSWORD:-}
+      LLMS_DB_PASSWORD: ${LLMS_DB_PASSWORD:-}
+      GUARDRAILS_DB_PASSWORD: ${GUARDRAILS_DB_PASSWORD:-}
+      XAGENT_DB_PASSWORD: ${XAGENT_DB_PASSWORD:-}
+      RAG_DB_PASSWORD: ${RAG_DB_PASSWORD:-}
+      MEM_DB_PASSWORD: ${MEM_DB_PASSWORD:-}
+      TOOL_DB_PASSWORD: ${TOOL_DB_PASSWORD:-}
+      SKILL_DB_PASSWORD: ${SKILL_DB_PASSWORD:-}
+    entrypoint: ["/bin/sh", "/migrate.sh"]
+    volumes:
+      - ./migrate.sh:/migrate.sh:ro
+      - ../../Shared Core/auth/db/migrations:/migrations/auth:ro
+      - ../../Shared Core/llms/db/migrations:/migrations/llms:ro
+      - ../../Shared Core/guardrails/db/migrations:/migrations/guardrails:ro
+      - ../../xAgent/ax-1/db/migrations:/migrations/xagent:ro
+      - ../../Shared Core/rag/db/migrations:/migrations/rag:ro
+      - ../../Shared Core/memory/db/migrations:/migrations/memory:ro
+      - ../../Tools/tool-registry/db/migrations:/migrations/tool-registry:ro
+      - ../../Skills/skill-registry/db/migrations:/migrations/skill-registry:ro
+      - ../../CoreProjects/cypherx-a1/db/migrations:/migrations/cypherx-a1:ro
+    restart: "no"
+
+  # ===================================================================================================================
+  # OBSERVABILITY PROFILE (--profile observability) — local traces/logs/metrics + SLO alerts + a starter dashboard.
+  #   * otel-collector (otelcol-contrib) receives OTLP (4317 grpc / 4318 http) from the services (xagent opt-in) and
+  #     fans out: traces -> Tempo, metrics -> Prometheus (the collector's own exporter is scraped).
+  #   * tempo   — trace store (OTLP ingest, queried by Grafana).
+  #   * loki    — log store (Grafana Loki; receives via the collector's loki exporter / direct push).
+  #   * prometheus — scrapes /metrics on every service (port 8080) + the collector; loads the WP07 guardrails SLO rules.
+  #   * grafana — dashboards (Tempo + Loki + Prometheus datasources auto-provisioned) incl. the xAgent timeline/cost board.
+  # Config lives under ./observability/. To enable span export, set OTEL_EXPORTER_OTLP_ENDPOINT in .env (see .env.example).
+  # ===================================================================================================================
+
+  otel-collector:
+    profiles: ["observability"]
+    image: otel/opentelemetry-collector-contrib:0.110.0
+    container_name: cypherx-otel-collector
+    restart: unless-stopped
+    networks: [cypherx]
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./observability/otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    depends_on:
+      tempo:
+        condition: service_started
+      loki:
+        condition: service_started
+
+  tempo:
+    profiles: ["observability"]
+    image: grafana/tempo:2.6.1
+    container_name: cypherx-tempo
+    restart: unless-stopped
+    networks: [cypherx]
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    volumes:
+      - ./observability/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "3200:3200"   # Tempo query API (Grafana datasource)
+
+  loki:
+    profiles: ["observability"]
+    image: grafana/loki:3.2.1
+    container_name: cypherx-loki
+    restart: unless-stopped
+    networks: [cypherx]
+    command: ["-config.file=/etc/loki/loki.yaml"]
+    volumes:
+      - ./observability/loki.yaml:/etc/loki/loki.yaml:ro
+      - loki-data:/loki
+    ports:
+      - "3100:3100"   # Loki push/query API
+
+  prometheus:
+    profiles: ["observability"]
+    image: prom/prometheus:v2.55.0
+    container_name: cypherx-prometheus
+    restart: unless-stopped
+    networks: [cypherx]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/alerts:/etc/prometheus/alerts:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9091:9090"   # Prometheus UI (9090 host is free; 9090 in-container)
+
+  grafana:
+    profiles: ["observability"]
+    image: grafana/grafana:11.3.0
+    container_name: cypherx-grafana
+    restart: unless-stopped
+    networks: [cypherx]
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_USERS_DEFAULT_THEME: dark
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3001:3000"   # Grafana UI (3000 host is the SPA; map to 3001)
+    depends_on:
+      prometheus:
+        condition: service_started
+      tempo:
+        condition: service_started
+      loki:
+        condition: service_started
