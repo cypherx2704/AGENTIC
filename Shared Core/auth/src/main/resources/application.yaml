@@ -29,6 +29,19 @@ spring:
       maximum-pool-size: ${DB_POOL_MAX:10}
       minimum-idle: 2
       pool-name: auth-hikari
+      # Connection RESILIENCE against transient DB blips (DNS hiccup / pooler restart / failover). A stale
+      # connection left over a network gap surfaces as "Connection is not available" or a dead socket; these
+      # settings detect + recycle proactively so a brief outage doesn't strand the pool:
+      #  - keepalive-time:      periodically probe idle connections so a silently-dropped one is replaced
+      #                         BEFORE a request grabs it (must be < max-lifetime).
+      #  - max-lifetime:        retire connections well under the upstream (Neon/PgBouncer) idle/server cap.
+      #  - validation-timeout:  cap on the liveness probe.
+      #  - connection-timeout:  how long a caller waits for a pooled connection (env-tunable so prod can fail
+      #                         fast into a retry/readiness path rather than hang).
+      keepalive-time: ${DB_KEEPALIVE_MS:120000}
+      max-lifetime: ${DB_MAX_LIFETIME_MS:600000}
+      validation-timeout: ${DB_VALIDATION_TIMEOUT_MS:5000}
+      connection-timeout: ${DB_CONNECTION_TIMEOUT_MS:30000}
   kafka:
     bootstrap-servers: ${KAFKA_BROKERS:localhost:9092}
     producer:

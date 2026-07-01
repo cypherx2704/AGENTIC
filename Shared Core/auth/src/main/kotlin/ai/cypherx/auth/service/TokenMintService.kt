@@ -68,6 +68,8 @@ class TokenMintService(
         val allowedScopes: List<String>,
         val plan: String?,
         val region: String?,
+        val agentType: String,
+        val parentOrchestratorId: UUID?,
     )
 
     /**
@@ -165,6 +167,10 @@ class TokenMintService(
             // metadata plan only if quota resolution was unavailable.
             (tenantPlan ?: agent.plan)?.let { put("plan", it) }
             agent.region?.let { put("region", it) }
+            // Orchestrator hierarchy claims — let downstream services (xAgent, llms, tools) enforce
+            // agent-type rules without an extra Auth round-trip (Contract 1 forward-compat: optional).
+            put("agent_type", agent.agentType)
+            agent.parentOrchestratorId?.let { put("parent_orchestrator_id", it.toString()) }
         }
 
         val minted = jwtMintService.mintAgentToken(
@@ -210,7 +216,8 @@ class TokenMintService(
         tenantTx.inTenant(tenantId) { jdbc ->
             jdbc.query(
                 """
-                SELECT agent_id, status, version, allowed_scopes, metadata
+                SELECT agent_id, status, version, allowed_scopes, metadata,
+                       agent_type, parent_orchestrator_id
                   FROM auth.agents
                  WHERE agent_id = ?
                 """.trimIndent(),
@@ -222,6 +229,8 @@ class TokenMintService(
                         allowedScopes = readTextArray(rs, "allowed_scopes"),
                         plan = readMetadataString(rs.getString("metadata"), "plan"),
                         region = readMetadataString(rs.getString("metadata"), "region"),
+                        agentType = rs.getString("agent_type") ?: "user_created",
+                        parentOrchestratorId = rs.getObject("parent_orchestrator_id", UUID::class.java),
                     )
                 },
                 agentId,

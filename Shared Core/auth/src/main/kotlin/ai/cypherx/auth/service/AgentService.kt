@@ -2,6 +2,7 @@ package ai.cypherx.auth.service
 
 import ai.cypherx.auth.config.AuthProperties
 import ai.cypherx.auth.domain.AgentStatus
+import ai.cypherx.auth.domain.AgentType
 import ai.cypherx.auth.domain.RevocationReason
 import ai.cypherx.auth.domain.SYSTEM_USER_ID
 import ai.cypherx.auth.domain.TenantStatus
@@ -60,6 +61,14 @@ class AgentService(
         val allowedScopes: List<String>,
         /** Tenant to create the agent in; null = caller's own tenant. */
         val requestedTenantId: UUID?,
+        /** Orchestrator hierarchy. Defaults preserve the existing `POST /v1/agents` behaviour. */
+        val agentType: AgentType = AgentType.USER_CREATED,
+        /** For SUB_AGENT: the creating orchestrator. NULL for orchestrator / user_created. */
+        val parentOrchestratorId: UUID? = null,
+        /** Once true, the agent's LLM config is write-once (enforced by the runtime/xAgent). */
+        val immutableLlm: Boolean = false,
+        /** The human user this agent belongs to (set for the auto-provisioned orchestrator). */
+        val ownerUserId: UUID? = null,
     )
 
     /**
@@ -118,8 +127,19 @@ class AgentService(
                 capabilities = "[]",
                 metadata = "{}",
                 createdBy = createdBy,
+                agentType = command.agentType.value,
+                parentOrchestratorId = command.parentOrchestratorId,
+                immutableLlm = command.immutableLlm,
+                ownerUserId = command.ownerUserId,
             )
         } catch (ex: DuplicateKeyException) {
+            // Either (tenant,name,version) or — for an orchestrator — the one-per-tenant index tripped.
+            if (command.agentType == AgentType.ORCHESTRATOR) {
+                throw ApiException.conflict(
+                    "An orchestrator already exists for this tenant",
+                    mapOf("tenant_id" to targetTenant.toString()),
+                )
+            }
             throw ApiException.conflict(
                 "An agent with this name and version already exists in the tenant",
                 mapOf("name" to name, "version" to version, "tenant_id" to targetTenant.toString()),

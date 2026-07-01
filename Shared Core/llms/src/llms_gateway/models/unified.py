@@ -135,6 +135,12 @@ class ChatCompletionRequest(_Base):
     parallel_tool_calls: bool = True
     response_format: ResponseFormat | None = None
     metadata: dict[str, Any] | None = None
+    # Gateway-internal tool-calling strategy (not forwarded to providers):
+    #   "auto"     (default) — native if the model supports it, else emulate in-prompt.
+    #   "native"   — always pass tools[] to the provider (never emulate).
+    #   "emulated" — always emulate tool-calling in the prompt (small/8B models).
+    # Ignored when the request carries no tools. See services/tool_emulation.py.
+    tool_mode: Literal["auto", "native", "emulated"] = "auto"
 
     @field_validator("stop")
     @classmethod

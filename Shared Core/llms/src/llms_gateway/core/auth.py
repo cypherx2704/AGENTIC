@@ -46,6 +46,9 @@ class Principal:
     principal_type: str  # 'agent' | 'api_key' | 'service' | 'on_behalf_of_user'
     api_key_id: str | None = None
     raw_claims: dict[str, Any] = field(default_factory=dict)
+    # Orchestrator hierarchy (Contract 1 optional claims; 'orchestrator'|'sub_agent'|'user_created').
+    agent_type: str = "user_created"
+    parent_orchestrator_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -223,6 +226,10 @@ def _principal_from_agent_claims(claims: dict[str, Any], *, principal_type: str)
         principal_type=principal_type,
         api_key_id=str(claims["api_key_id"]) if claims.get("api_key_id") else None,
         raw_claims=claims,
+        agent_type=str(claims.get("agent_type") or "user_created"),
+        parent_orchestrator_id=(
+            str(claims["parent_orchestrator_id"]) if claims.get("parent_orchestrator_id") else None
+        ),
     )
 
 

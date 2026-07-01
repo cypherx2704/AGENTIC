@@ -43,6 +43,9 @@ class ErrorCode:
     IDEMPOTENCY_KEY_CONFLICT = "IDEMPOTENCY_KEY_CONFLICT"
     IDEMPOTENCY_REQUEST_IN_FLIGHT = "IDEMPOTENCY_REQUEST_IN_FLIGHT"
     TOKEN_REVOKED = "TOKEN_REVOKED"
+    # Orchestrator/agent LLM governance.
+    LLM_ALIAS_NOT_ALLOWED = "LLM_ALIAS_NOT_ALLOWED"  # agent's per-agent allowlist excludes this alias
+    LLM_RULE_BLOCKED = "LLM_RULE_BLOCKED"  # tenant user_llm_rules block / agent-access deny
 
 
 # Default HTTP status per code (used when ApiError does not override).
@@ -59,6 +62,8 @@ _DEFAULT_STATUS: dict[str, int] = {
     ErrorCode.IDEMPOTENCY_KEY_CONFLICT: 409,
     ErrorCode.IDEMPOTENCY_REQUEST_IN_FLIGHT: 409,
     ErrorCode.TOKEN_REVOKED: 401,
+    ErrorCode.LLM_ALIAS_NOT_ALLOWED: 403,
+    ErrorCode.LLM_RULE_BLOCKED: 403,
 }
 
 

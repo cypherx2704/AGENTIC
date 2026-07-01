@@ -65,21 +65,23 @@ for svc in auth llms guardrails xagent rag memory tool-registry skill-registry c
     continue
   fi
 
-  # init files first (schema + role + tables + RLS), sorted lexicographically (timestamp-prefixed).
-  found_init=0
-  for f in $(ls "$dir"/*__init.sql 2>/dev/null | sort); do
-    found_init=1
+  # Apply EVERY numbered migration in chronological (lexicographic) order: init + seed + ALL feature
+  # migrations (e.g. *__outbox.sql, *__wp03_auth_completion.sql, *__llms_wp05_rate_limits.sql,
+  # *__policy_authoring.sql, *__hybrid_fts.sql, *__scoring_validity_consolidation.sql, ...). The
+  # YYYYMMDD_NNNN__ timestamp+sequence prefix makes a plain lexicographic sort the correct dependency
+  # order (each service's init < its seed < later changes). Non-migration files never match the glob:
+  # schema.sql has no numeric prefix; atlas.hcl / README.md are not .sql.
+  #
+  # NOTE: an earlier version globbed ONLY *__init.sql / *__seed.sql (two separate loops) and therefore
+  # SILENTLY SKIPPED every feature migration, leaving incomplete schemas on a fresh DB (documented in
+  # LOCAL_RUN_NOTES). The single [0-9]*__*.sql pass below is the durable fix — all migrations are
+  # idempotent, so re-running against an already-migrated DB is a safe no-op.
+  found=0
+  for f in $(ls "$dir"/[0-9]*__*.sql 2>/dev/null | sort); do
+    found=1
     run_file "$f"
   done
-  [ "$found_init" -eq 0 ] && echo "      (no *__init.sql for $svc)"
-
-  # then seed files, sorted.
-  found_seed=0
-  for f in $(ls "$dir"/*__seed.sql 2>/dev/null | sort); do
-    found_seed=1
-    run_file "$f"
-  done
-  [ "$found_seed" -eq 0 ] && echo "      (no *__seed.sql for $svc)"
+  [ "$found" -eq 0 ] && echo "      (no numbered migrations for $svc)"
 
   step=$((step + 1))
 done
@@ -104,9 +106,15 @@ set_role_pw() {
   $PSQL "$MIGRATE_DATABASE_URL" -c \
     "DO \$\$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname='$role') THEN EXECUTE 'ALTER ROLE $role SET search_path = $schema, public'; END IF; END \$\$;"
   if [ -n "$pw" ]; then
-    # 2) password — only when provided. The role is known to exist (its init ran above); :'pw' is a safe literal.
-    $PSQL "$MIGRATE_DATABASE_URL" --set=pw="$pw" -c \
-      "ALTER ROLE $role WITH LOGIN PASSWORD :'pw';"
+    # 2) password — only when provided. The role is known to exist (its init ran above).
+    # The password may contain arbitrary characters, so it is passed as a psql client variable
+    # and emitted via :'pw' (psql produces a correctly single-quoted, escaped SQL literal).
+    # IMPORTANT: psql does variable interpolation on input read from stdin / -f, but NOT on a -c
+    # command string (a -c ":'pw'" fails with `syntax error at or near ":"`). So the statement is
+    # piped via stdin (-f -), where :'pw' IS substituted. (This was the real fix for the step-8
+    # provisioning bug noted in LOCAL_RUN_NOTES — the earlier -c form never interpolated.)
+    printf '%s\n' "ALTER ROLE $role WITH LOGIN PASSWORD :'pw';" \
+      | $PSQL "$MIGRATE_DATABASE_URL" --set=pw="$pw" -f -
     echo "  -> $role: password set + search_path=$schema"
   else
     echo "  -> $role: search_path=$schema (no password var set — left as-is)"

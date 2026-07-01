@@ -53,10 +53,16 @@ class _Cur:
         if "set_config" in sql and params:
             self._owner.set_config_tenant = params[0]
             self._rows = []
-        else:
+        elif "api_key_acls" in sql:
+            # The ACL query under test — return the canned rows.
             self._rows = self._owner.rows
+        else:
+            # Other governance queries (agent_allowed_llm_aliases, user_llm_rules): this fake
+            # only models api_key_acls, so an unconfigured agent has none -> unrestricted.
+            self._rows = []
         return self
     async def fetchall(self): return self._rows or []
+    async def fetchone(self): return (self._rows[0] if self._rows else None)
 
 
 class _Conn:

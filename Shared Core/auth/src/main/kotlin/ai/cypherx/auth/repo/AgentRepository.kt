@@ -13,6 +13,9 @@ import java.util.UUID
  * Immutable view of an `auth.agents` row (Component 1, Phase 2). Only the columns feature code in
  * this phase needs are projected; the table also has description/allowed_tools/allowed_skills/
  * quarantine_until, surfaced when those features land.
+ *
+ * Orchestrator-hierarchy columns (WP-orchestrator): [agentType], [parentOrchestratorId],
+ * [immutableLlm], [ownerUserId]. See [ai.cypherx.auth.domain.AgentType].
  */
 data class AgentRecord(
     val agentId: UUID,
@@ -26,6 +29,10 @@ data class AgentRecord(
     val createdBy: UUID,
     val createdAt: Instant,
     val updatedAt: Instant,
+    val agentType: String,
+    val parentOrchestratorId: UUID?,
+    val immutableLlm: Boolean,
+    val ownerUserId: UUID?,
 )
 
 /**
@@ -47,7 +54,8 @@ class AgentRepository(
     /**
      * Insert a new agent and return the persisted row. Uniqueness is enforced by
      * `agents_tenant_name_version_unique (tenant_id, name, version)`; the caller maps the resulting
-     * `DuplicateKeyException` to a Contract 2 409.
+     * `DuplicateKeyException` to a Contract 2 409. A second orchestrator in the same tenant is
+     * rejected by `uq_orchestrator_per_tenant` (also a DuplicateKeyException).
      *
      * `capabilities`/`metadata` are JSONB — passed as text and cast `::jsonb` in SQL.
      * `allowed_scopes` is `TEXT[]` — passed as a real `java.sql.Array`.
@@ -60,17 +68,21 @@ class AgentRepository(
         capabilities: String,
         metadata: String,
         createdBy: UUID,
+        agentType: String = "user_created",
+        parentOrchestratorId: UUID? = null,
+        immutableLlm: Boolean = false,
+        ownerUserId: UUID? = null,
     ): AgentRecord = tenantTx.inTenant(tenantId) { jdbc ->
         val scopesArray = jdbc.execute(
             ConnectionCallback { con -> con.createArrayOf("text", allowedScopes.toTypedArray()) },
         )
         jdbc.queryForObject(
             """
-            INSERT INTO auth.agents (tenant_id, name, version, allowed_scopes, capabilities, metadata, created_by)
-            VALUES (?, ?, ?, ?, ?::jsonb, ?::jsonb, ?)
-            RETURNING agent_id, tenant_id, name, version, status, allowed_scopes,
-                      capabilities::text AS capabilities, metadata::text AS metadata,
-                      created_by, created_at, updated_at
+            INSERT INTO auth.agents
+                (tenant_id, name, version, allowed_scopes, capabilities, metadata, created_by,
+                 agent_type, parent_orchestrator_id, immutable_llm, owner_user_id)
+            VALUES (?, ?, ?, ?, ?::jsonb, ?::jsonb, ?, ?, ?, ?, ?)
+            RETURNING $COLS
             """.trimIndent(),
             rowMapper,
             tenantId,
@@ -80,21 +92,27 @@ class AgentRepository(
             capabilities,
             metadata,
             createdBy,
+            agentType,
+            parentOrchestratorId,
+            immutableLlm,
+            ownerUserId,
         ) ?: error("INSERT ... RETURNING produced no row for agent $name")
     }
 
     /** Find one agent by id within [tenantId]. Returns null when absent (or RLS-invisible). */
     fun findById(tenantId: UUID, agentId: UUID): AgentRecord? = tenantTx.inTenant(tenantId) { jdbc ->
         jdbc.query(
-            """
-            SELECT agent_id, tenant_id, name, version, status, allowed_scopes,
-                   capabilities::text AS capabilities, metadata::text AS metadata,
-                   created_by, created_at, updated_at
-            FROM auth.agents
-            WHERE agent_id = ?
-            """.trimIndent(),
+            "SELECT $COLS FROM auth.agents WHERE agent_id = ?",
             rowMapper,
             agentId,
+        ).firstOrNull()
+    }
+
+    /** The tenant's single orchestrator agent (or null if none exists yet). */
+    fun findOrchestrator(tenantId: UUID): AgentRecord? = tenantTx.inTenant(tenantId) { jdbc ->
+        jdbc.query(
+            "SELECT $COLS FROM auth.agents WHERE agent_type = 'orchestrator' LIMIT 1",
+            rowMapper,
         ).firstOrNull()
     }
 
@@ -107,8 +125,9 @@ class AgentRepository(
      * Keyset-paginated list of [tenantId]'s agents (RLS-scoped), newest first. The cursor is the
      * `(created_at, agent_id)` of the last row of the previous page — a composite keyset avoids the
      * skip/duplicate hazard a non-unique `created_at`-only cursor has. Optional [statusFilter] (exact
-     * match) and [nameContains] (case-insensitive substring) narrow the result. [limit] is clamped by
-     * the caller; rows are returned newest-first so the next cursor is the last (oldest) row.
+     * match) and [nameContains] (case-insensitive substring) narrow the result. When
+     * [parentOrchestratorId] is non-null, only sub-agents of that orchestrator are returned (used by
+     * the orchestrator's own sub-agent listing). [limit] is clamped by the caller.
      */
     fun list(
         tenantId: UUID,
@@ -117,19 +136,13 @@ class AgentRepository(
         afterCreatedAt: Instant?,
         afterAgentId: UUID?,
         limit: Int,
+        parentOrchestratorId: UUID? = null,
     ): List<AgentRecord> = tenantTx.inTenant(tenantId) { jdbc ->
-        val sql = StringBuilder(
-            """
-            SELECT agent_id, tenant_id, name, version, status, allowed_scopes,
-                   capabilities::text AS capabilities, metadata::text AS metadata,
-                   created_by, created_at, updated_at
-              FROM auth.agents
-             WHERE 1 = 1
-            """.trimIndent(),
-        )
+        val sql = StringBuilder("SELECT $COLS FROM auth.agents WHERE 1 = 1")
         val args = mutableListOf<Any?>()
         statusFilter?.let { sql.append(" AND status = ?"); args.add(it) }
         nameContains?.let { sql.append(" AND name ILIKE ?"); args.add("%${escapeLike(it)}%") }
+        parentOrchestratorId?.let { sql.append(" AND parent_orchestrator_id = ?"); args.add(it) }
         // Keyset: rows strictly "older" than the cursor under (created_at DESC, agent_id DESC).
         if (afterCreatedAt != null && afterAgentId != null) {
             sql.append(" AND (created_at, agent_id) < (?, ?)")
@@ -178,9 +191,7 @@ class AgentRepository(
             UPDATE auth.agents
                SET ${sets.joinToString(", ")}
              WHERE agent_id = ?
-            RETURNING agent_id, tenant_id, name, version, status, allowed_scopes,
-                      capabilities::text AS capabilities, metadata::text AS metadata,
-                      created_by, created_at, updated_at
+            RETURNING $COLS
             """.trimIndent(),
             rowMapper,
             *args.toTypedArray(),
@@ -199,9 +210,7 @@ class AgentRepository(
                 UPDATE auth.agents
                    SET status = ?, updated_at = NOW()
                  WHERE agent_id = ?
-                RETURNING agent_id, tenant_id, name, version, status, allowed_scopes,
-                          capabilities::text AS capabilities, metadata::text AS metadata,
-                          created_by, created_at, updated_at
+                RETURNING $COLS
                 """.trimIndent(),
                 rowMapper,
                 status,
@@ -228,6 +237,19 @@ class AgentRepository(
             createdBy = rs.getObject("created_by", UUID::class.java),
             createdAt = rs.getTimestamp("created_at").toInstant(),
             updatedAt = rs.getTimestamp("updated_at").toInstant(),
+            agentType = rs.getString("agent_type") ?: "user_created",
+            parentOrchestratorId = rs.getObject("parent_orchestrator_id", UUID::class.java),
+            immutableLlm = rs.getBoolean("immutable_llm"),
+            ownerUserId = rs.getObject("owner_user_id", UUID::class.java),
         )
+    }
+
+    private companion object {
+        /** Canonical projection — every SELECT/RETURNING uses this so the column set stays in sync. */
+        const val COLS =
+            "agent_id, tenant_id, name, version, status, allowed_scopes, " +
+                "capabilities::text AS capabilities, metadata::text AS metadata, " +
+                "created_by, created_at, updated_at, " +
+                "agent_type, parent_orchestrator_id, immutable_llm, owner_user_id"
     }
 }

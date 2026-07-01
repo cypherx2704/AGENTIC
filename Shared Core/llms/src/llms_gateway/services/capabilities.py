@@ -32,6 +32,10 @@ class ModelCapability:
     supports_tools: bool = True
     supports_streaming: bool = True
     embedding_dim: int | None = None
+    # Whether the model/provider supports the NATIVE tools[] function-calling API
+    # reliably. False => the gateway EMULATES tool-calling in the prompt (small/8B
+    # models). Defaults True so an unknown model is assumed native (frontier-safe).
+    native_tool_use: bool = True
 
 
 # Cold-start fallback ONLY — mirrors db/migrations seed (never authoritative once
@@ -74,6 +78,39 @@ _FALLBACK_CAPABILITIES: dict[str, ModelCapability] = {
         supports_tools=False,
         supports_streaming=False,
     ),
+    # Small (≈7-8B) open models served via an OpenAI-compatible endpoint (BYOK
+    # base_url). They CAN use tools, but not via the native API reliably, so
+    # native_tool_use=False routes them through the gateway's tool-calling emulation.
+    "llama-3.1-8b-instruct": ModelCapability(
+        "llama-3.1-8b-instruct",
+        "openai",
+        max_tokens_cap=4096,
+        context_window=128000,
+        supports_vision=False,
+        supports_tools=True,
+        supports_streaming=True,
+        native_tool_use=False,
+    ),
+    "qwen2.5-7b-instruct": ModelCapability(
+        "qwen2.5-7b-instruct",
+        "openai",
+        max_tokens_cap=8192,
+        context_window=32768,
+        supports_vision=False,
+        supports_tools=True,
+        supports_streaming=True,
+        native_tool_use=False,
+    ),
+    "mistral-7b-instruct": ModelCapability(
+        "mistral-7b-instruct",
+        "openai",
+        max_tokens_cap=4096,
+        context_window=32768,
+        supports_vision=False,
+        supports_tools=True,
+        supports_streaming=True,
+        native_tool_use=False,
+    ),
 }
 
 
@@ -97,7 +134,17 @@ class CapabilityRegistry:
         except Exception as exc:  # noqa: BLE001 — keep current cache on any failure
             logger.warning("capabilities_load_failed", error=str(exc))
             return False
-        for model_id, provider, max_cap, ctx, vision, tools, streaming, emb_dim in rows:
+        for (
+            model_id,
+            provider,
+            max_cap,
+            ctx,
+            vision,
+            tools,
+            streaming,
+            emb_dim,
+            native_tools,
+        ) in rows:
             self._cache[model_id] = ModelCapability(
                 model_id=model_id,
                 provider=provider,
@@ -107,6 +154,7 @@ class CapabilityRegistry:
                 supports_tools=bool(tools),
                 supports_streaming=bool(streaming),
                 embedding_dim=int(emb_dim) if emb_dim is not None else None,
+                native_tool_use=bool(native_tools),
             )
         self._loaded_from_db = True
         logger.info("capabilities_loaded", rows=len(rows))
@@ -123,6 +171,15 @@ class CapabilityRegistry:
         """Return the provider for a literal model id, or None if unknown."""
         cap = self._cache.get(model_id)
         return cap.provider if cap is not None else None
+
+    def native_tool_use(self, model_id: str) -> bool | None:
+        """Return whether ``model_id`` supports NATIVE tool-calling, or None if unknown.
+
+        None lets the caller apply its own default for an unrecognised model (the
+        gateway treats unknown-by-default as native unless configured otherwise).
+        """
+        cap = self._cache.get(model_id)
+        return cap.native_tool_use if cap is not None else None
 
 
 # Process-wide instance (same pattern as services.cost.cost_calculator).

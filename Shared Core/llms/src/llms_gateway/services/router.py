@@ -50,6 +50,8 @@ _PLATFORM_ALIASES: dict[str, Resolution] = {
     # Rerank + safety-classify platform defaults (in-house cypherx mock/stub class).
     "rerank-default": Resolution("cypherx", "rerank-mock-v1"),
     "safety-default": Resolution("cypherx", "classify-stub-v1"),
+    # Small (≈8B) open-model default — OpenAI-compatible, emulated tool-calling.
+    "small": Resolution("openai", "llama-3.1-8b-instruct"),
 }
 
 # Cold-start fallback ONLY — literal model -> provider, mirroring the
@@ -65,6 +67,10 @@ _LITERAL_PROVIDER: dict[str, str] = {
     # In-house rerank + safety-classify models (mock/stub class, no external provider).
     "rerank-mock-v1": "cypherx",
     "classify-stub-v1": "cypherx",
+    # Small (≈7-8B) open models — OpenAI-compatible endpoint (BYOK base_url).
+    "llama-3.1-8b-instruct": "openai",
+    "qwen2.5-7b-instruct": "openai",
+    "mistral-7b-instruct": "openai",
 }
 
 

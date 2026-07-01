@@ -74,9 +74,13 @@ def _seed_pricing() -> dict[tuple[str, str], PricingRow]:
 
 def _seed_capabilities() -> dict[str, ModelCapability]:
     block = _insert_statements(_migrations_sql(), "model_capabilities")
+    # The native_tool_use column (9th) is OPTIONAL in the regex so the legacy 8-column
+    # seed rows (frontier + embed/rerank/classify) still parse — those default to
+    # native_tool_use=True, matching the column DEFAULT and the dataclass default.
     rows = re.findall(
         r"\('([\w.-]+)',\s*'(\w+)',\s*(\d+),\s*(\d+),\s*"
-        r"(true|false),\s*(true|false),\s*(true|false),\s*(NULL|\d+)\)",
+        r"(true|false),\s*(true|false),\s*(true|false),\s*(NULL|\d+)"
+        r"(?:,\s*(true|false))?\)",
         block,
     )
     return {
@@ -89,8 +93,9 @@ def _seed_capabilities() -> dict[str, ModelCapability]:
             supports_tools=tools == "true",
             supports_streaming=streaming == "true",
             embedding_dim=None if dim == "NULL" else int(dim),
+            native_tool_use=native != "false",  # '' (absent) or 'true' => True
         )
-        for model_id, provider, cap, ctx, vision, tools, streaming, dim in rows
+        for model_id, provider, cap, ctx, vision, tools, streaming, dim, native in rows
     }
 
 
@@ -171,8 +176,8 @@ async def test_capability_registry_db_load_overrides_fallback() -> None:
     pool = _FakePool(
         {
             "model_capabilities": [
-                ("gpt-4o", "openai", 9999, 128000, True, True, False, None),
-                ("text-embedding-3-small", "openai", 1, 8191, False, False, False, 1536),
+                ("gpt-4o", "openai", 9999, 128000, True, True, False, None, True),
+                ("text-embedding-3-small", "openai", 1, 8191, False, False, False, 1536, True),
             ]
         }
     )
@@ -220,7 +225,7 @@ async def test_reload_registries_reports_db_when_all_loads_succeed() -> None:
                 (None, "fast", "claude-haiku-4-5", "anthropic"),
             ],
             "model_capabilities": [
-                ("claude-haiku-4-5", "anthropic", 8192, 200000, True, True, True, None),
+                ("claude-haiku-4-5", "anthropic", 8192, 200000, True, True, True, None, True),
             ],
         }
     )

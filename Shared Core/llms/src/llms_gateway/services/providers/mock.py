@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -27,6 +28,7 @@ from ...models.unified import (
     Usage,
 )
 from ..cost import cost_calculator
+from ..tool_emulation import PROTOCOL_MARKER, TOOL_RESULT_PREFIX
 from .base import ProviderAdaptor
 
 # Mock model maps to anthropic pricing so cost > 0 regardless of resolved provider.
@@ -55,12 +57,40 @@ def _flatten(content: str | list | None) -> str:
     return "".join(p.text for p in content if isinstance(p, TextContent))
 
 
-def _build(req: ChatCompletionRequest, model_id: str) -> tuple[str, Usage]:
-    last_user = next(
-        (_flatten(m.content) for m in reversed(req.messages) if m.role == "user"),
-        "",
-    )
-    reply = f"[mock:{model_id}] You said: {last_user}".strip()
+def _emulated_reply(req: ChatCompletionRequest) -> str | None:
+    """Deterministic reply for an EMULATED tool-calling prompt (keyless local demo).
+
+    Returns None unless the gateway's tool-call protocol marker is present in a system
+    message. With it: emit a tool-call JSON for the first offered tool on the first turn,
+    then a final answer once a TOOL RESULT appears in the conversation — so the xAgent
+    tool loop runs end-to-end against the mock with no provider key.
+    """
+    system_text = "\n".join(_flatten(m.content) for m in req.messages if m.role == "system")
+    if PROTOCOL_MARKER not in system_text:
+        return None
+    match = re.search(r"Tool names:\s*(.+)", system_text)
+    names = [n.strip() for n in match.group(1).split(",") if n.strip()] if match else []
+    if not names:
+        return None
+    convo = "\n".join(_flatten(m.content) for m in req.messages if m.role != "system")
+    if TOOL_RESULT_PREFIX in convo:
+        return f"[mock] Using the {names[0]} result, here is the final answer."
+    # First turn: request the first tool. The mock cannot know the schema, so it sends
+    # empty arguments — a real small model fills these from the schema in the protocol.
+    return json.dumps({"tool_call": {"name": names[0], "arguments": {}}})
+
+
+def _build(
+    req: ChatCompletionRequest, model_id: str, *, override_reply: str | None = None
+) -> tuple[str, Usage]:
+    if override_reply is not None:
+        reply = override_reply
+    else:
+        last_user = next(
+            (_flatten(m.content) for m in reversed(req.messages) if m.role == "user"),
+            "",
+        )
+        reply = f"[mock:{model_id}] You said: {last_user}".strip()
 
     prompt_tokens = sum(_estimate_tokens(_flatten(m.content)) for m in req.messages) or 1
     completion_tokens = _estimate_tokens(reply)
@@ -124,7 +154,7 @@ class MockProvider(ProviderAdaptor):
         )
 
     async def chat(self, req: ChatCompletionRequest, *, model_id: str) -> ChatCompletionResponse:
-        reply, usage = _build(req, model_id)
+        reply, usage = _build(req, model_id, override_reply=_emulated_reply(req))
         return ChatCompletionResponse(
             model=model_id,
             choices=[

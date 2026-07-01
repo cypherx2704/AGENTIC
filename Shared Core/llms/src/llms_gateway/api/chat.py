@@ -48,7 +48,14 @@ from ..models.unified import (
     ImageUrlContent,
     Usage,
 )
-from ..services import billing_journal, idempotency, rate_limit
+from ..services import (
+    alias_service,
+    billing_journal,
+    idempotency,
+    rate_limit,
+    tool_emulation,
+    user_llm_rules,
+)
 from ..services.acl import enforce_acl
 from ..services.auth_client import resolve_limits
 from ..services.capabilities import capability_registry
@@ -222,6 +229,19 @@ async def chat_completions(
     valkey = getattr(request.app.state, "valkey", None)
     pool = getattr(request.app.state, "db_pool", None)
 
+    # ── Orchestrator LLM governance (BEFORE any backend work) ─────────────────
+    # 1) Per-agent allowlist: a sub-agent confined to specific aliases cannot use others (403).
+    await alias_service.enforce_agent_alias(pool, principal.tenant_id, principal.agent_id, body.model)
+    # 2) Tenant user-defined LLM rules (block / agent-access). Returns whether this call's usage
+    #    is billing-exempt (a user-added model the tenant marked billing_bypass).
+    billing_bypass = await user_llm_rules.check_rules(
+        pool,
+        principal.tenant_id,
+        provider=resolution.provider,
+        model_id=resolution.model_id,
+        principal_type=principal.principal_type,
+    )
+
     # ── Per-key ACL (Contract-18) — AFTER auth + model/provider resolution, BEFORE
     # any backend work. Fails OPEN (allow) with no DB pool / no ACL rows for the key. ─
     await enforce_acl(
@@ -262,9 +282,11 @@ async def chat_completions(
     await rate_limit.enforce_pre(valkey, principal, limits, settings=settings)
 
     if body.stream:
-        return await _stream(request, body, principal, model_router, resolution, provider)
+        return await _stream(
+            request, body, principal, model_router, resolution, provider, billing_bypass
+        )
     return await _non_stream(
-        request, body, principal, resolution, provider, idem_key, clamped_param
+        request, body, principal, resolution, provider, idem_key, clamped_param, billing_bypass
     )
 
 
@@ -276,9 +298,20 @@ async def _non_stream(
     provider: object,
     idem_key: str | None,
     clamped_param: str | None,
+    billing_bypass: bool = False,
 ) -> JSONResponse:
+    settings = request.app.state.settings
+    # Tool-calling emulation (small/non-native models): transform tools[] into a prompt
+    # protocol, call the provider as a plain chat, and parse tool_calls back out — so the
+    # response is byte-shaped exactly like a native tool-calling completion downstream.
+    emulate_tools = tool_emulation.should_emulate(body, resolution.model_id, settings)
     started = time.monotonic()
-    response: ChatCompletionResponse = await provider.chat(body, model_id=resolution.model_id)  # type: ignore[attr-defined]
+    if emulate_tools:
+        response = await tool_emulation.run_emulated_chat(
+            provider, body, model_id=resolution.model_id, settings=settings  # type: ignore[arg-type]
+        )
+    else:
+        response = await provider.chat(body, model_id=resolution.model_id)  # type: ignore[attr-defined]
     duration_ms = int((time.monotonic() - started) * 1000)
 
     # Compute authoritative cost from the normalized token counts.
@@ -308,14 +341,23 @@ async def _non_stream(
         valkey, principal, u.prompt_tokens, u.completion_tokens, settings=settings
     )
 
-    billing_pending = await _write_usage(request, principal, resolution, u, duration_ms)
+    # billing_bypass (a user-added model the tenant marked exempt): do NOT write usage_records
+    # and do NOT emit the billing/usage Kafka events — the call is unmetered. Token rate-limit
+    # debit still ran above (a bypass affects COST, not capacity accounting).
+    billing_pending = False
+    if not billing_bypass:
+        billing_pending = await _write_usage(request, principal, resolution, u, duration_ms)
 
     response_body = response.model_dump(by_alias=True)
     headers: dict[str, str] = {}
+    if billing_bypass:
+        headers["X-Cypherx-Billing-Bypassed"] = "true"
     if billing_pending:
         headers["X-Cypherx-Billing-Pending"] = "true"
     if clamped_param:
         headers["X-Cypherx-Param-Clamped"] = clamped_param
+    if body.tools:
+        headers["X-Cypherx-Tool-Mode"] = "emulated" if emulate_tools else "native"
 
     # Idempotency complete: store the finished response for future replay (no-op
     # without a key / Valkey / when disabled — fail-open).
@@ -332,16 +374,24 @@ async def _stream(
     model_router: ModelRouter,
     resolution: Resolution,
     provider: object,
+    billing_bypass: bool = False,
 ) -> StreamingResponse:
     started = time.monotonic()
     settings = request.app.state.settings
     valkey = getattr(request.app.state, "valkey", None)
     timeout_s = settings.stream_wall_clock_timeout_seconds
+    emulate_tools = tool_emulation.should_emulate(body, resolution.model_id, settings)
 
     async def event_source() -> AsyncIterator[bytes]:
         last_usage: dict | None = None
         terminal_reason: str | None = None  # provider_error | timeout | client_disconnect
-        source = provider.chat_stream(body, model_id=resolution.model_id)  # type: ignore[attr-defined]
+        if emulate_tools:
+            # Emulation buffers a non-stream call internally then emits consolidated SSE.
+            source = tool_emulation.emulated_chat_stream(
+                provider, body, model_id=resolution.model_id, settings=settings  # type: ignore[arg-type]
+            )
+        else:
+            source = provider.chat_stream(body, model_id=resolution.model_id)  # type: ignore[attr-defined]
         deadline = started + timeout_s
 
         try:
@@ -378,7 +428,7 @@ async def _stream(
             terminal_reason = "client_disconnect"
             await _close_stream(source)
             await _finalize_stream(
-                request, principal, resolution, last_usage, started, valkey, settings
+                request, principal, resolution, last_usage, started, valkey, settings, billing_bypass
             )
             raise
         except Exception as exc:  # noqa: BLE001 — mid-stream provider/transport error
@@ -402,13 +452,16 @@ async def _stream(
         # Best-effort billing of tokens burned so far (fail-open) — runs for BOTH the
         # normal completion and every abnormal exit.
         await _finalize_stream(
-            request, principal, resolution, last_usage, started, valkey, settings
+            request, principal, resolution, last_usage, started, valkey, settings, billing_bypass
         )
 
+    stream_headers = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
+    if body.tools:
+        stream_headers["X-Cypherx-Tool-Mode"] = "emulated" if emulate_tools else "native"
     return StreamingResponse(
         event_source(),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        headers=stream_headers,
     )
 
 
@@ -437,12 +490,15 @@ async def _finalize_stream(
     started: float,
     valkey: object,
     settings: object,
+    billing_bypass: bool = False,
 ) -> None:
     """Bill the tokens burned in a stream (debit + usage write). Always fail-open.
 
     Called exactly once per stream — on normal completion AND on every abnormal exit
     (timeout, disconnect, provider error). When no usage chunk was seen (the stream
-    died before the terminal usage event) there is nothing to bill.
+    died before the terminal usage event) there is nothing to bill. When ``billing_bypass``
+    is set (a user-added, unmetered model) the capacity debit still runs but the usage row /
+    billing events are skipped.
     """
     if last_usage is None:
         return
@@ -459,7 +515,8 @@ async def _finalize_stream(
     await rate_limit.debit_tokens(
         valkey, principal, usage.prompt_tokens, usage.completion_tokens, settings=settings  # type: ignore[arg-type]
     )
-    await _write_usage(request, principal, resolution, usage, duration_ms)
+    if not billing_bypass:
+        await _write_usage(request, principal, resolution, usage, duration_ms)
 
 
 async def _write_usage(

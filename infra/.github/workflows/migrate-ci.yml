@@ -1,0 +1,154 @@
+# =============================================================================
+# migrate-ci.yml — schema migration gate (prevents "works on my machine").
+# =============================================================================
+# WHY THIS EXISTS
+# ---------------
+# The local bring-up runs `docker compose --profile migrate up migrate`, which
+# executes compose/migrate.sh: a plain psql loop that applies every service's
+# db/migrations/*__init.sql then *__seed.sql against Postgres, in dependency
+# order. There is NO Flyway/Atlas history table in this path — nothing detects a
+# stale or broken committed migration. A migration that fails to apply on a fresh
+# DB (e.g. a seed referencing a column that was renamed, or a cross-schema write)
+# is invisible until a teammate runs migrate on a clean database and it aborts.
+#
+# This gate reproduces that exact cold-start locally in CI: it boots an EPHEMERAL
+# pgvector Postgres and runs the REAL migrate.sh against it. If any migration
+# errors, the PR fails here — before it is merged and pulled by anyone else.
+#
+# It runs migrate.sh TWICE against the same fresh DB: the platform's own
+# definition-of-done requires migrations to be idempotent (re-runnable). A
+# migration that passes once but fails on re-run (missing IF NOT EXISTS / ON
+# CONFLICT / DO-guard) is just as much a bug and is caught by the second pass.
+#
+# CROSS-REPO NOTE
+# ---------------
+# migrations live in the SERVICE repos, not here. This job checks each one out
+# into repos/<svc> and symlinks its db/migrations to the /migrations/<svc> path
+# migrate.sh expects. migrate.sh already skips any service dir that is absent, so
+# a partial checkout degrades gracefully. Because a migration change in (say) the
+# rag repo cannot trigger a workflow in THIS repo, this workflow is also
+# `workflow_call` + `repository_dispatch`-able: each service repo should invoke it
+# (or fire a `migration-changed` repository_dispatch) when its db/migrations/**
+# change, so the offending PR is gated in the repo where the edit happens.
+# =============================================================================
+name: migrate-ci
+
+on:
+  pull_request:
+    paths:
+      - "compose/migrate.sh"
+      - "compose/docker-compose.yml"
+      - ".github/workflows/migrate-ci.yml"
+  push:
+    branches: [main, development]
+    paths:
+      - "compose/migrate.sh"
+      - "compose/docker-compose.yml"
+      - ".github/workflows/migrate-ci.yml"
+  # Let a service repo run this gate on its own migration changes.
+  workflow_call: {}
+  workflow_dispatch: {}
+  repository_dispatch:
+    types: [migration-changed]
+
+permissions:
+  contents: read
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+
+    # Ephemeral Postgres WITH pgvector — migrate.sh step 0 does CREATE EXTENSION
+    # vector. Plain postgres:16 lacks it; pgvector/pgvector:pg16 ships it.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: cypherx_platform
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d cypherx_platform"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Local PG has no TLS; Neon requires sslmode=require, but this ephemeral DB
+      # is disposable and loopback-only. The owner role (postgres) has CREATEROLE,
+      # which the *__init.sql role-creation DO-blocks need.
+      MIGRATE_DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/cypherx_platform?sslmode=disable"
+
+    steps:
+      # --- checkout: infra (this repo, holds migrate.sh) + every service repo ---
+      # Adjust the `repository:` names to match the org's actual repo slugs.
+      # WORKSPACE_REPO_TOKEN = a read-only token/App installation with access to
+      # the service repos (omit for public repos). migrate.sh tolerates any repo
+      # that fails to check out — it just skips that service with a warning.
+      - name: Checkout infra
+        uses: actions/checkout@v4
+        with:
+          path: infra
+
+      - name: Checkout service repos
+        uses: actions/checkout@v4
+        with: { repository: cypherx-ai/auth,           path: repos/auth,           token: "${{ secrets.WORKSPACE_REPO_TOKEN }}" }
+        continue-on-error: true
+      - uses: actions/checkout@v4
+        with: { repository: cypherx-ai/llms,           path: repos/llms,           token: "${{ secrets.WORKSPACE_REPO_TOKEN }}" }
+        continue-on-error: true
+      - uses: actions/checkout@v4
+        with: { repository: cypherx-ai/guardrails,     path: repos/guardrails,     token: "${{ secrets.WORKSPACE_REPO_TOKEN }}" }
+        continue-on-error: true
+      - uses: actions/checkout@v4
+        with: { repository: cypherx-ai/ax-1,           path: repos/xagent,         token: "${{ secrets.WORKSPACE_REPO_TOKEN }}" }
+        continue-on-error: true
+      - uses: actions/checkout@v4
+        with: { repository: cypherx-ai/rag,            path: repos/rag,            token: "${{ secrets.WORKSPACE_REPO_TOKEN }}" }
+        continue-on-error: true
+      - uses: actions/checkout@v4
+        with: { repository: cypherx-ai/memory,         path: repos/memory,         token: "${{ secrets.WORKSPACE_REPO_TOKEN }}" }
+        continue-on-error: true
+      - uses: actions/checkout@v4
+        with: { repository: cypherx-ai/tool-registry,  path: repos/tool-registry,  token: "${{ secrets.WORKSPACE_REPO_TOKEN }}" }
+        continue-on-error: true
+      - uses: actions/checkout@v4
+        with: { repository: cypherx-ai/skill-registry, path: repos/skill-registry, token: "${{ secrets.WORKSPACE_REPO_TOKEN }}" }
+        continue-on-error: true
+      - uses: actions/checkout@v4
+        with: { repository: cypherx-ai/cypherx-a1,     path: repos/cypherx-a1,     token: "${{ secrets.WORKSPACE_REPO_TOKEN }}" }
+        continue-on-error: true
+
+      - name: Install psql client
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -yqq postgresql-client
+
+      # migrate.sh reads absolute /migrations/<svc>. Symlink each checked-out
+      # repo's db/migrations there. Skip any repo that did not check out.
+      - name: Wire /migrations/<svc> -> checked-out repos
+        run: |
+          set -euo pipefail
+          sudo mkdir -p /migrations
+          declare -A MAP=(
+            [auth]=auth [llms]=llms [guardrails]=guardrails [xagent]=xagent
+            [rag]=rag [memory]=memory [tool-registry]=tool-registry
+            [skill-registry]=skill-registry [cypherx-a1]=cypherx-a1
+          )
+          for svc in "${!MAP[@]}"; do
+            src="$GITHUB_WORKSPACE/repos/${MAP[$svc]}/db/migrations"
+            if [ -d "$src" ]; then
+              sudo ln -sfn "$src" "/migrations/$svc"
+              echo "linked $svc -> $src"
+            else
+              echo "::warning::no migrations checked out for $svc (skipped)"
+            fi
+          done
+
+      - name: Migrate on a COLD database (pass 1)
+        run: sh "$GITHUB_WORKSPACE/infra/compose/migrate.sh"
+
+      - name: Re-run migrate (pass 2 — idempotency gate)
+        run: sh "$GITHUB_WORKSPACE/infra/compose/migrate.sh"
