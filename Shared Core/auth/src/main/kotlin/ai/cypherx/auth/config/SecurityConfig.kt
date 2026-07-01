@@ -97,6 +97,12 @@ class SecurityConfig {
                 authorize(HttpMethod.POST, "/v1/admin/bootstrap", permitAll)
                 authorize(HttpMethod.POST, "/v1/agents/*/token", permitAll)
                 authorize(HttpMethod.POST, "/v1/service-tokens", permitAll)
+                // End-user auth (email/password + Google) — body-authenticates via password/OAuth code.
+                authorize(HttpMethod.POST, "/v1/auth/register", permitAll)
+                authorize(HttpMethod.POST, "/v1/auth/login", permitAll)
+                authorize(HttpMethod.GET, "/v1/auth/oauth2/google", permitAll)
+                authorize(HttpMethod.GET, "/v1/auth/oauth2/google/callback", permitAll)
+                authorize(HttpMethod.POST, "/v1/auth/oauth2/google/callback", permitAll)
 
                 // ── Everything else needs an authenticated principal ─────────────────────────
                 authorize(anyRequest, authenticated)

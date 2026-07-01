@@ -87,4 +87,11 @@ data class AuthProperties(
 
     /** Service version surfaced on /livez and in OIDC docs. */
     val version: String = "0.1.0",
+
+    /**
+     * How long a HIL approval request (Phase 6) stays `pending` before it auto-expires. Should be
+     * comfortably below the agent task timeout so a waiting agent gets a definitive answer. Default
+     * 10 minutes.
+     */
+    val hilApprovalTtlSeconds: Long = 600,
 )

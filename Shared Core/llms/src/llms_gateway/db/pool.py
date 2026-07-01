@@ -98,11 +98,12 @@ async def fetch_pricing_max_updated_at(pool: AsyncConnectionPool) -> Any | None:
 
 async def fetch_capabilities(
     pool: AsyncConnectionPool,
-) -> list[tuple[str, str, int, int, bool, bool, bool, int | None]]:
+) -> list[tuple[str, str, int, int, bool, bool, bool, int | None, bool]]:
     """Return all model capability rows from ``llms.model_capabilities``."""
     sql = """
         SELECT model_id, provider, max_tokens_cap, context_window,
-               supports_vision, supports_tools, supports_streaming, embedding_dim
+               supports_vision, supports_tools, supports_streaming, embedding_dim,
+               native_tool_use
           FROM llms.model_capabilities
     """
     async with pool.connection(timeout=2.0) as conn:

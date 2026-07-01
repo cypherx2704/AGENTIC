@@ -240,6 +240,26 @@ class Settings(BaseSettings):
     # service is runnable with no provider keys / no network.
     mock_providers: bool = False
 
+    # ── Tool-calling emulation (small/8B models) ───────────────────────────────
+    # The gateway can EMULATE tool-calling for models that lack a reliable native
+    # tools[] function-calling API (model_capabilities.native_tool_use=false): the
+    # tool schemas + a strict tool-call protocol are injected into the prompt, the
+    # provider is called as a plain chat, and the model's text reply is parsed back
+    # into normalized message.tool_calls + finish_reason="tool_calls". This lets
+    # EVERY model — small or large — use platform tools through the same `tools`
+    # contract. Per-request `tool_mode` (auto|native|emulated) overrides; "auto"
+    # (the default) emulates iff the model is known-non-native.
+    #   * master switch — OFF makes "auto"/"emulated" behave as "native" (no shim).
+    tool_emulation_enabled: bool = True
+    #   * "auto" decision for a model with NO capability row (unknown native_tool_use):
+    #     default False = treat unknown as native (frontier-safe; don't wrap a model
+    #     we can't classify). Set True to emulate unknown models too.
+    emulate_tools_when_unknown: bool = False
+    # Hard ceiling on the number of tool schemas injected into an emulated prompt
+    # (keeps a small model's context + decision space bounded). Extra tools beyond
+    # this are dropped from the offered set (the caller should pre-select).
+    tool_emulation_max_tools: int = 16
+
 
 @lru_cache
 def get_settings() -> Settings:

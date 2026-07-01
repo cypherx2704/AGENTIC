@@ -23,10 +23,12 @@ from typing import Any
 
 import structlog
 from fastapi import APIRouter, Depends, Query, Request
+from pydantic import BaseModel
 
 from ..core.auth import Principal, require_principal
 from ..core.errors import ApiError, ErrorCode
 from ..db import read_queries
+from ..services import alias_service
 from ..services.capabilities import capability_registry
 
 logger = structlog.get_logger(__name__)
@@ -34,6 +36,17 @@ logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/v1", tags=["read"])
 
 _DEFAULT_GROUP_BY = "date"
+_ADMIN_SCOPES = ("tenant:admin", "platform:admin")
+
+
+def _require_admin(principal: Principal) -> None:
+    """Alias / allowlist mutations require tenant:admin (or platform:admin)."""
+    if not any(s in principal.scopes for s in _ADMIN_SCOPES):
+        raise ApiError(
+            ErrorCode.FORBIDDEN,
+            "This operation requires tenant:admin.",
+            details={"required_any": list(_ADMIN_SCOPES)},
+        )
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -244,6 +257,120 @@ async def get_cost(
         "to": upper.isoformat() if upper is not None else None,
         "data": [_serialise_row(r) for r in rows],
     }
+
+
+# ── model-alias management (orchestrator LLM governance) ───────────────────────────────────
+class CreateAliasBody(BaseModel):
+    alias: str
+    model_id: str
+    provider: str
+    task_type: str | None = None
+    description: str | None = None
+    is_default: bool = False
+
+
+class UpdateAliasBody(BaseModel):
+    is_default: bool | None = None
+    task_type: str | None = None
+    description: str | None = None
+
+
+class AgentAliasesBody(BaseModel):
+    aliases: list[str] = []
+
+
+@router.get("/models/aliases")
+async def list_aliases(
+    request: Request,
+    principal: Principal = Depends(require_principal),
+    task_type: str | None = Query(default=None),
+) -> dict[str, list[dict[str, Any]]]:
+    """List the tenant's aliases (own + platform), optionally filtered by task_type."""
+    pool = _get_pool(request)
+    rows = await alias_service.list_aliases(pool, principal.tenant_id, task_type=task_type)
+    return {"data": [_serialise_row(r) for r in rows]}
+
+
+@router.post("/models/aliases", status_code=201)
+async def create_alias(
+    request: Request,
+    body: CreateAliasBody,
+    principal: Principal = Depends(require_principal),
+) -> dict[str, Any]:
+    """Create a tenant alias (the first one auto-becomes default; tenant:admin)."""
+    _require_admin(principal)
+    pool = _get_pool(request)
+    row = await alias_service.create_alias(
+        pool,
+        principal.tenant_id,
+        alias=body.alias.strip(),
+        model_id=body.model_id.strip(),
+        provider=body.provider.strip(),
+        task_type=body.task_type,
+        description=body.description,
+        make_default=body.is_default,
+    )
+    return _serialise_row(row)
+
+
+@router.patch("/models/aliases/{alias}")
+async def update_alias(
+    request: Request,
+    alias: str,
+    body: UpdateAliasBody,
+    principal: Principal = Depends(require_principal),
+) -> dict[str, Any]:
+    """Update a tenant alias's default flag / task_type / description (tenant:admin)."""
+    _require_admin(principal)
+    pool = _get_pool(request)
+    row = await alias_service.update_alias(
+        pool,
+        principal.tenant_id,
+        alias,
+        make_default=body.is_default,
+        task_type=body.task_type,
+        description=body.description,
+    )
+    return _serialise_row(row)
+
+
+@router.delete("/models/aliases/{alias}", status_code=204)
+async def delete_alias(
+    request: Request,
+    alias: str,
+    principal: Principal = Depends(require_principal),
+) -> None:
+    """Delete a tenant alias (tenant:admin)."""
+    _require_admin(principal)
+    pool = _get_pool(request)
+    await alias_service.delete_alias(pool, principal.tenant_id, alias)
+
+
+@router.get("/agents/{agent_id}/llm-aliases")
+async def get_agent_llm_aliases(
+    request: Request,
+    agent_id: str,
+    principal: Principal = Depends(require_principal),
+) -> dict[str, list[str]]:
+    """Return an agent's LLM allowlist (empty = unrestricted)."""
+    pool = _get_pool(request)
+    return {"aliases": await alias_service.get_agent_aliases(pool, principal.tenant_id, agent_id)}
+
+
+@router.put("/agents/{agent_id}/llm-aliases")
+async def put_agent_llm_aliases(
+    request: Request,
+    agent_id: str,
+    body: AgentAliasesBody,
+    principal: Principal = Depends(require_principal),
+) -> dict[str, list[str]]:
+    """Full-replace an agent's LLM allowlist (tenant:admin)."""
+    _require_admin(principal)
+    pool = _get_pool(request)
+    aliases = await alias_service.set_agent_aliases(
+        pool, principal.tenant_id, agent_id, body.aliases
+    )
+    return {"aliases": aliases}
 
 
 def _serialise_row(row: dict[str, Any]) -> dict[str, Any]:

@@ -25,7 +25,7 @@ if sys.platform == "win32":
 import structlog
 from fastapi import FastAPI
 
-from .api import chat, classify, embeddings, health, keys, read, rerank
+from .api import chat, classify, embeddings, health, keys, read, rerank, rules
 from .core import metrics
 from .core.auth import warm_jwks
 from .core.body_limit import BodySizeLimitMiddleware
@@ -167,6 +167,7 @@ def create_app() -> FastAPI:
     app.include_router(classify.router)
     app.include_router(read.router)
     app.include_router(keys.router)
+    app.include_router(rules.router)
     return app
 
 

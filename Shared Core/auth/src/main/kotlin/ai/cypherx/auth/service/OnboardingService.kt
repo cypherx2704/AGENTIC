@@ -2,6 +2,7 @@ package ai.cypherx.auth.service
 
 import ai.cypherx.auth.config.OnboardingProperties
 import ai.cypherx.auth.db.TenantTx
+import ai.cypherx.auth.domain.AgentType
 import ai.cypherx.auth.domain.SYSTEM_USER_ID
 import ai.cypherx.auth.domain.TenantSource
 import ai.cypherx.auth.kafka.OutboxEventWriter
@@ -144,11 +145,21 @@ class OnboardingService(
         val attempt = signupAttempts.findByTokenHash(sha256Hex(token))
             ?: throw ApiException.gone("Verification link is invalid or has already been used")
 
-        if (attempt.status == STATUS_VERIFIED) {
-            throw ApiException.gone("This signup has already been verified")
+        // IDEMPOTENT REPLAY (Component 1c resilience). A token whose tenant was ALREADY provisioned is
+        // being re-verified — typically because the client never received the original response (a BFF
+        // upstream timeout / dropped connection AFTER Auth committed the tenant+agent+key). Returning 410
+        // here would strand the tenant and permanently lose the one-time key. Instead, re-derive the
+        // result from the existing tenant and mint a FRESH initial key, so simply re-opening the link (or
+        // an automatic client retry) recovers a working credential. Bounded to the link's validity window:
+        // once the token has expired, recovery is closed and the user must sign up again.
+        if (attempt.status == STATUS_VERIFIED && attempt.tenantId != null) {
+            if (Instant.now().isAfter(attempt.verificationExpiresAt)) {
+                throw ApiException.gone("Verification link has expired; please sign up again")
+            }
+            return recoverProvisionedTenant(attempt.tenantId)
         }
         if (attempt.status != STATUS_PENDING) {
-            // manual_review / rejected / expired — not consumable by a link.
+            // verifying (claimed mid-flight) / manual_review / rejected / expired — not link-consumable.
             throw ApiException.gone("Verification link is no longer valid")
         }
         if (Instant.now().isAfter(attempt.verificationExpiresAt)) {
@@ -194,6 +205,7 @@ class OnboardingService(
                 version = FIRST_AGENT_VERSION,
                 allowedScopes = FIRST_AGENT_SCOPES,
                 requestedTenantId = tenant.tenantId,
+                agentType = AgentType.ORCHESTRATOR,
             ),
             systemCaller,
         )
@@ -221,6 +233,64 @@ class OnboardingService(
 
         return VerifyResult(
             tenantId = tenant.tenantId,
+            tenantName = tenant.name,
+            plan = tenant.plan,
+            agentId = agent.agentId,
+            apiKeyId = key.keyId,
+            apiKey = key.rawKey,
+            keyPrefix = key.keyPrefix,
+        )
+    }
+
+    /**
+     * Idempotent-replay recovery (see [verify]). The tenant for [tenantId] was already provisioned by a
+     * prior verify whose response the client never received. Ensure the first agent exists (re-create
+     * defensively if a mid-flight failure left the tenant without one), mint a FRESH initial key —
+     * revoking any prior active keys first so the per-agent key quota is never exceeded across repeated
+     * recoveries — and return the same [VerifyResult] shape. Idempotent: never creates a second tenant,
+     * and the active-key count stays at one no matter how many times the link is replayed.
+     */
+    private fun recoverProvisionedTenant(tenantId: UUID): VerifyResult {
+        val tenant = tenantService.get(tenantId)
+        val systemCaller = AgentService.Caller(
+            agentId = SYSTEM_USER_ID,
+            tenantId = tenantId,
+            scopes = setOf(SCOPE_PLATFORM_ADMIN),
+        )
+        // Find the onboarding default agent; re-create it only if a partial earlier failure left none.
+        val agent = agentService.listAgents(
+            caller = systemCaller,
+            statusFilter = null,
+            nameContains = FIRST_AGENT_NAME,
+            cursor = null,
+            limit = 50,
+        ).agents.firstOrNull { it.name == FIRST_AGENT_NAME }
+            ?: agentService.createAgent(
+                AgentService.CreateAgentCommand(
+                    name = FIRST_AGENT_NAME,
+                    version = FIRST_AGENT_VERSION,
+                    allowedScopes = FIRST_AGENT_SCOPES,
+                    requestedTenantId = tenantId,
+                    agentType = AgentType.ORCHESTRATOR,
+                ),
+                systemCaller,
+            )
+
+        // Re-mint: revoke prior active keys (keeps the active-key count bounded under the quota) then
+        // issue exactly one fresh key. Revoke is best-effort — a hiccup here must not block recovery.
+        runCatching { apiKeyService.revokeAllForAgent(tenantId, agent.agentId) }
+            .onFailure { log.warn("recovery: revoke prior keys failed for agent {}: {}", agent.agentId, it.message) }
+        val key = apiKeyService.issue(
+            tenantId = tenantId,
+            agentId = agent.agentId,
+            scopes = FIRST_AGENT_SCOPES,
+            name = "onboarding-recovery-key",
+            expiresInDays = null,
+        )
+
+        log.info("onboarding replay recovered — tenant {} + agent {} (fresh key minted)", tenantId, agent.agentId)
+        return VerifyResult(
+            tenantId = tenantId,
             tenantName = tenant.name,
             plan = tenant.plan,
             agentId = agent.agentId,
@@ -398,9 +468,15 @@ class OnboardingService(
 
         const val TOKEN_BYTES = 32
 
-        const val FIRST_AGENT_NAME = "default-agent"
+        const val FIRST_AGENT_NAME = "orchestrator"
         const val FIRST_AGENT_VERSION = "1.0.0"
-        val FIRST_AGENT_SCOPES = listOf("tenant:admin", "tenant:read")
+
+        /**
+         * Scopes granted to a self-serve tenant's FIRST agent — its mandatory ORCHESTRATOR. Shared
+         * with [UserAuthService] via [ai.cypherx.auth.domain.ORCHESTRATOR_DEFAULT_SCOPES] so the
+         * auto-provisioned orchestrator is identical regardless of signup entry point.
+         */
+        val FIRST_AGENT_SCOPES = ai.cypherx.auth.domain.ORCHESTRATOR_DEFAULT_SCOPES
 
         val EMAIL_PATTERN: Pattern = Pattern.compile("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$")
 

@@ -18,6 +18,28 @@ val PLATFORM_TENANT_ID: UUID = UUID.fromString("00000000-0000-0000-0000-00000000
 /** Well-known integration-test tenant (rejected in prod via ENVIRONMENT gate). */
 val INTEGRATION_TEST_TENANT_ID: UUID = UUID.fromString("00000000-0000-0000-0000-0000000000ff")
 
+/**
+ * Scopes granted to a tenant's mandatory ORCHESTRATOR agent (and its initial api_key) — the identity
+ * the operator logs into the Console as. It must FULLY operate its own tenant: manage sub-agents
+ * (`orchestrator:manage`), resolve human-in-the-loop approvals (`hil:approve`), manage agents/keys
+ * (agent:read/write) + runtimes + tasks (agent:admin/execute via xAgent), call the LLM gateway
+ * (llm:invoke), use guardrails (guardrails:check), RAG (rag:*) and memory (mem:*).
+ *
+ * platform:admin is DELIBERATELY EXCLUDED — it is a cross-tenant superpower and must never be
+ * auto-granted to a self-registered tenant. RLS (Contract 13) confines every scope here to the
+ * tenant, so this set is "tenant owner", not "platform operator". Shared by [OnboardingService] and
+ * [UserAuthService] so the auto-provisioned orchestrator is identical regardless of entry point.
+ */
+val ORCHESTRATOR_DEFAULT_SCOPES: List<String> = listOf(
+    "tenant:admin", "tenant:read",
+    "orchestrator:manage", "hil:approve",
+    "agent:admin", "agent:read", "agent:write", "agent:execute",
+    "llm:invoke",
+    "guardrails:check",
+    "rag:admin", "rag:query", "rag:ingest",
+    "mem:read", "mem:write",
+)
+
 /** auth.agents.status */
 enum class AgentStatus(val value: String) {
     ACTIVE("active"),
@@ -29,6 +51,40 @@ enum class AgentStatus(val value: String) {
         fun from(value: String): AgentStatus =
             entries.firstOrNull { it.value == value }
                 ?: throw IllegalArgumentException("unknown agent status: $value")
+    }
+}
+
+/**
+ * auth.agents.agent_type — the agent's place in the orchestrator hierarchy.
+ *
+ *  - ORCHESTRATOR: the single mandatory agent auto-created per tenant on signup. Only it can
+ *    create sub-agents; it is the identity the human logs into the Console as.
+ *  - SUB_AGENT: created BY an orchestrator (depth 1 only — a sub-agent cannot itself delegate).
+ *    Its `parent_orchestrator_id` points at the creating orchestrator.
+ *  - USER_CREATED: an agent created directly by the user (not the orchestrator). The orchestrator
+ *    may NOT modify these. This is the default for the existing `POST /v1/agents` path.
+ */
+enum class AgentType(val value: String) {
+    ORCHESTRATOR("orchestrator"),
+    SUB_AGENT("sub_agent"),
+    USER_CREATED("user_created");
+
+    companion object {
+        fun from(value: String): AgentType =
+            entries.firstOrNull { it.value == value }
+                ?: throw IllegalArgumentException("unknown agent type: $value")
+    }
+}
+
+/** auth.users.login_provider */
+enum class LoginProvider(val value: String) {
+    LOCAL("local"),
+    GOOGLE("google");
+
+    companion object {
+        fun from(value: String): LoginProvider =
+            entries.firstOrNull { it.value == value }
+                ?: throw IllegalArgumentException("unknown login provider: $value")
     }
 }
 

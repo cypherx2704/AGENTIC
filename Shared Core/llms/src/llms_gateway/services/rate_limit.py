@@ -76,14 +76,26 @@ def _keys(prefix: str, tenant_id: str, window: int) -> tuple[str, str, str]:
 
 
 def _reject(dimension: str, retry_after: int, limit: int) -> None:
-    """Raise the Contract-2 429 with a ``Retry-After`` header for ``dimension``."""
+    """Raise the Contract-2 429 with ``Retry-After`` + the ``X-RateLimit-*`` headers.
+
+    Per ``contracts/http/headers.md`` (and Contract-15 case 14) a 429 carries the full
+    rate-limit header set: ``Limit`` = window quota, ``Remaining`` = 0 on breach,
+    ``Reset`` = epoch seconds at window roll-over, ``Resource`` = the breached dimension.
+    """
     metrics.rate_limit_rejected_total.labels(dimension).inc()
+    reset_epoch = int(time.time()) + retry_after
     raise ApiError(
         ErrorCode.RATE_LIMIT_EXCEEDED,
         f"Rate limit exceeded for {dimension} (limit {limit} per minute).",
         status_code=429,
         details={"dimension": dimension, "limit": limit, "retry_after_seconds": retry_after},
-        headers={"Retry-After": str(retry_after)},
+        headers={
+            "Retry-After": str(retry_after),
+            "X-RateLimit-Limit": str(limit),
+            "X-RateLimit-Remaining": "0",
+            "X-RateLimit-Reset": str(reset_epoch),
+            "X-RateLimit-Resource": dimension,
+        },
     )
 
 

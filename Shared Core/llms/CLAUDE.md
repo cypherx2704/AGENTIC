@@ -42,7 +42,15 @@ root: `llms_gateway` (in `src/`); container entry `python -m llms_gateway`.
 | `src/llms_gateway/api/` | Routers: `chat.py`, `embeddings.py`, `read.py` (models/usage/cost), `keys.py` (BYOK CRUD), `health.py`. |
 | `src/llms_gateway/core/` | `auth.py` (dual-mode JWT + revocation mirror), `errors.py` (Contract-2 envelope), `config.py` (Settings), `trace.py` (Contract 6/8 middleware), `body_limit.py`, `logging.py`, `metrics.py`. |
 | `src/llms_gateway/models/unified.py` | OpenAI-superset chat + embeddings request/response models (tools, multimodal `image_url`, reserved-`metadata` guard). |
-| `src/llms_gateway/services/` | `router.py` (alias→provider + BYOK key selection), `normalizer.py` (Anthropic/OpenAI translate), `cost.py`, `capabilities.py`, `rate_limit.py`, `idempotency.py`, `acl.py`, `byok.py`, `image_fetch.py`, `auth_client.py` (plan→limits), `billing_journal.py`, `pricing_staleness.py`, `providers/{base,mock,anthropic_provider,openai_provider}.py`. |
+| `src/llms_gateway/services/` | `router.py` (alias→provider + BYOK key selection), `normalizer.py` (Anthropic/OpenAI translate), `tool_emulation.py` (**tool-calling shim** for non-native/small models — see note), `cost.py`, `capabilities.py`, `rate_limit.py`, `idempotency.py`, `acl.py`, `byok.py`, `image_fetch.py`, `auth_client.py` (plan→limits), `billing_journal.py`, `pricing_staleness.py`, `providers/{base,mock,anthropic_provider,openai_provider}.py`. |
+
+> **Tool-calling emulation (small/8B models, 2026-06-24).** `model_capabilities.native_tool_use=false`
+> (or request `tool_mode=emulated`) routes a `tools` request through `services/tool_emulation.py`:
+> the tool schemas + a strict tool-call protocol are injected into the prompt, the provider is
+> called as a plain chat, and the model's text reply is parsed back into normalized
+> `message.tool_calls` + `finish_reason=tool_calls`. `tool_mode` (auto|native|emulated, default
+> auto) is on `ChatCompletionRequest`; the response carries `X-Cypherx-Tool-Mode`. Seeded small
+> models: `llama-3.1-8b-instruct`/`qwen2.5-7b-instruct`/`mistral-7b-instruct` (alias `small`).
 | `src/llms_gateway/db/` | `pool.py` (`in_tenant()` RLS helper + platform reads + `readyz_ping`), `outbox.py` (usage + 2 events txn + publisher), `read_queries.py`, `valkey.py`. |
 | `db/migrations/` | Atlas SQL (`..._0001`→`..._0007`), `schema.sql` flattened snapshot, `atlas.hcl`, `README.md`. |
 | `tests/` | 24 test files (normalizer, chat/stream mock, WP05/WP06 suites, outbox payloads, auth, config-registry drift guard). |
