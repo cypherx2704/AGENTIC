@@ -332,12 +332,19 @@ services:
       AUTH_JWKS_URL: ${AUTH_JWKS_URL:-http://auth-service:8080/.well-known/jwks.json}
       AUTH_ISSUER_URL: ${AUTH_ISSUER_URL:-http://auth-service:8080}
       AUTH_PLATFORM_AUDIENCE: ${AUTH_PLATFORM_AUDIENCE:-cypherx-platform}
-      MOCK_PROVIDERS: ${MOCK_PROVIDERS:-true}
+      # Valkey — idempotency, rate-limit, token-revocation mirror. Load-bearing (folded in from
+      # the former docker-compose.override.yml; without it these features fall back to an
+      # unreachable in-code localhost:6379 and silently fail-open).
+      VALKEY_URL: ${VALKEY_URL:-redis://valkey:6379}
+      # Real providers by default. Set MOCK_PROVIDERS=true in .env only to run fully offline/keyless.
+      MOCK_PROVIDERS: ${MOCK_PROVIDERS:-false}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      # BYOK master key-encryption-key. Non-empty => /v1/keys can register per-tenant provider
-      # keys, sealed (AES-256-GCM) at rest in llms.tenant_provider_keys. NOT a provider key.
-      BYOK_KEK: ${BYOK_KEK:-}
+      # BYOK master key-encryption-key (the OPERATOR's vault key that seals/unseals each tenant's
+      # provider key at rest in llms.tenant_provider_keys — NOT a provider key, NOT the customer's
+      # key). Must be non-empty + STABLE to register/use BYOK connections. The code accepts either
+      # LLMS_BYOK_KEK or BYOK_KEK; LLMS_BYOK_KEK is the canonical documented name.
+      LLMS_BYOK_KEK: ${LLMS_BYOK_KEK:?set LLMS_BYOK_KEK in .env — a non-empty base64 KEK is required for BYOK}
       ENVIRONMENT: ${ENVIRONMENT:-local}
       SERVICE_NAME: llms-gateway
       SERVICE_VERSION: ${LLMS_SERVICE_VERSION:-0.1.0}
@@ -374,6 +381,10 @@ services:
       AUTH_JWKS_URL: ${AUTH_JWKS_URL:-http://auth-service:8080/.well-known/jwks.json}
       AUTH_ISSUER_URL: ${AUTH_ISSUER_URL:-http://auth-service:8080}
       AUTH_PLATFORM_AUDIENCE: ${AUTH_PLATFORM_AUDIENCE:-cypherx-platform}
+      # Valkey — policy cache + per-tenant rate limiter / byte-quota. Load-bearing (folded in from
+      # the former docker-compose.override.yml): without it EVERY check does a live Neon round-trip
+      # (30/50ms SLO breached ~4-7x) and the safety rate-limiter/quota fails OPEN to flooding.
+      VALKEY_URL: ${VALKEY_URL:-redis://valkey:6379}
       REDACTION_HMAC_KEY_PLATFORM: ${REDACTION_HMAC_KEY_PLATFORM}
       CLASSIFIER_MODE: ${CLASSIFIER_MODE:-stub}
       ENVIRONMENT: ${ENVIRONMENT:-local}
@@ -415,6 +426,33 @@ services:
       AUTH_SERVICE_URL: ${AUTH_SERVICE_URL:-http://auth-service:8080}
       LLMS_GATEWAY_URL: ${LLMS_GATEWAY_URL:-http://llms-gateway:8080}
       GUARDRAILS_SERVICE_URL: ${GUARDRAILS_SERVICE_URL:-http://guardrails-service:8080}
+      # Valkey — token-revocation enforcement, agent-config cache, idempotency + async task mode.
+      # Load-bearing (folded in from the former docker-compose.override.yml): without it revocation
+      # is skipped, idempotent POST /v1/tasks 503s, and async mode is 100% down.
+      VALKEY_URL: ${VALKEY_URL:-redis://valkey:6379}
+      # Central authorize layer OFF locally: the first-cycle auth default-allow policy is NOT seeded
+      # to permit the 'task:execute' action (executing agents hold 'agent:execute', not
+      # 'task:execute'), so leaving it on denies legitimate tasks. The agent-JWT verify + the
+      # 'agent:execute' task-submit scope already gate execution at the endpoint. Flip to true once a
+      # policy permitting the execute action is seeded.
+      AUTHORIZE_ENABLED: ${AUTHORIZE_ENABLED:-false}
+      # WP12 enhancement stages. Coded + bound but default-OFF in core/config.py; their deps
+      # (rag/memory/tool-registry) are built + healthy, so enable them here. SAFE platform-wide: each
+      # stage SKIPS unless the agent's runtime config opts in (allowed_kb_ids / memory_scope!='none'
+      # / allowed_tools), so a spine-only agent runs the byte-identical LOAD->...->EVENT pipeline.
+      STAGE_ENABLE_RAG_QUERY: ${STAGE_ENABLE_RAG_QUERY:-true}
+      STAGE_ENABLE_MEMORY_RETRIEVE: ${STAGE_ENABLE_MEMORY_RETRIEVE:-true}
+      STAGE_ENABLE_MEMORY_WRITE: ${STAGE_ENABLE_MEMORY_WRITE:-true}
+      STAGE_ENABLE_TOOL_LOOP: ${STAGE_ENABLE_TOOL_LOOP:-true}
+      # Force EMULATED tool-calling for the tool loop. Free/small models (and any model with
+      # no llms.model_capabilities row) are NOT natively tool-capable; with the default
+      # tool_mode=auto the gateway would attempt NATIVE tool-calling on an unknown model and
+      # no tool call would ever be produced. 'emulated' makes the gateway inject the tool
+      # schema into the prompt and parse the model's text reply back into tool_calls — the
+      # only way a free-tier model can drive the LLM->TOOL agent loop. Set to 'auto' or
+      # 'native' only once you're on a model with native_tool_use=true.
+      TOOL_LOOP_TOOL_MODE: ${TOOL_LOOP_TOOL_MODE:-emulated}
+      TOOL_LOOP_MAX_ITERATIONS: ${TOOL_LOOP_MAX_ITERATIONS:-4}
       # WP12 enhancement-stage dependencies (RAG / Memory / Tool-Registry). Internal DNS, port 8080.
       RAG_SERVICE_URL: ${RAG_SERVICE_URL:-http://rag:8080}
       MEMORY_SERVICE_URL: ${MEMORY_SERVICE_URL:-http://memory:8080}

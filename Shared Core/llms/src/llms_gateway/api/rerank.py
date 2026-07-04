@@ -105,7 +105,7 @@ async def rerank(
     # Resolve the alias/literal to a (provider, model_id). 'rerank-default' is the
     # platform default alias -> the cypherx mock reranker.
     requested_model = body.model or settings.rerank_default_model
-    resolution = model_router.resolve(requested_model, principal.tenant_id)
+    resolution = await model_router.resolve(requested_model, principal.tenant_id)
 
     valkey = getattr(request.app.state, "valkey", None)
     pool = getattr(request.app.state, "db_pool", None)
