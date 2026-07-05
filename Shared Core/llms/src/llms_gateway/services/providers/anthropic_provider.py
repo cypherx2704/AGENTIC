@@ -18,6 +18,7 @@ from ...core.errors import ApiError, ErrorCode
 from ...models.unified import ChatCompletionRequest, ChatCompletionResponse
 from .. import normalizer
 from .base import ProviderAdaptor
+from .provider_errors import map_provider_exception
 
 logger = structlog.get_logger(__name__)
 
@@ -65,7 +66,9 @@ class AnthropicProvider(ProviderAdaptor):
             raise
         except Exception as exc:  # noqa: BLE001 — provider/network failures
             logger.warning("anthropic_call_failed", error=str(exc))
-            raise ApiError(ErrorCode.SERVICE_UNAVAILABLE, "Anthropic provider call failed.") from exc
+            raise map_provider_exception(
+                exc, provider=self.provider, model_id=model_id, operation="chat"
+            ) from exc
         raw = message.model_dump() if hasattr(message, "model_dump") else dict(message)
         return normalizer.from_anthropic(raw, request_model=model_id)
 
@@ -149,7 +152,18 @@ class AnthropicProvider(ProviderAdaptor):
                             finish_reason = _STREAM_STOP_MAP.get(stop_reason, "stop")
         except Exception as exc:  # noqa: BLE001 — mid-stream provider error
             logger.warning("anthropic_stream_failed", error=str(exc))
-            err = {"error": {"code": ErrorCode.SERVICE_UNAVAILABLE, "message": "Anthropic stream failed."}}
+            # Stream already started -> emit the mapped error in the SSE error frame
+            # (correct code + specific message + details) instead of a blanket 503.
+            mapped = map_provider_exception(
+                exc, provider=self.provider, model_id=model_id, operation="chat"
+            )
+            err = {
+                "error": {
+                    "code": mapped.code,
+                    "message": mapped.message,
+                    "details": mapped.details,
+                }
+            }
             yield f"event: error\ndata: {json.dumps(err)}\n\n"
             return
 

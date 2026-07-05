@@ -29,8 +29,8 @@ from .pool import in_tenant
 _COLUMNS = """
     agent_id::text AS agent_id, tenant_id::text AS tenant_id, name, runtime_version, status,
     llm_model, system_prompt, max_tokens, temperature, memory_scope,
-    guardrail_policy_id::text AS guardrail_policy_id, allowed_tools, allowed_skills,
-    allowed_kb_ids::text[] AS allowed_kb_ids, rag_top_k_per_kb, rag_min_score,
+    guardrail_policy_id::text AS guardrail_policy_id, allowed_tools, tool_loop_enabled,
+    allowed_skills, allowed_kb_ids::text[] AS allowed_kb_ids, rag_top_k_per_kb, rag_min_score,
     token_budget_per_task, capabilities, metadata
 """
 
@@ -76,9 +76,9 @@ async def upsert_agent_runtime(
             INSERT INTO xagent.agents
               (agent_id, tenant_id, name, runtime_version, status, llm_model, system_prompt,
                max_tokens, temperature, memory_scope, guardrail_policy_id, allowed_tools,
-               allowed_skills, allowed_kb_ids, rag_top_k_per_kb, rag_min_score,
-               token_budget_per_task, capabilities, metadata)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+               tool_loop_enabled, allowed_skills, allowed_kb_ids, rag_top_k_per_kb,
+               rag_min_score, token_budget_per_task, capabilities, metadata)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (agent_id) DO NOTHING
             """,
             (
@@ -94,6 +94,7 @@ async def upsert_agent_runtime(
                 reg.memory_scope,
                 reg.guardrail_policy_id,
                 reg.allowed_tools,
+                reg.tool_loop_enabled,
                 reg.allowed_skills,
                 reg.allowed_kb_ids,
                 reg.rag_top_k_per_kb,
@@ -135,9 +136,9 @@ async def insert_agent_runtime(
             INSERT INTO xagent.agents
               (agent_id, tenant_id, name, runtime_version, status, llm_model, system_prompt,
                max_tokens, temperature, memory_scope, guardrail_policy_id, allowed_tools,
-               allowed_skills, allowed_kb_ids, rag_top_k_per_kb, rag_min_score,
-               token_budget_per_task, capabilities, metadata)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+               tool_loop_enabled, allowed_skills, allowed_kb_ids, rag_top_k_per_kb,
+               rag_min_score, token_budget_per_task, capabilities, metadata)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (agent_id) DO NOTHING
             """,
             (
@@ -153,6 +154,7 @@ async def insert_agent_runtime(
                 reg.memory_scope,
                 reg.guardrail_policy_id,
                 reg.allowed_tools,
+                reg.tool_loop_enabled,
                 reg.allowed_skills,
                 reg.allowed_kb_ids,
                 reg.rag_top_k_per_kb,
@@ -196,10 +198,10 @@ async def update_agent_runtime(
             UPDATE xagent.agents
                SET name = %s, runtime_version = %s, status = %s, llm_model = %s,
                    system_prompt = %s, max_tokens = %s, temperature = %s, memory_scope = %s,
-                   guardrail_policy_id = %s, allowed_tools = %s, allowed_skills = %s,
-                   allowed_kb_ids = %s, rag_top_k_per_kb = %s, rag_min_score = %s,
-                   token_budget_per_task = %s, capabilities = %s, metadata = %s,
-                   updated_at = NOW()
+                   guardrail_policy_id = %s, allowed_tools = %s, tool_loop_enabled = %s,
+                   allowed_skills = %s, allowed_kb_ids = %s, rag_top_k_per_kb = %s,
+                   rag_min_score = %s, token_budget_per_task = %s, capabilities = %s,
+                   metadata = %s, updated_at = NOW()
              WHERE agent_id = %s
             RETURNING {_COLUMNS}
             """,  # noqa: S608 — static RETURNING columns
@@ -214,6 +216,7 @@ async def update_agent_runtime(
                 reg.memory_scope,
                 reg.guardrail_policy_id,
                 reg.allowed_tools,
+                reg.tool_loop_enabled,
                 reg.allowed_skills,
                 reg.allowed_kb_ids,
                 reg.rag_top_k_per_kb,

@@ -19,6 +19,9 @@ interface FormState {
   memory_scope: MemoryScope;
   guardrail_policy_id: string;
   allowed_tools: string;
+  // true = "multiple request" (full tool loop, multiple LLM calls); false = "per request"
+  // (skip the tool loop -> a single LLM call, for rate-limited / free-tier models).
+  tool_loop_enabled: boolean;
   allowed_skills: string;
   allowed_kb_ids: string;
   rag_top_k_per_kb: number;
@@ -37,6 +40,9 @@ function toForm(rt: AgentRuntime | null, fallbackName: string): FormState {
     memory_scope: rt?.memory_scope ?? 'agent',
     guardrail_policy_id: rt?.guardrail_policy_id ?? '',
     allowed_tools: (rt?.allowed_tools ?? []).join(', '),
+    // Default true (multiple request) — preserves the current behaviour when the field is
+    // absent (a pre-0007 runtime row / gateway that never returned it).
+    tool_loop_enabled: rt?.tool_loop_enabled ?? true,
     allowed_skills: (rt?.allowed_skills ?? []).join(', '),
     allowed_kb_ids: (rt?.allowed_kb_ids ?? []).join(', '),
     rag_top_k_per_kb: rt?.rag_top_k_per_kb ?? 5,
@@ -63,6 +69,7 @@ function toRegistration(f: FormState, status: AgentRuntimeStatus): AgentRuntimeR
     memory_scope: f.memory_scope,
     guardrail_policy_id: f.guardrail_policy_id.trim() || null,
     allowed_tools: csv(f.allowed_tools),
+    tool_loop_enabled: f.tool_loop_enabled,
     allowed_skills: csv(f.allowed_skills),
     allowed_kb_ids: csv(f.allowed_kb_ids),
     rag_top_k_per_kb: Number(f.rag_top_k_per_kb),
@@ -285,6 +292,16 @@ export function AgentBuilder({
             onChange={(e) => patch('allowed_tools', e.target.value)}
             hint="Comma-separated tool ids enabled for the TOOL_LOOP stage."
           />
+          <Select
+            label="Tool execution mode"
+            value={form.tool_loop_enabled ? 'multiple' : 'single'}
+            onChange={(e) => patch('tool_loop_enabled', e.target.value === 'multiple')}
+            hint="Multiple request = full tool loop (many LLM calls). Per request = one LLM call, tool loop skipped (use for rate-limited / free-tier models)."
+          >
+            <option value="multiple">Multiple request (tool loop)</option>
+            <option value="single">Per request (single LLM call)</option>
+          </Select>
+
           <Input
             label="Allowed skills"
             value={form.allowed_skills}

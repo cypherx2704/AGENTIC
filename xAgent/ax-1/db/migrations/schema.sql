@@ -40,6 +40,10 @@ CREATE TABLE IF NOT EXISTS xagent.agents (
   memory_scope          VARCHAR(20)  NOT NULL DEFAULT 'agent',
   guardrail_policy_id   UUID,
   allowed_tools         TEXT[]       NOT NULL DEFAULT '{}',
+  -- Per-agent tool-loop toggle (migration 0007): true = full LLM<->tool loop ("multiple
+  -- request"); false = TOOL_LOOP stage skips -> a single LLM call ("per request", for
+  -- rate-limited / free-tier models). Default true preserves prior behaviour.
+  tool_loop_enabled     BOOLEAN      NOT NULL DEFAULT true,
   allowed_skills        TEXT[]       NOT NULL DEFAULT '{}',
   allowed_kb_ids        UUID[]       NOT NULL DEFAULT '{}',
   rag_top_k_per_kb      INTEGER      NOT NULL DEFAULT 5,

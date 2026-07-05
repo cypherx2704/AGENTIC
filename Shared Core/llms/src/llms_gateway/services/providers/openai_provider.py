@@ -24,6 +24,7 @@ from ...models.unified import (
 )
 from .. import normalizer
 from .base import ProviderAdaptor
+from .provider_errors import map_provider_exception
 
 logger = structlog.get_logger(__name__)
 
@@ -46,11 +47,30 @@ class OpenAIProvider(ProviderAdaptor):
         """Clone bound to a BYOK ``api_key`` AND a per-connection ``base_url`` (OpenAI-compatible)."""
         return OpenAIProvider(api_key, base_url)
 
+    def _provider_label(self) -> str:
+        """Friendly provider name for error messages.
+
+        The class label is always ``openai``, but this SAME adaptor serves any
+        OpenAI-compatible endpoint via ``base_url`` (OpenRouter, Together, Groq, vLLM, …).
+        Derive the real provider from the base_url host so a mapped error names the
+        provider the user actually configured, not a hard-coded "openai".
+        """
+        if not self._base_url:
+            return self.provider
+        host = self._base_url.split("://", 1)[-1].split("/", 1)[0].lower()
+        for known in ("openrouter", "together", "groq", "fireworks", "deepinfra", "perplexity"):
+            if known in host:
+                return known
+        # Strip a leading api./www. and a trailing TLD for an unrecognized host.
+        label = host.removeprefix("api.").removeprefix("www.")
+        return label or self.provider
+
     def _client(self):  # type: ignore[no-untyped-def]
         if not self._api_key:
             raise ApiError(
                 ErrorCode.SERVICE_UNAVAILABLE,
-                "OpenAI-compatible provider is not configured (no API key for this connection).",
+                f"The '{self._provider_label()}' connection is not configured "
+                "(no API key stored for this connection).",
             )
         from openai import AsyncOpenAI
 
@@ -69,7 +89,9 @@ class OpenAIProvider(ProviderAdaptor):
             raise
         except Exception as exc:  # noqa: BLE001 — provider/network failures
             logger.warning("openai_call_failed", error=str(exc))
-            raise ApiError(ErrorCode.SERVICE_UNAVAILABLE, "OpenAI provider call failed.") from exc
+            raise map_provider_exception(
+                exc, provider=self._provider_label(), model_id=model_id, operation="chat"
+            ) from exc
         raw = completion.model_dump() if hasattr(completion, "model_dump") else dict(completion)
         return normalizer.from_openai(raw, request_model=model_id)
 
@@ -90,8 +112,8 @@ class OpenAIProvider(ProviderAdaptor):
             raise
         except Exception as exc:  # noqa: BLE001 — provider/network failures
             logger.warning("openai_embed_failed", error=str(exc))
-            raise ApiError(
-                ErrorCode.SERVICE_UNAVAILABLE, "OpenAI embeddings call failed."
+            raise map_provider_exception(
+                exc, provider=self._provider_label(), model_id=model_id, operation="embedding"
             ) from exc
         raw = result.model_dump() if hasattr(result, "model_dump") else dict(result)
         raw_usage = raw.get("usage", {}) or {}
@@ -167,7 +189,19 @@ class OpenAIProvider(ProviderAdaptor):
                         yield chunk(delta)
         except Exception as exc:  # noqa: BLE001 — mid-stream provider error
             logger.warning("openai_stream_failed", error=str(exc))
-            err = {"error": {"code": ErrorCode.SERVICE_UNAVAILABLE, "message": "OpenAI stream failed."}}
+            # The response stream has already started, so we can't raise an ApiError
+            # (no status line to set) — but we still map the upstream exception so the
+            # SSE error frame carries the CORRECT code + a specific message + details.
+            mapped = map_provider_exception(
+                exc, provider=self._provider_label(), model_id=model_id, operation="chat"
+            )
+            err = {
+                "error": {
+                    "code": mapped.code,
+                    "message": mapped.message,
+                    "details": mapped.details,
+                }
+            }
             yield f"event: error\ndata: {json.dumps(err)}\n\n"
             return
 

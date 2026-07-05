@@ -75,6 +75,11 @@ export interface AgentRuntime {
   memory_scope: MemoryScope;
   guardrail_policy_id: string | null;
   allowed_tools: string[];
+  // Per-agent tool-loop toggle (xAgent migration 0007). true (default) = "multiple
+  // request": the full LLM<->tool loop runs (multiple LLM calls). false = "per request":
+  // the tool loop is skipped so the task makes a single LLM call — for rate-limited /
+  // free-tier models. Optional in the response for back-compat with a pre-0007 gateway.
+  tool_loop_enabled?: boolean;
   allowed_skills: string[];
   allowed_kb_ids: string[];
   rag_top_k_per_kb: number;
@@ -94,6 +99,9 @@ export interface AgentRuntimeRegistration {
   memory_scope: MemoryScope;
   guardrail_policy_id?: string | null;
   allowed_tools: string[];
+  // See AgentRuntime.tool_loop_enabled. Optional on write: omitting it lets the gateway
+  // default to true (current multi-call behaviour). Set false for single-call "per request".
+  tool_loop_enabled?: boolean;
   allowed_skills: string[];
   allowed_kb_ids: string[];
   rag_top_k_per_kb: number;

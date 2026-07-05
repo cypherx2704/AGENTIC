@@ -81,6 +81,12 @@ class AgentRuntime(BaseModel):
     memory_scope: MemoryScope = "agent"
     guardrail_policy_id: str | None = None
     allowed_tools: list[str] = Field(default_factory=list)
+    # Per-agent tool-loop toggle (migration 0007). True (default) => the TOOL_LOOP stage
+    # runs the full bounded LLM<->tool loop ("multiple request"). False => the stage skips
+    # even with allowed_tools, so the task makes a single LLM call ("per request" — for
+    # rate-limited / free-tier models). Default true preserves prior behaviour for every
+    # existing agent. See core/stages/tool_loop.py for the enforcing skip.
+    tool_loop_enabled: bool = True
     allowed_skills: list[str] = Field(default_factory=list)
     allowed_kb_ids: list[str] = Field(default_factory=list)
     rag_top_k_per_kb: int = 5
@@ -115,6 +121,9 @@ class AgentRuntimeRegistration(BaseModel):
     memory_scope: MemoryScope = "agent"
     guardrail_policy_id: str | None = None
     allowed_tools: list[str] = Field(default_factory=list)
+    # See AgentRuntime.tool_loop_enabled. Default true = current multi-call behaviour;
+    # set false to force a single LLM call (skip the tool loop) for this agent.
+    tool_loop_enabled: bool = True
     allowed_skills: list[str] = Field(default_factory=list)
     allowed_kb_ids: list[str] = Field(default_factory=list)
     rag_top_k_per_kb: int = Field(default=5, ge=1, le=20)
