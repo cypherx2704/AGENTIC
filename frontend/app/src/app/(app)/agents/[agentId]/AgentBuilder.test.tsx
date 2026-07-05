@@ -57,6 +57,41 @@ describe('AgentBuilder', () => {
     expect(options).toEqual(['none', 'agent', 'user', 'tenant', 'session']);
   });
 
+  it('defaults the tool execution mode to "multiple request" and saves tool_loop_enabled=true', async () => {
+    const user = userEvent.setup();
+    putRuntimeMock.mockResolvedValue(makeRuntime('pending_config'));
+    // Runtime with no tool_loop_enabled (pre-0007) must default to the multi-call mode.
+    renderBuilder(makeRuntime('pending_config'));
+
+    const select = screen.getByLabelText('Tool execution mode') as HTMLSelectElement;
+    expect(select.value).toBe('multiple');
+
+    await user.click(screen.getByRole('button', { name: /save config/i }));
+
+    await waitFor(() => expect(putRuntimeMock).toHaveBeenCalledTimes(1));
+    const body = putRuntimeMock.mock.calls[0][1] as { tool_loop_enabled: boolean };
+    expect(body.tool_loop_enabled).toBe(true);
+  });
+
+  it('switching to "per request" saves tool_loop_enabled=false', async () => {
+    const user = userEvent.setup();
+    putRuntimeMock.mockResolvedValue(makeRuntime('pending_config'));
+    renderBuilder(makeRuntime('pending_config'));
+
+    await user.selectOptions(screen.getByLabelText('Tool execution mode'), 'single');
+    await user.click(screen.getByRole('button', { name: /save config/i }));
+
+    await waitFor(() => expect(putRuntimeMock).toHaveBeenCalledTimes(1));
+    const body = putRuntimeMock.mock.calls[0][1] as { tool_loop_enabled: boolean };
+    expect(body.tool_loop_enabled).toBe(false);
+  });
+
+  it('reflects an existing tool_loop_enabled=false runtime in the select', () => {
+    renderBuilder({ ...makeRuntime('active'), tool_loop_enabled: false });
+    const select = screen.getByLabelText('Tool execution mode') as HTMLSelectElement;
+    expect(select.value).toBe('single');
+  });
+
   it('saving config calls putRuntime once with the form values', async () => {
     const user = userEvent.setup();
     putRuntimeMock.mockResolvedValue(makeRuntime('pending_config'));

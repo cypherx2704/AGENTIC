@@ -141,29 +141,62 @@ class LlmsClient:
 
     @staticmethod
     def _error_from_response(resp: httpx.Response) -> ApiError:
-        """Map a gateway non-2xx into an ApiError that PRESERVES a client/config code.
+        """Map a gateway non-2xx into an ApiError that PRESERVES the accurate code + message.
 
-        BUG 2 — do NOT collapse every gateway error into SERVICE_UNAVAILABLE:
+        Do NOT collapse an accurate gateway error into a generic one — the gateway already
+        classifies the upstream failure (Contract-2 envelope ``{"error": {"code", "message"}}``)
+        and we surface that classification so the task result is actionable:
 
-          * a **4xx** is a client / config error owned by THIS request (e.g. 422
-            ``MODEL_UNSUPPORTED`` — the agent's configured model is not supported). The
-            gateway returns a Contract-2 envelope ``{"error": {"code", "message"}}``; we
-            surface that upstream ``code`` (+ message) on the task result so the failure is
-            actionable, instead of masking it as an availability error. A missing/garbled
-            envelope falls back to VALIDATION_ERROR (still a 4xx-family client error).
-          * a **5xx** (or a 408/429 throttle) is a genuine gateway availability/transport
-            problem -> SERVICE_UNAVAILABLE (retryable), as before.
+          * **429** — the upstream provider rate-limited the request. Surface as
+            ``RATE_LIMIT_EXCEEDED`` (NOT SERVICE_UNAVAILABLE) with the gateway's own message
+            and a passed-through ``Retry-After`` header. A rate-limit is not an outage; masking
+            it as SERVICE_UNAVAILABLE hid the real cause (free-tier / shared-limit throttling).
+          * **402** — insufficient provider credit. Surface as ``BUDGET_EXCEEDED``.
+          * **408 / 5xx** — a genuine gateway availability/transport problem -> SERVICE_UNAVAILABLE
+            (retryable). These stay masked because the cause really is availability.
+          * other **4xx** — a client/config error owned by THIS request (e.g. 422
+            ``MODEL_UNSUPPORTED`` — the agent's configured model is not supported). Surface the
+            upstream ``code`` (+ message). A missing/garbled envelope falls back to
+            VALIDATION_ERROR (still a 4xx-family client error).
+
+        In every non-availability case the upstream ``code`` (when the envelope carried one)
+        wins over our category default, so the gateway's precise classification is preserved.
         """
         status = resp.status_code
         upstream_code, upstream_msg = LlmsClient._parse_error_envelope(resp)
-        # 5xx, plus the retryable 408/429, are availability problems -> SERVICE_UNAVAILABLE.
-        if status >= 500 or status in (408, 429):
+
+        # 429 — provider rate-limit. Preserve the accurate code + message (+ Retry-After).
+        if status == 429:
+            logger.warning("llms_call_rate_limited", status=status, upstream_code=upstream_code)
+            retry_after = resp.headers.get("retry-after")
+            headers = {"Retry-After": retry_after} if retry_after else None
+            return ApiError(
+                upstream_code or ErrorCode.RATE_LIMIT_EXCEEDED,
+                upstream_msg or "LLMs gateway rate-limited the request (upstream 429).",
+                status_code=status,
+                details={"upstream_status": status, "upstream_code": upstream_code},
+                headers=headers,
+            )
+
+        # 402 — insufficient provider credit. Surface as a budget problem, not availability.
+        if status == 402:
+            logger.warning("llms_call_budget", status=status, upstream_code=upstream_code)
+            return ApiError(
+                upstream_code or ErrorCode.BUDGET_EXCEEDED,
+                upstream_msg or "LLMs gateway rejected the request for insufficient credit (402).",
+                status_code=status,
+                details={"upstream_status": status, "upstream_code": upstream_code},
+            )
+
+        # 408 + 5xx — genuine gateway availability/transport problems -> SERVICE_UNAVAILABLE.
+        if status >= 500 or status == 408:
             logger.warning("llms_call_unavailable", status=status, upstream_code=upstream_code)
             return ApiError(
                 ErrorCode.SERVICE_UNAVAILABLE,
                 f"LLMs gateway returned {status}.",
             )
-        # 4xx client/config error: surface the upstream code (do not mask as availability).
+
+        # Other 4xx client/config error: surface the upstream code (do not mask as availability).
         code = upstream_code or ErrorCode.VALIDATION_ERROR
         logger.warning("llms_call_rejected", status=status, upstream_code=code)
         return ApiError(

@@ -1,9 +1,12 @@
 """TOOL_LOOP stage — the iterative LLM<->tool loop (Component 7, WP12).
 
 Runs AFTER the base LLM stage (registry slot ``TOOL_LOOP``). TRIGGER: registry-disabled by
-default; even when ``STAGE_ENABLE_TOOL_LOOP`` is on, the stage SKIPS unless the agent's
-runtime config lists ``allowed_tools``. So a toolless agent carries no tool behaviour
-regardless of the flag (and the base LLM answer stands).
+default; even when ``STAGE_ENABLE_TOOL_LOOP`` is on, the stage SKIPS unless (a) the agent's
+runtime config lists ``allowed_tools`` AND (b) the agent's per-agent ``tool_loop_enabled``
+toggle is true (migration 0007, default true). So a toolless agent — OR an agent switched to
+"per request" mode (``tool_loop_enabled=false``) — carries no tool behaviour and makes a
+single LLM call (the base LLM answer stands). "Per request" mode is for rate-limited /
+free-tier models where multiple LLM<->tool round-trips exhaust the shared usage limit.
 
 BEHAVIOUR (only when the agent has allowed_tools):
   1. Resolve EACH allowed tool via the Tool Registry with VERSION-PIN enforcement — an
@@ -53,15 +56,44 @@ logger = structlog.get_logger(__name__)
 
 
 class _ResolvedTool:
-    """A resolved, allowed tool: its invoke URL, version, and the schema offered to the LLM."""
+    """A resolved, allowed tool ready to offer to the LLM and invoke.
 
-    __slots__ = ("name", "version", "invoke_url", "schema")
+    MCP naming (Contract 4) distinguishes TWO identifiers, and conflating them is a bug:
 
-    def __init__(self, name: str, version: str, invoke_url: str, schema: dict[str, Any]) -> None:
-        self.name = name
+      * ``server_name`` — the MCP SERVER / registry name (dash-case, e.g. ``tool-web-search``).
+        This is the key the Tool Registry catalogs the server under (``GET /v1/tools/{server_name}``)
+        and is used ONLY for resolution + logging provenance.
+      * ``tool_name``   — the TOOL / capability name (snake_case, e.g. ``web_search``) declared in
+        ``manifest.tools[].name``. A single MCP server may host MANY tools; the invoke ``tool``
+        field selects WHICH one. This is what the LLM is offered as the function name AND what is
+        sent as the ``tool`` field to ``POST /mcp/v1/invoke`` — the server rejects any other value
+        with 404.
+
+    ``name`` is retained as an alias of ``tool_name`` so existing call sites (``by_name`` dispatch,
+    ``_select_tools`` scoring) keep working unchanged.
+    """
+
+    __slots__ = ("server_name", "tool_name", "version", "invoke_url", "schema")
+
+    def __init__(
+        self,
+        *,
+        server_name: str,
+        tool_name: str,
+        version: str,
+        invoke_url: str,
+        schema: dict[str, Any],
+    ) -> None:
+        self.server_name = server_name
+        self.tool_name = tool_name
         self.version = version
         self.invoke_url = invoke_url
         self.schema = schema
+
+    @property
+    def name(self) -> str:
+        """The tool (capability) name — what the LLM calls and what invoke sends as ``tool``."""
+        return self.tool_name
 
 
 def _split_pin(entry: str) -> tuple[str, str | None]:
@@ -81,6 +113,17 @@ class ToolLoopStage(Stage):
         agent = ctx.agent
         if agent is None or not agent.allowed_tools:
             return  # no tools configured -> the base LLM answer stands (default-disabled shape)
+        # Per-agent tool-loop toggle (migration 0007): "per request" mode. When disabled the
+        # stage SKIPS even with allowed_tools, so the task makes a single LLM call (the base
+        # LLM answer stands) — for rate-limited / free-tier models where multiple round-trips
+        # exhaust the provider's shared usage limit. Default true => the loop runs as before.
+        if not getattr(agent, "tool_loop_enabled", True):
+            logger.info(
+                "tool_loop_disabled_for_agent",
+                task_id=ctx.task.task_id,
+                agent_id=agent.agent_id,
+            )
+            return
 
         settings = get_settings()
         resolved = await self._resolve_tools(ctx, agent.allowed_tools)
@@ -203,15 +246,47 @@ class ToolLoopStage(Stage):
                     resolved=res.version,
                 )
                 continue
-            resolved.append(
-                _ResolvedTool(
-                    name=res.name or name,
-                    version=res.version,
-                    invoke_url=res.invoke_url,
-                    schema=self._schema_for(res.name or name, res.manifest),
+            server_name = res.name or name
+            # An MCP server declares its tools in ``manifest.tools[]`` (Contract 4). Offer EACH
+            # of them to the LLM under its OWN tool name, and invoke by that tool name — never the
+            # server name (the server 404s an invoke whose ``tool`` field is not one of its tools).
+            for tool_name, tool_schema in self._tools_of(server_name, res.manifest):
+                resolved.append(
+                    _ResolvedTool(
+                        server_name=server_name,
+                        tool_name=tool_name,
+                        version=res.version,
+                        invoke_url=res.invoke_url,
+                        schema=tool_schema,
+                    )
                 )
-            )
         return resolved
+
+    @staticmethod
+    def _tools_of(server_name: str, manifest: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+        """Yield ``(tool_name, llm_schema)`` for every tool an MCP server hosts.
+
+        Primary path (Contract-4 manifest): one entry per ``manifest.tools[]`` element, using its
+        OWN ``name`` (e.g. ``web_search``) — NOT the server name (e.g. ``tool-web-search``).
+
+        Back-compat fallback: a manifest with no usable ``tools[]`` (a legacy/flat manifest) is
+        treated as a single tool named after the server, built from the manifest's top-level
+        schema — preserving the prior single-tool behaviour so nothing regresses.
+        """
+        entries: list[tuple[str, dict[str, Any]]] = []
+        tools = manifest.get("tools")
+        if isinstance(tools, list):
+            for t in tools:
+                if not isinstance(t, dict):
+                    continue
+                tname = str(t.get("name", "") or "").strip()
+                if not tname:
+                    continue
+                entries.append((tname, ToolLoopStage._schema_for(tname, t)))
+        if entries:
+            return entries
+        # Fallback: no tools[] -> one tool named after the server, from the top-level manifest.
+        return [(server_name, ToolLoopStage._schema_for(server_name, manifest))]
 
     @staticmethod
     def _select_tools(
@@ -352,14 +427,23 @@ class ToolLoopStage(Stage):
         if get_access is None:
             return "automated"
         try:
+            # The registry catalogs access by the SERVER name (its resource path); the CAPABILITY
+            # is the tool name the model called. Using tool.name here would 404 the registry
+            # (it knows the server as ``tool-web-search``, not the tool ``web_search``) and
+            # fail-close to 'none' — so pass the server name for the lookup, tool name as capability.
             return await get_access(
-                tool.name,
+                tool.server_name,
                 capability=call.name,
                 agent_jwt=ctx.inbound_agent_jwt,
                 on_behalf_of=ctx.principal.agent_id,
             )
         except ApiError as exc:
-            logger.warning("tool_access_resolve_failed", task_id=ctx.task.task_id, tool=tool.name, error=exc.message)
+            logger.warning(
+                "tool_access_resolve_failed",
+                task_id=ctx.task.task_id,
+                tool=tool.name,
+                error=exc.message,
+            )
             return "none"
 
     async def _await_approval(self, ctx: PipelineContext, tool: _ResolvedTool, call: Any) -> bool:
