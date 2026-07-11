@@ -38,6 +38,7 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from guardrails_service.core.config import Settings  # noqa: E402
+from guardrails_service.core.normalization import build_confusables_map, canonicalize  # noqa: E402
 from guardrails_service.services.classifier import StubClassifier  # noqa: E402
 from guardrails_service.services.injection_defense import assess as assess_injection  # noqa: E402
 from guardrails_service.services.pipeline import evaluate  # noqa: E402
@@ -45,8 +46,23 @@ from guardrails_service.services.policy_engine import builtin_platform_default  
 from guardrails_service.services.rules import RuleContext  # noqa: E402
 
 GOLDEN_PATH = Path(__file__).resolve().parent / "golden_set.jsonl"
+REDTEAM_PATH = Path(__file__).resolve().parent / "redteam_set.jsonl"
 _TENANT = "00000000-0000-0000-0000-0000000000ee"
 _KEY = "eval-platform-redaction-key"
+
+# The 55-row contract golden suite (`expect_decision`/`expect_rules`) is the more
+# representative corpus B4-B6 build on. It lives in the sibling `contracts/` repo; locate it
+# by walking up from here so the harness works regardless of the absolute checkout path.
+_CONFUSABLES_MAP = build_confusables_map()
+
+
+def find_golden_suite() -> Path | None:
+    """Locate ``contracts/guardrails/golden-suite.jsonl`` by walking up the tree; None if absent."""
+    for parent in Path(__file__).resolve().parents:
+        candidate = parent / "contracts" / "guardrails" / "golden-suite.jsonl"
+        if candidate.is_file():
+            return candidate
+    return None
 
 # Component-1 latency SLOs (seconds) for the pipeline evaluation portion.
 SLO_INPUT_P50_S = 0.030
@@ -58,6 +74,11 @@ SLO_OUTPUT_P99_S = 0.100
 MIN_PRECISION = 0.90
 MIN_RECALL = 0.90
 MIN_F1 = 0.90
+
+# Generous per-safety-rule budget used ONLY by the harness so a cold-start regex scan over a
+# long row cannot trip a false timeout and flip a decision (the harness tests decisions +
+# latency, not the timeout->fail-mode path — unit tests cover that separately).
+_EVAL_RULE_BUDGET_MS = 5000
 
 
 @dataclass
@@ -99,10 +120,71 @@ def load_golden(path: Path = GOLDEN_PATH) -> list[dict[str, Any]]:
     return rows
 
 
+# id-prefix -> harness label (for reporting on the contract suite, which carries no `label`).
+_SUITE_LABEL_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("in-clean", "benign"),
+    ("in-pi", "injection"),
+    ("in-email", "pii"),
+    ("in-phone", "pii"),
+    ("in-cc", "pii"),
+    ("in-jb", "jailbreak"),
+    ("in-tox", "toxic"),
+    ("in-multi", "mixed"),
+    ("out-clean", "benign"),
+    ("out-leak", "leak"),
+    ("out-email", "pii"),
+    ("out-cc", "pii"),
+    ("out-tox", "toxic"),
+    ("out-multi", "mixed"),
+    ("out-len", "length"),
+)
+
+
+def _suite_label(row_id: str) -> str:
+    for prefix, label in _SUITE_LABEL_PREFIXES:
+        if row_id.startswith(prefix):
+            return label
+    return "other"
+
+
+def load_golden_suite(path: Path | None = None) -> list[dict[str, Any]]:
+    """Load the 55-row contract golden suite, adapted to the harness row shape.
+
+    The contract file uses ``expect_decision``/``expect_rules``; the harness uses
+    ``expected_decision``/``label``. This small adapter maps between them (keeping ``id``,
+    ``text``, ``direction``, ``input_text``, ``untrusted_spans`` untouched) so the same
+    ``_run_one`` path and ``run``/``summarize`` metrics work over the richer suite. Returns
+    ``[]`` when the contract file cannot be located (harness stays runnable standalone).
+    """
+    src = path or find_golden_suite()
+    if src is None:
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in src.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        raw = json.loads(line)
+        rows.append(
+            {
+                **raw,
+                "label": _suite_label(str(raw.get("id", ""))),
+                "expected_decision": raw["expect_decision"],
+            }
+        )
+    return rows
+
+
 def _run_one(row: dict[str, Any], settings: Settings) -> tuple[str, float]:
-    """Evaluate one golden row; return (decision, eval_latency_seconds)."""
+    """Evaluate one golden row through the REAL pipeline; return (decision, eval_latency_s).
+
+    Mirrors the live check path: builds the B1 canonicalized detection view (Layer A always;
+    NFKC / confusables per ``settings``), threads ``untrusted_spans`` + ``canary_tokens``, and
+    honours the injection spotlight threshold.
+    """
     direction = row.get("direction", "input")
     untrusted = row.get("untrusted_spans")
+    canary_tokens = row.get("canary_tokens")
     block_threshold = (
         settings.injection_spotlight_block_threshold
         if (settings.injection_defense_enabled and untrusted)
@@ -111,10 +193,16 @@ def _run_one(row: dict[str, Any], settings: Settings) -> tuple[str, float]:
     if untrusted:
         # mirror the check-path assessment (metadata only; threshold drives escalation)
         assess_injection(row["text"], untrusted)
+    confusables = _CONFUSABLES_MAP if settings.guardrails_confusables_fold else None
+    detection_text = canonicalize(
+        row["text"], nfkc=settings.injection_normalize, confusables=confusables
+    )
     ctx = RuleContext(
         classifier=StubClassifier(),
         input_text=row.get("input_text") if direction == "output" else None,
         untrusted_spans=untrusted,
+        detection_text=detection_text,
+        canary_tokens=canary_tokens if direction == "output" else None,
     )
     started = time.perf_counter()
     result = evaluate(
@@ -125,6 +213,10 @@ def _run_one(row: dict[str, Any], settings: Settings) -> tuple[str, float]:
         redaction_key=_KEY,
         ctx=ctx,
         injection_block_threshold=block_threshold,
+        # The harness measures DECISION correctness + latency, not the timeout->fail-mode path
+        # (unit tests cover that). A generous per-rule budget keeps decisions deterministic so a
+        # cold-start regex scan over a long row cannot flip the frozen baseline/contract decision.
+        safety_min_timeout_ms=_EVAL_RULE_BUDGET_MS,
     )
     elapsed = time.perf_counter() - started
     return result.decision, elapsed
@@ -202,6 +294,9 @@ def summarize(res: EvalResult) -> dict[str, Any]:
                 "precision": round(c.precision(), 4),
                 "recall": round(c.recall(), 4),
                 "f1": round(c.f1(), 4),
+                # Attack Success Rate = fraction of adversarial prompts NOT flagged = 1 - recall
+                # (the field-standard safety metric; meaningful for attack labels, 0 for benign).
+                "asr": round(1.0 - c.recall(), 4),
                 "support": c.tp + c.fn + c.fp + c.tn,
             }
             for label, c in sorted(res.per_label.items())

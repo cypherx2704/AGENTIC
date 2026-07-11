@@ -15,6 +15,7 @@ dependencies = [
     "structlog>=24.4",
     "prometheus-client>=0.21",
     "redis>=5",
+    "numpy>=1.26",
 ]
 
 [dependency-groups]

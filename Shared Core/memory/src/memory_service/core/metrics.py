@@ -35,6 +35,17 @@ embed_failopen_total = Counter(
     "llms-gateway was unreachable or errored.",
 )
 
+# ── B2: content-hash embedding cache (Valkey) ────────────────────────────────────
+embed_cache_hits_total = Counter(
+    "memory_embed_cache_hits_total",
+    "Per-text embedding cache HITS (a cached vector was served, no gateway/mock call).",
+)
+
+embed_cache_misses_total = Counter(
+    "memory_embed_cache_misses_total",
+    "Per-text embedding cache MISSES (had to embed then write back to the cache).",
+)
+
 # ── Store path ───────────────────────────────────────────────────────────────────
 dedup_bumped_total = Counter(
     "memory_dedup_bumped_total",
@@ -54,6 +65,37 @@ scoring_reranked_total = Counter(
     "memory_scoring_reranked_total",
     "Search responses re-ranked by the composite score (MEMORY_SCORING_ENABLED on); "
     "0 means every search used the default pure-cosine order.",
+)
+
+# ── B5: salient-fact extraction at ingest ────────────────────────────────────────
+extraction_facts_total = Counter(
+    "memory_extraction_facts_total",
+    "Atomic facts stored by the ingest extractor (MEMORY_EXTRACTION_ENABLED on); a "
+    "single-fact / disabled request stores one row and does not increment beyond 1.",
+)
+
+extraction_failopen_total = Counter(
+    "memory_extraction_failopen_total",
+    "Ingest extractions that FAILED SOFT and stored the raw content as a single memory "
+    "because the extractor errored.",
+)
+
+# ── B6: MMR diversity re-rank ─────────────────────────────────────────────────────
+mmr_reranked_total = Counter(
+    "memory_mmr_reranked_total",
+    "Search responses re-ranked for diversity by MMR (MEMORY_MMR_ENABLED on).",
+)
+
+# ── B7: associative memory linking + graph-expansion retrieval ───────────────────
+links_written_total = Counter(
+    "memory_links_written_total",
+    "Associative edges written at ingest (MEMORY_LINKING_ENABLED on).",
+)
+
+link_expanded_total = Counter(
+    "memory_link_expanded_total",
+    "Memories surfaced by the retrieval-time 1-hop link expansion that the vector-only "
+    "ANN set had missed (MEMORY_LINKING_ENABLED on).",
 )
 
 # ── Contradiction / temporal validity ────────────────────────────────────────────

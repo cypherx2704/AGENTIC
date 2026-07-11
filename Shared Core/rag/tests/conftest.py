@@ -102,6 +102,24 @@ async def app_client_rerank(monkeypatch, fake_pool: FakePool, fake_valkey: FakeV
         yield ac
 
 
+@pytest_asyncio.fixture
+async def app_client_decompose(monkeypatch, fake_pool: FakePool, fake_valkey: FakeValkey):  # type: ignore[misc]
+    """Like ``app_client`` but with RAG_DECOMPOSE_ENABLED=true (mock decomposer via mock_embeddings)."""
+    monkeypatch.setenv("RAG_DECOMPOSE_ENABLED", "true")
+    get_settings.cache_clear()
+    async with _make_app_client(fake_pool, fake_valkey) as ac:
+        yield ac
+
+
+@pytest_asyncio.fixture
+async def app_client_multiquery(monkeypatch, fake_pool: FakePool, fake_valkey: FakeValkey):  # type: ignore[misc]
+    """Like ``app_client`` but with RAG_MULTIQUERY_ENABLED=true (mock expander via mock_embeddings)."""
+    monkeypatch.setenv("RAG_MULTIQUERY_ENABLED", "true")
+    get_settings.cache_clear()
+    async with _make_app_client(fake_pool, fake_valkey) as ac:
+        yield ac
+
+
 @pytest.fixture(autouse=True)
 def _clear_caches():
     """Reset the plan-limits TTL cache between tests so quota tests don't bleed."""

@@ -128,6 +128,26 @@ class Settings(BaseSettings):
     contextual_max_doc_chars: int = 4000  # doc prefix sent as grounding (cost guard)
     contextual_max_context_chars: int = 320  # cap on the generated context string
 
+    # ── Query decomposition (multi-hop retrieval via llms-gateway chat) ────────
+    # Default OFF — when off, ``decompose=true`` on a query is a no-op (today's behaviour). When
+    # enabled, an opted-in compound query is split into ≤ decompose_max_subquestions focused
+    # sub-questions; the handler retrieves per sub-question, unions+dedups by chunk_id, and feeds
+    # the merged pool to the (already-gated) rerank stage. Mock-tolerant + fail-soft: any gateway
+    # failure (or a non-decomposable query) degrades to the original single-query retrieval.
+    rag_decompose_enabled: bool = False
+    decompose_max_subquestions: int = 4  # hard cap on sub-questions per query
+    decompose_model: str = "chat"  # llms-gateway chat model alias for decomposition
+
+    # ── Multi-query expansion / RAG-Fusion (via llms-gateway chat) ─────────────
+    # Default OFF — when off, ``multi_query=true`` on a query is a no-op (today's behaviour). When
+    # enabled, the query is rewritten into multiquery_num_variants paraphrases; the handler
+    # retrieves per variant and fuses the ranked lists with application-level Reciprocal Rank
+    # Fusion (hybrid_rrf_k). A RECALL lever for vocabulary mismatch; pair with rerank to keep
+    # top-k precision. Mock-tolerant + fail-soft: any gateway failure degrades to single-query.
+    rag_multiquery_enabled: bool = False
+    multiquery_num_variants: int = 3  # generated paraphrases (in addition to the original query)
+    multiquery_model: str = "chat"  # llms-gateway chat model alias for expansion
+
     # ── Inline ingest ─────────────────────────────────────────────────────────
     # Hard cap on inline text content bytes (over -> VALIDATION_ERROR).
     inline_max_bytes: int = 100 * 1024  # 100 KiB

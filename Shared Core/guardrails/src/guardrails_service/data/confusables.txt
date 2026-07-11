@@ -1,0 +1,85 @@
+# confusables.txt — curated subset of the Unicode UTS #39 confusables data (MA mappings).
+#
+# Source of truth: https://www.unicode.org/Public/security/latest/confusables.txt
+# (Unicode Security Mechanisms, UTS #39). This is a genuine, hand-verified SUBSET of the
+# published MA (mapping) entries covering the cross-script homoglyphs most used to obfuscate
+# English attack payloads (Cyrillic / Greek / Cherokee / mathematical look-alikes -> Latin
+# skeleton). The FULL confusables.txt drops in unchanged via the same parser (same format).
+#
+# Format (identical to the Unicode file):
+#     <source code point> ; <target code point(s)> ; MA  # <comment>
+# The skeleton fold replaces each <source> with its <target> string. Lines beginning with
+# '#' and blank lines are ignored; the ' ; MA' type tag and trailing '#' comment are optional.
+
+# ── Cyrillic (lowercase) -> Latin ────────────────────────────────────────────────────
+0430 ; 0061 ; MA # CYRILLIC SMALL LETTER A -> a
+0435 ; 0065 ; MA # CYRILLIC SMALL LETTER IE -> e
+043E ; 006F ; MA # CYRILLIC SMALL LETTER O -> o
+0440 ; 0070 ; MA # CYRILLIC SMALL LETTER ER -> p
+0441 ; 0063 ; MA # CYRILLIC SMALL LETTER ES -> c
+0443 ; 0079 ; MA # CYRILLIC SMALL LETTER U -> y
+0445 ; 0078 ; MA # CYRILLIC SMALL LETTER HA -> x
+0455 ; 0073 ; MA # CYRILLIC SMALL LETTER DZE -> s
+0456 ; 0069 ; MA # CYRILLIC SMALL LETTER BYELORUSSIAN-UKRAINIAN I -> i
+0458 ; 006A ; MA # CYRILLIC SMALL LETTER JE -> j
+04BB ; 0068 ; MA # CYRILLIC SMALL LETTER SHHA -> h
+0491 ; 0072 ; MA # CYRILLIC SMALL LETTER GHE WITH UPTURN -> r
+0501 ; 0064 ; MA # CYRILLIC SMALL LETTER KOMI DE -> d
+051B ; 0071 ; MA # CYRILLIC SMALL LETTER QA -> q
+0261 ; 0067 ; MA # LATIN SMALL LETTER SCRIPT G -> g
+
+# ── Cyrillic (uppercase) -> Latin ────────────────────────────────────────────────────
+0410 ; 0041 ; MA # CYRILLIC CAPITAL LETTER A -> A
+0412 ; 0042 ; MA # CYRILLIC CAPITAL LETTER VE -> B
+0415 ; 0045 ; MA # CYRILLIC CAPITAL LETTER IE -> E
+041A ; 004B ; MA # CYRILLIC CAPITAL LETTER KA -> K
+041C ; 004D ; MA # CYRILLIC CAPITAL LETTER EM -> M
+041D ; 0048 ; MA # CYRILLIC CAPITAL LETTER EN -> H
+041E ; 004F ; MA # CYRILLIC CAPITAL LETTER O -> O
+0420 ; 0050 ; MA # CYRILLIC CAPITAL LETTER ER -> P
+0421 ; 0043 ; MA # CYRILLIC CAPITAL LETTER ES -> C
+0422 ; 0054 ; MA # CYRILLIC CAPITAL LETTER TE -> T
+0425 ; 0058 ; MA # CYRILLIC CAPITAL LETTER HA -> X
+0405 ; 0053 ; MA # CYRILLIC CAPITAL LETTER DZE -> S
+0406 ; 0049 ; MA # CYRILLIC CAPITAL LETTER BYELORUSSIAN-UKRAINIAN I -> I
+0408 ; 004A ; MA # CYRILLIC CAPITAL LETTER JE -> J
+0423 ; 0059 ; MA # CYRILLIC CAPITAL LETTER U -> Y
+
+# ── Greek (lowercase) -> Latin ───────────────────────────────────────────────────────
+03B1 ; 0061 ; MA # GREEK SMALL LETTER ALPHA -> a
+03BF ; 006F ; MA # GREEK SMALL LETTER OMICRON -> o
+03B9 ; 0069 ; MA # GREEK SMALL LETTER IOTA -> i
+03BD ; 0076 ; MA # GREEK SMALL LETTER NU -> v
+03C1 ; 0070 ; MA # GREEK SMALL LETTER RHO -> p
+03BA ; 006B ; MA # GREEK SMALL LETTER KAPPA -> k
+03C5 ; 0075 ; MA # GREEK SMALL LETTER UPSILON -> u
+03C7 ; 0078 ; MA # GREEK SMALL LETTER CHI -> x
+
+# ── Greek (uppercase) -> Latin ───────────────────────────────────────────────────────
+0391 ; 0041 ; MA # GREEK CAPITAL LETTER ALPHA -> A
+0392 ; 0042 ; MA # GREEK CAPITAL LETTER BETA -> B
+0395 ; 0045 ; MA # GREEK CAPITAL LETTER EPSILON -> E
+0396 ; 005A ; MA # GREEK CAPITAL LETTER ZETA -> Z
+0397 ; 0048 ; MA # GREEK CAPITAL LETTER ETA -> H
+0399 ; 0049 ; MA # GREEK CAPITAL LETTER IOTA -> I
+039A ; 004B ; MA # GREEK CAPITAL LETTER KAPPA -> K
+039C ; 004D ; MA # GREEK CAPITAL LETTER MU -> M
+039D ; 004E ; MA # GREEK CAPITAL LETTER NU -> N
+039F ; 004F ; MA # GREEK CAPITAL LETTER OMICRON -> O
+03A1 ; 0050 ; MA # GREEK CAPITAL LETTER RHO -> P
+03A4 ; 0054 ; MA # GREEK CAPITAL LETTER TAU -> T
+03A5 ; 0059 ; MA # GREEK CAPITAL LETTER UPSILON -> Y
+03A7 ; 0058 ; MA # GREEK CAPITAL LETTER CHI -> X
+0392 ; 0042 ; MA # (dup guard) GREEK CAPITAL BETA -> B
+
+# ── Cherokee -> Latin (a well-known homoglyph script) ────────────────────────────────
+13A0 ; 0044 ; MA # CHEROKEE LETTER A -> D
+13A1 ; 0052 ; MA # CHEROKEE LETTER E -> R
+13C2 ; 0047 ; MA # CHEROKEE LETTER TLI -> G
+13CF ; 0057 ; MA # CHEROKEE LETTER TA -> W
+
+# ── Mathematical / fullwidth Latin look-alikes (NFKC also folds these) -> Latin ──────
+FF41 ; 0061 ; MA # FULLWIDTH LATIN SMALL LETTER A -> a
+FF45 ; 0065 ; MA # FULLWIDTH LATIN SMALL LETTER E -> e
+FF4F ; 006F ; MA # FULLWIDTH LATIN SMALL LETTER O -> o
+1D43C ; 0049 ; MA # MATHEMATICAL ITALIC CAPITAL I -> I

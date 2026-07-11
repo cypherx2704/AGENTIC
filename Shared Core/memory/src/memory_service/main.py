@@ -114,6 +114,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             pool, producer_version=settings.service_version, default_visibility="isolated",
             contradiction_enabled=settings.memory_contradiction_enabled,
             contradiction_sim_min=settings.memory_contradiction_sim_min,
+            vector_quantization=settings.memory_vector_quantization,
+            hnsw_ef_search=settings.memory_hnsw_ef_search,
         )
     else:
         logger.warning("memory_repo_degraded_in_memory")
@@ -122,16 +124,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             contradiction_sim_min=settings.memory_contradiction_sim_min,
         )
 
-    # ── Embeddings client (llms-gateway + deterministic mock fallback) ──────────
+    # ── Valkey (lazy client; soft dependency — readyz reports, never gates) ─────
+    # Created BEFORE the embedder so the B2 content-hash embedding cache can use it.
+    valkey = ValkeyClient(settings.valkey_url, ping_timeout=settings.valkey_ping_timeout_seconds)
+    app.state.valkey = valkey
+
+    # ── Embeddings client (llms-gateway + deterministic mock fallback + B2 cache) ──
     # Service-token provider lets the embeddings call forward the caller's tenant identity
     # (Contract-12) so the gateway resolves that tenant's BYOK key.
     embed_tokens = ServiceTokenProvider(settings)
     app.state.embed_tokens = embed_tokens
-    app.state.embedder = EmbeddingClient(settings, tokens=embed_tokens)
-
-    # ── Valkey (lazy client; soft dependency — readyz reports, never gates) ─────
-    valkey = ValkeyClient(settings.valkey_url, ping_timeout=settings.valkey_ping_timeout_seconds)
-    app.state.valkey = valkey
+    app.state.embedder = EmbeddingClient(settings, tokens=embed_tokens, valkey=valkey)
 
     # ── Outbox publisher (Kafka connect is lazy + fail-soft) ────────────────────
     publisher = OutboxPublisher(pool, settings.kafka_brokers)

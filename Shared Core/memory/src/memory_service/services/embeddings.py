@@ -19,13 +19,19 @@ is fixed at ``settings.embeddings_vector_dim`` (1536).
 from __future__ import annotations
 
 import hashlib
+import json
 import math
+import unicodedata
+from typing import TYPE_CHECKING
 
 import httpx
 import structlog
 
 from ..core import metrics
 from ..core.config import Settings
+
+if TYPE_CHECKING:
+    from .service_token import ServiceTokenProvider
 
 logger = structlog.get_logger(__name__)
 
@@ -58,7 +64,8 @@ class EmbeddingClient:
         settings: Settings,
         *,
         client: httpx.AsyncClient | None = None,
-        tokens: "ServiceTokenProvider | None" = None,
+        tokens: ServiceTokenProvider | None = None,
+        valkey: object | None = None,
     ) -> None:
         self._settings = settings
         # An injected AsyncClient (tests pass a respx-mocked one); otherwise lazily made.
@@ -68,6 +75,10 @@ class EmbeddingClient:
         # the gateway call carries the CALLER's tenant identity so it resolves that tenant's
         # BYOK key. Absent => falls back to the static embeddings_service_token (today's path).
         self._tokens = tokens
+        # ── B2: content-hash embedding cache (Valkey; soft, fail-open) ─────────────────
+        # Injected ValkeyClient-shaped object. Absent (or the flag off) => no caching, the
+        # embed path is byte-identical to today.
+        self._valkey = valkey
 
     def _ensure_client(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -87,7 +98,40 @@ class EmbeddingClient:
     async def embed_many(
         self, texts: list[str], *, on_behalf_of: str | None = None, agent_jwt: str | None = None
     ) -> tuple[list[list[float]], str]:
-        """Embed a batch. Returns ``(vectors, source)`` where source is 'gateway'|'mock'.
+        """Embed a batch, transparently served from the content-hash cache when enabled.
+
+        Returns ``(vectors, source)`` in INPUT ORDER. ``source`` is 'gateway'|'mock' when any
+        text had to be embedded, else 'cache' (a full hit). The cache is EXACT: identical text
+        under the same model+dim yields an identical vector, so a hit is never a semantic
+        approximation. Cache misses embed once and write back. Any Valkey error FAILS OPEN
+        (the batch is embedded normally). With the flag off / no Valkey this delegates
+        straight to :meth:`_embed_uncached`, byte-identical to today.
+        """
+        if not (self._settings.memory_embedding_cache_enabled and self._valkey is not None):
+            return await self._embed_uncached(texts, on_behalf_of=on_behalf_of, agent_jwt=agent_jwt)
+
+        keys = [self._cache_key(t) for t in texts]
+        cached = await self._cache_get_many(keys)  # list[vector | None]; fail-open => all None
+        miss_idx = [i for i, v in enumerate(cached) if v is None]
+        metrics.embed_cache_hits_total.inc(len(texts) - len(miss_idx))
+        metrics.embed_cache_misses_total.inc(len(miss_idx))
+
+        if not miss_idx:
+            return [v for v in cached if v is not None], "cache"
+
+        miss_texts = [texts[i] for i in miss_idx]
+        fresh, source = await self._embed_uncached(
+            miss_texts, on_behalf_of=on_behalf_of, agent_jwt=agent_jwt
+        )
+        await self._cache_set_many([keys[i] for i in miss_idx], fresh)  # fail-open
+        for j, i in enumerate(miss_idx):
+            cached[i] = fresh[j]
+        return [v for v in cached if v is not None], source
+
+    async def _embed_uncached(
+        self, texts: list[str], *, on_behalf_of: str | None = None, agent_jwt: str | None = None
+    ) -> tuple[list[list[float]], str]:
+        """Resolve text -> vector with NO cache. Returns ``(vectors, source)`` ('gateway'|'mock').
 
         Mock mode (forced or fail-open) NEVER raises and NEVER hits the network. When a
         service-token provider + forwarded agent JWT are present, the gateway resolves the
@@ -108,6 +152,59 @@ class EmbeddingClient:
             metrics.embed_failopen_total.inc()
             metrics.embed_calls_total.labels("mock").inc()
             return [pseudo_vector(t, dim) for t in texts], "mock"
+
+    # ── B2: content-hash cache helpers (exact; model+dim-namespaced; fail-open) ─────────
+    def _cache_key(self, text: str) -> str:
+        """Key = prefix + sha256(model \\x00 dim \\x00 NFC(text)).
+
+        The model+dim namespace is INSIDE the hash, so a model or dimension change yields a
+        completely different key space — a stale vector can never be served across a model/dim
+        switch. Text is NFC-normalized only (canonical-equivalent unicode is the same string);
+        no lossy transform, so the cached vector always corresponds to the exact embedded text.
+        """
+        norm = unicodedata.normalize("NFC", text)
+        model = self._settings.embeddings_model
+        dim = self._settings.embeddings_vector_dim
+        digest = hashlib.sha256(f"{model}\x00{dim}\x00{norm}".encode()).hexdigest()
+        return f"{self._settings.memory_embedding_cache_key_prefix}{digest}"
+
+    async def _cache_get_many(self, keys: list[str]) -> list[list[float] | None]:
+        """Fetch cached vectors for ``keys`` (input order). Any Valkey error => all misses."""
+        out: list[list[float] | None] = []
+        for key in keys:
+            try:
+                raw = await self._valkey.get(  # type: ignore[union-attr]
+                    key, timeout_seconds=self._settings.valkey_ping_timeout_seconds
+                )
+            except Exception as exc:  # noqa: BLE001 — cache is soft: FAIL OPEN to a miss
+                logger.warning("embed_cache_get_failopen", error=str(exc))
+                out.append(None)
+                continue
+            if not raw:
+                out.append(None)
+                continue
+            try:
+                vec = json.loads(raw)
+            except (ValueError, TypeError):
+                out.append(None)
+                continue
+            if isinstance(vec, list) and len(vec) == self._settings.embeddings_vector_dim:
+                out.append([float(x) for x in vec])
+            else:
+                out.append(None)  # dim mismatch (stale) => treat as a miss, re-embed
+        return out
+
+    async def _cache_set_many(self, keys: list[str], vectors: list[list[float]]) -> None:
+        """Write ``vectors`` back under ``keys`` with the configured TTL. Errors FAIL OPEN."""
+        ttl = self._settings.memory_embedding_cache_ttl_seconds
+        for key, vec in zip(keys, vectors, strict=True):
+            try:
+                await self._valkey.set(  # type: ignore[union-attr]
+                    key, json.dumps(vec), ttl_seconds=ttl,
+                    timeout_seconds=self._settings.valkey_ping_timeout_seconds,
+                )
+            except Exception as exc:  # noqa: BLE001 — best-effort write-back
+                logger.warning("embed_cache_set_failopen", error=str(exc))
 
     async def _call_gateway(
         self,
