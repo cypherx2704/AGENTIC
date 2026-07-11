@@ -105,6 +105,62 @@ class NoderedAdmin:
         metrics.nodered_admin_total.labels("get_flow", "ok").inc()
         return resp.json()
 
+    async def redeploy_flow(
+        self, *, internal_host: str, admin_token: str, flow_id: str, flow: dict[str, Any]
+    ) -> bool:
+        """PUT /flow/:id — (re)deploy this flow tab so its ``http in`` route is registered and
+        live before we publish. ``get_flow`` already returns the deployed runtime state, so this
+        is defensive belt-and-suspenders (e.g. a route dropped after a runtime restart); it is
+        therefore BEST-EFFORT — a failure is logged and does not fail the publish.
+
+        Returns True if the flow was (re)deployed, False if the attempt failed.
+        """
+        url = self._admin_url(internal_host, f"/flow/{flow_id}")
+        headers = {**self._headers(admin_token), "Content-Type": "application/json"}
+        try:
+            resp = await self._client.put(
+                url, json=flow, headers=headers,
+                timeout=self._settings.nodered_admin_timeout_seconds,
+            )
+        except httpx.HTTPError as exc:
+            metrics.nodered_admin_total.labels("redeploy_flow", "error").inc()
+            logger.warning("nodered_redeploy_unreachable", flow_id=flow_id, error=str(exc))
+            return False
+        if resp.status_code >= 400:
+            metrics.nodered_admin_total.labels("redeploy_flow", "error").inc()
+            logger.warning("nodered_redeploy_failed", flow_id=flow_id, status=resp.status_code)
+            return False
+        metrics.nodered_admin_total.labels("redeploy_flow", "ok").inc()
+        return True
+
+
+def _reaches_any(start: dict[str, Any], targets: set[str], nodes: list[Any]) -> bool:
+    """BFS the Node-RED wire graph from ``start`` and return True if it reaches any id in ``targets``.
+
+    A node's ``wires`` is a list (one entry per output) of lists of downstream node ids. We also
+    follow ``link out`` -> ``link in`` hops (Node-RED's virtual wires) via each link node's ``links``.
+    """
+    by_id = {n["id"]: n for n in nodes if isinstance(n, dict) and "id" in n}
+    seen: set[str] = set()
+    frontier = [start["id"]] if "id" in start else []
+    while frontier:
+        nid = frontier.pop()
+        if nid in seen:
+            continue
+        seen.add(nid)
+        if nid in targets:
+            return True
+        node = by_id.get(nid)
+        if not node:
+            continue
+        for output in node.get("wires") or []:
+            if isinstance(output, list):
+                frontier.extend(t for t in output if isinstance(t, str))
+        # `link out` nodes jump to the `link in` nodes listed in `links` (virtual wires).
+        if node.get("type") == "link out":
+            frontier.extend(t for t in (node.get("links") or []) if isinstance(t, str))
+    return False
+
 
 def validate_flow_shape(flow: dict[str, Any]) -> FlowShape:
     """Confirm the flow is tool-shaped and return the HTTP-In trigger's method + path.
@@ -151,6 +207,19 @@ def validate_flow_shape(flow: dict[str, Any]) -> FlowShape:
             "the flow's output into an 'http response' node.",
             status_code=422,
             details={"reason": "MISSING_HTTP_RESPONSE"},
+        )
+
+    # An http-response must be actually REACHABLE from the http-in (following `wires`), not merely
+    # present — otherwise the tool publishes but every invocation hangs until timeout (503) because
+    # nothing ever responds. BFS the wire graph from the trigger and require it to reach a response.
+    response_ids = {n["id"] for n in http_responses if "id" in n}
+    if not _reaches_any(http_ins[0], response_ids, nodes):
+        raise ApiError(
+            ErrorCode.VALIDATION_ERROR,
+            "The 'http in' trigger isn't connected to an 'http response' node. Wire the flow "
+            "from the trigger through your logic to an 'http response' so the tool can reply.",
+            status_code=422,
+            details={"reason": "HTTP_RESPONSE_UNREACHABLE"},
         )
 
     node = http_ins[0]

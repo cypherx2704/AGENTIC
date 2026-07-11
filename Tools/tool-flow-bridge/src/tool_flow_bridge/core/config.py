@@ -110,9 +110,19 @@ class Settings(BaseSettings):
     nodered_memory_limit: str = "512Mi"
     nodered_storage_size: str = "1Gi"
     nodered_runtime_class: str | None = None  # e.g. "gvisor" for strong isolation
+    # Untrusted tenant flow code runs here, so the container rootfs is read-only by default
+    # (only the /data PVC + an ephemeral /tmp are writable). Toggle off ONLY if a runtime genuinely
+    # needs to write elsewhere and it crash-loops.
+    nodered_read_only_root_fs: bool = True
     # Explicit egress allow-list (CIDRs) the tenant Node-RED NetworkPolicy permits.
     # Empty => deny all egress except DNS. Platform service CIDRs are NEVER added here.
     nodered_egress_allow_cidrs: str = ""
+    # If an allow CIDR is the catch-all 0.0.0.0/0, these ranges are subtracted (ipBlock.except) so a
+    # broad allow can NEVER reach the cloud metadata endpoint or internal/RFC-1918 networks — the
+    # primary SSRF / lateral-movement guard. Only applied to 0.0.0.0/0 (except must be within cidr).
+    nodered_egress_block_cidrs: str = (
+        "169.254.169.254/32,169.254.0.0/16,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+    )
 
     # ── Editor session (BFF iframe proxy target) ──────────────────────────────
     editor_session_ttl_seconds: int = 3600
@@ -139,6 +149,10 @@ class Settings(BaseSettings):
     idempotency_key_prefix: str = "cypherx:tfb:idem:"
     idempotency_ttl_seconds: int = 86400
     idempotency_valkey_timeout_seconds: float = 0.15
+    # TTL of the in-flight lock that stops two concurrent invokes with the same Idempotency-Key
+    # from BOTH dispatching to a side-effecting flow. Sized above the invoke timeout so the lock
+    # outlives the dispatch, with a safety margin; it auto-expires if the process dies mid-flight.
+    idempotency_lock_ttl_seconds: int = 60
 
     # ── Request body-size cap (core/body_limit.py middleware) ─────────────────
     max_request_body_bytes: int = 4 * 1024 * 1024  # 4 MiB (flow args can be larger)
@@ -146,6 +160,10 @@ class Settings(BaseSettings):
     @property
     def egress_allow_cidr_list(self) -> list[str]:
         return [c.strip() for c in self.nodered_egress_allow_cidrs.split(",") if c.strip()]
+
+    @property
+    def egress_block_cidr_list(self) -> list[str]:
+        return [c.strip() for c in self.nodered_egress_block_cidrs.split(",") if c.strip()]
 
 
 @lru_cache

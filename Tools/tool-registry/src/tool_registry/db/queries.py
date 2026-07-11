@@ -368,12 +368,14 @@ async def resolve_agent_tool_access(
     tool_server_name: str,
     capability: str | None,
     is_restricted: bool,
+    restricted_default: str = "none",
 ) -> str:
     """Resolve the effective access mode for (agent, tool server, capability).
 
     Precedence: an explicit row for the exact (server, capability) wins; else an explicit
-    server-wide row (capability IS NULL); else the DEFAULT — ``none`` for a restricted tool,
-    ``automated`` otherwise.
+    server-wide row (capability IS NULL); else the DEFAULT — the restricted tool's own
+    ``restricted_default`` (``none`` unless the publisher chose ``ask``) for a restricted
+    tool, ``automated`` otherwise.
     """
 
     async def _fn(conn: AsyncConnection) -> str:
@@ -392,7 +394,7 @@ async def resolve_agent_tool_access(
         row = await cur.fetchone()
         if row is not None:
             return str(row["access_mode"])
-        return "none" if is_restricted else "automated"
+        return restricted_default if is_restricted else "automated"
 
     return await in_tenant(pool, tenant_id, _fn)
 
@@ -459,6 +461,27 @@ async def is_tool_restricted(pool: AsyncConnectionPool, tenant_id: str, tool_id:
     return await in_tenant(pool, tenant_id, _fn)
 
 
+async def get_restricted_default(
+    pool: AsyncConnectionPool, tenant_id: str, tool_id: str
+) -> str | None:
+    """The tool's server-wide default access mode if it is restricted, else ``None``.
+
+    ``None`` means the tool is not restricted (agents default to ``automated``). A returned
+    string (``none``/``ask``/``automated``) is the fallback an agent gets when it has no
+    explicit per-agent access row.
+    """
+
+    async def _fn(conn: AsyncConnection) -> str | None:
+        cur = await conn.cursor(row_factory=dict_row).execute(
+            "SELECT default_access_mode FROM tools.restricted_tools WHERE tool_id = %s",
+            (tool_id,),
+        )
+        row = await cur.fetchone()
+        return str(row["default_access_mode"]) if row is not None else None
+
+    return await in_tenant(pool, tenant_id, _fn)
+
+
 async def list_restricted_tools(pool: AsyncConnectionPool, tenant_id: str) -> list[dict[str, Any]]:
     async def _fn(conn: AsyncConnection) -> list[dict[str, Any]]:
         cur = await conn.cursor(row_factory=dict_row).execute(
@@ -475,19 +498,36 @@ async def list_restricted_tools(pool: AsyncConnectionPool, tenant_id: str) -> li
 
 
 async def mark_tool_restricted(
-    pool: AsyncConnectionPool, tenant_id: str, *, tool_id: str, reason: str
+    pool: AsyncConnectionPool,
+    tenant_id: str,
+    *,
+    tool_id: str,
+    reason: str,
+    default_access_mode: str = "none",
 ) -> None:
     async def _fn(conn: AsyncConnection) -> None:
         await conn.execute(
             """
-            INSERT INTO tools.restricted_tools (tool_id, tenant_id, reason)
-            VALUES (%s, NULLIF(current_setting('app.tenant_id', true), '')::uuid, %s)
+            INSERT INTO tools.restricted_tools (tool_id, tenant_id, reason, default_access_mode)
+            VALUES (%s, NULLIF(current_setting('app.tenant_id', true), '')::uuid, %s, %s)
             -- DO NOTHING (not DO UPDATE): restricted_tools.tool_id is the PK, so an existing
             -- row may belong to ANOTHER tenant and be RLS-invisible — a DO UPDATE on it errors.
             -- Marking an already-restricted tool is idempotent.
             ON CONFLICT (tool_id) DO NOTHING
             """,
-            (tool_id, reason),
+            (tool_id, reason, default_access_mode),
+        )
+        # Re-publish/edit path: refresh the reason + default mode for OUR OWN row. The RLS
+        # write policy (WITH CHECK own tenant) + the explicit tenant predicate scope this to
+        # the caller's row, so it never touches another tenant's (RLS-invisible) restriction.
+        await conn.execute(
+            """
+            UPDATE tools.restricted_tools
+               SET reason = %s, default_access_mode = %s
+             WHERE tool_id = %s
+               AND tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid
+            """,
+            (reason, default_access_mode, tool_id),
         )
 
     await in_tenant(pool, tenant_id, _fn)

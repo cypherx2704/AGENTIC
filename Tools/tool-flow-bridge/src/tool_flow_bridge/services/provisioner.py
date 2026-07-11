@@ -140,7 +140,13 @@ def _render_objects(name: str, tenant_id: str, t8: str, settings: Settings) -> l
     }
 
     pod_spec: dict[str, Any] = {
-        "securityContext": {"runAsNonRoot": True, "runAsUser": 1000, "fsGroup": 1000},
+        "securityContext": {
+            "runAsNonRoot": True,
+            "runAsUser": 1000,
+            "fsGroup": 1000,
+            # Restrict the syscall surface available to untrusted flow code.
+            "seccompProfile": {"type": "RuntimeDefault"},
+        },
         "containers": [
             {
                 "name": "node-red",
@@ -151,6 +157,9 @@ def _render_objects(name: str, tenant_id: str, t8: str, settings: Settings) -> l
                     {"name": "NODERED_HTTP_NODE_ROOT", "value": settings.static_nodered_http_node_root},
                     {"name": "CYPHERX_TENANT_ID", "value": tenant_id},
                     {"name": "CYPHERX_INVOKE_SECRET_HEADER", "value": settings.nodered_invoke_secret_header},
+                    # With a read-only rootfs, point HOME (npm cache/logs) at the writable emptyDir;
+                    # flows/credentials still persist to the /data PVC (--userDir /data).
+                    {"name": "HOME", "value": "/tmp"},
                 ],
                 "envFrom": [{"secretRef": {"name": "nodered-shared-secrets"}}],
                 "resources": {
@@ -159,17 +168,23 @@ def _render_objects(name: str, tenant_id: str, t8: str, settings: Settings) -> l
                 },
                 "securityContext": {
                     "allowPrivilegeEscalation": False,
-                    "readOnlyRootFilesystem": False,
+                    "readOnlyRootFilesystem": settings.nodered_read_only_root_fs,
                     "capabilities": {"drop": ["ALL"]},
                 },
-                "volumeMounts": [{"name": "data", "mountPath": "/data"}],
+                "volumeMounts": [
+                    {"name": "data", "mountPath": "/data"},
+                    {"name": "tmp", "mountPath": "/tmp"},
+                ],
                 "livenessProbe": {
                     "httpGet": {"path": settings.nodered_admin_root, "port": port},
                     "initialDelaySeconds": 20,
                 },
             }
         ],
-        "volumes": [{"name": "data", "persistentVolumeClaim": {"claimName": name}}],
+        "volumes": [
+            {"name": "data", "persistentVolumeClaim": {"claimName": name}},
+            {"name": "tmp", "emptyDir": {}},
+        ],
     }
     if settings.nodered_runtime_class:
         pod_spec["runtimeClassName"] = settings.nodered_runtime_class
@@ -198,7 +213,12 @@ def _render_objects(name: str, tenant_id: str, t8: str, settings: Settings) -> l
         {"to": [], "ports": [{"protocol": "UDP", "port": 53}, {"protocol": "TCP", "port": 53}]},
     ]
     for cidr in settings.egress_allow_cidr_list:
-        egress_rules.append({"to": [{"ipBlock": {"cidr": cidr}}]})
+        ip_block: dict[str, Any] = {"cidr": cidr}
+        # A catch-all allow would otherwise re-expose the metadata endpoint + internal networks;
+        # subtract them via ipBlock.except (valid only because they are all within 0.0.0.0/0).
+        if cidr == "0.0.0.0/0" and settings.egress_block_cidr_list:
+            ip_block["except"] = settings.egress_block_cidr_list
+        egress_rules.append({"to": [{"ipBlock": ip_block}]})
 
     netpol = {
         "apiVersion": "networking.k8s.io/v1",

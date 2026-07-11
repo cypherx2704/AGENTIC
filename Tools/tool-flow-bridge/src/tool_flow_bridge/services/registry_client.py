@@ -96,13 +96,18 @@ class RegistryClient:
         agent_id: str,
         name: str,
         reason: str,
+        default_access_mode: str = "none",
         trace_headers: dict[str, str] | None = None,
     ) -> None:
-        """Mark the tool restricted (default-deny) so agents can't call it until a tenant
-        admin grants access. Requires the user JWT to carry ``tenant:admin``."""
+        """Mark the tool restricted and set its server-wide default access mode. ``ask`` makes
+        the tool callable by every tenant agent subject to HIL approval (the flow-tool default);
+        ``none`` is default-deny until a tenant admin grants a specific agent. Requires the
+        user JWT to carry ``tenant:admin``."""
         headers = await self._headers(user_jwt=user_jwt, agent_id=agent_id, trace_headers=trace_headers)
         resp = await self._post(
-            f"{self._base}/v1/restricted-tools/{name}", {"reason": reason}, headers
+            f"{self._base}/v1/restricted-tools/{name}",
+            {"reason": reason, "default_access_mode": default_access_mode},
+            headers,
         )
         if resp.status_code in (200, 201, 409):
             metrics.registry_call_total.labels("restrict", "ok").inc()

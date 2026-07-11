@@ -106,6 +106,14 @@ class Publisher:
         )
         shape = validate_flow_shape(flow)
 
+        # 2b. Ensure the flow is (re)deployed so its http-in route is live before we register a
+        #     tool that agents can invoke immediately. Best-effort (get_flow already returned the
+        #     deployed state); a redeploy failure is logged but does not block publish.
+        await self._admin.redeploy_flow(
+            internal_host=runtime["internal_host"], admin_token=admin_token,
+            flow_id=str(flow_id), flow=flow,
+        )
+
         # 3. Names + schemas.
         snake_name, slug, server_name = manifest_builder.build_names(
             principal.tenant_id, title, tool.get("snake_name")
@@ -182,22 +190,46 @@ class Publisher:
                 trace_headers=trace_headers,
             )
         except ApiError:
-            if not is_update:
-                async def _retire(conn):
+            # Roll the DB binding back to the exact state the registry last accepted, so /manifest
+            # never advertises a version the registry rejected. Fresh publish -> retire the new row;
+            # re-publish -> restore ALL of the previous binding's fields (the registry kept the old
+            # version, so the binding must too).
+            async def _rollback(conn):
+                if is_update:
+                    await queries.update_binding(
+                        conn,
+                        existing["binding_id"],
+                        snake_name=existing["snake_name"],
+                        display_name=existing["display_name"],
+                        description=existing["description"],
+                        node_red_flow_id=existing["node_red_flow_id"],
+                        http_method=existing["http_method"],
+                        http_path=existing["http_path"],
+                        input_schema=existing["input_schema"],
+                        output_schema=existing["output_schema"],
+                        manifest=existing["manifest"],
+                        version=existing["version"],
+                        access_mode=existing["access_mode"],
+                    )
+                else:
                     await queries.set_binding_status(conn, binding["binding_id"], "retired")
 
-                await db_pool.in_tenant(self._pool, principal.tenant_id, _retire)
+            await db_pool.in_tenant(self._pool, principal.tenant_id, _rollback)
             metrics.publish_total.labels("publish", "error").inc()
             raise
 
-        # 7. Access posture. 'automated' => leave unrestricted; 'ask'/'none' => restrict
-        #    (default-deny) so no agent can call it until a tenant admin grants access.
+        # 7. Access posture. 'automated' => leave unrestricted (any agent may call). 'ask' =>
+        #    restrict with a server-wide default of 'ask' so every tenant agent CAN call it but
+        #    each call needs HIL approval (the flow-tool default). 'none' => restrict default-deny
+        #    (no agent can call until a tenant admin grants a specific agent). Passing the mode as
+        #    the registry's default_access_mode is what makes 'ask' tools callable out of the box.
         if access_mode != "automated":
             await self._registry.mark_restricted(
                 user_jwt=user_jwt,
                 agent_id=principal.agent_id,
                 name=server_name,
                 reason=f"flow-tool default access '{access_mode}' (publisher-selected)",
+                default_access_mode=access_mode,
                 trace_headers=trace_headers,
             )
 

@@ -74,6 +74,17 @@ async def invoke_workflow(
         except ValueError:
             return {"output": resp.text}
 
+    if 300 <= resp.status_code < 400:
+        # A redirect is never a valid tool result and retrying won't change it -> terminal.
+        metrics.nodered_invoke_total.labels("redirect").inc()
+        logger.info("nodered_redirect", status=resp.status_code, path=http_path)
+        raise NoderedError(
+            f"Workflow returned a redirect (HTTP {resp.status_code}); the 'http response' node "
+            "must return a final result, not a redirect.",
+            retryable=False,
+            status_code=resp.status_code,
+        )
+
     if 400 <= resp.status_code < 500:
         metrics.nodered_invoke_total.labels("client_error").inc()
         logger.info("nodered_client_error", status=resp.status_code, path=http_path)

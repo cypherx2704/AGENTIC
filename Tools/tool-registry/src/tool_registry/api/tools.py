@@ -233,10 +233,14 @@ async def get_tool_access(
     if not target_agent:
         raise ApiError(ErrorCode.VALIDATION_ERROR, "agent_id is required.", status_code=422)
     tool = await _resolve_own_or_platform_tool(pool, principal.tenant_id, name)
-    restricted = await queries.is_tool_restricted(pool, principal.tenant_id, tool["tool_id"])
+    # None => not restricted (agents default to 'automated'); a string => the tool's server-wide
+    # default access mode (the fallback when the agent has no explicit per-agent grant).
+    restricted_default = await queries.get_restricted_default(pool, principal.tenant_id, tool["tool_id"])
+    restricted = restricted_default is not None
     mode = await queries.resolve_agent_tool_access(
         pool, principal.tenant_id,
-        agent_id=target_agent, tool_server_name=name, capability=capability, is_restricted=restricted,
+        agent_id=target_agent, tool_server_name=name, capability=capability,
+        is_restricted=restricted, restricted_default=restricted_default or "none",
     )
     return {"tool": name, "agent_id": target_agent, "capability": capability,
             "access_mode": mode, "restricted": restricted}
@@ -289,12 +293,27 @@ async def mark_restricted(
     principal: Principal = Depends(require_tenant_admin),
     body: dict[str, Any] = Body(default={}),
 ) -> dict[str, Any]:
-    """Mark a tool as restricted (requires explicit per-agent authorization). Body: ``{ reason }``."""
+    """Mark a tool as restricted. Body: ``{ reason, default_access_mode? }``.
+
+    ``default_access_mode`` (``none``|``ask``|``automated``, default ``none``) is the server-wide
+    fallback an agent gets when it has no explicit per-agent grant — e.g. ``ask`` makes the tool
+    callable by every tenant agent subject to HIL approval, without enumerating agents up front.
+    """
     pool = _get_pool(request)
     tool = await _resolve_own_or_platform_tool(pool, principal.tenant_id, name)
     reason = str(body.get("reason") or "restricted").strip()
-    await queries.mark_tool_restricted(pool, principal.tenant_id, tool_id=tool["tool_id"], reason=reason)
-    return {"tool": name, "tool_id": tool["tool_id"], "reason": reason, "restricted": True}
+    default_access_mode = str(body.get("default_access_mode") or "none").strip()
+    if default_access_mode not in _ACCESS_MODES:
+        raise ApiError(
+            ErrorCode.VALIDATION_ERROR, "default_access_mode must be none|ask|automated.",
+            status_code=422, details={"allowed": list(_ACCESS_MODES)},
+        )
+    await queries.mark_tool_restricted(
+        pool, principal.tenant_id, tool_id=tool["tool_id"], reason=reason,
+        default_access_mode=default_access_mode,
+    )
+    return {"tool": name, "tool_id": tool["tool_id"], "reason": reason,
+            "restricted": True, "default_access_mode": default_access_mode}
 
 
 async def _eager_poll(

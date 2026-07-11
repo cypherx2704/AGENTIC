@@ -109,76 +109,93 @@ async def invoke(
             replay.body, replay.status_code, extra_headers={idempotency.REPLAY_HEADER: "true"}
         )
 
-    # ── (6) Rate limit (fail-open) ──────────────────────────────────────────────
-    await rate_limit.enforce(valkey, principal, dimension="invoke", settings=settings)
-
-    # ── parse + (7) input_schema validation ─────────────────────────────────────
-    payload = await _read_json(request)
-    args = _extract_args(payload, snake_name)
-    try:
-        schema_validate.validate(args, binding["input_schema"])
-    except schema_validate.SchemaViolation as exc:
-        metrics.invoke_rejected_total.labels("schema_invalid").inc()
+    # ── (5b) In-flight lock — stop a CONCURRENT duplicate (xAgent retrying a slow call before
+    #        the first finishes) from BOTH dispatching to the side-effecting flow. If the lock is
+    #        held, reject with a RETRYABLE 503 so xAgent retries and then hits the stored replay.
+    if not await idempotency.acquire_inflight(valkey, idem_key, principal, scope=slug, settings=settings):
+        metrics.invoke_rejected_total.labels("in_flight").inc()
         raise ApiError(
-            ErrorCode.VALIDATION_ERROR,
-            f"Input schema validation failed: {exc.message}",
-            status_code=422,
-            details={"pointer": exc.pointer, "reason": exc.message},
-        ) from exc
-
-    # ── (8) Dispatch to the tenant's Node-RED workflow ──────────────────────────
-    secret = resolve_secret(binding["invoke_secret_ref"], settings)
-    trace_headers = _trace_headers(request)
-    client = request.app.state.http_client
-    with metrics.invoke_duration_seconds.time():
-        try:
-            result = await invoke_workflow(
-                client,
-                internal_host=binding["internal_host"],
-                http_node_root=binding["http_node_root"],
-                http_path=binding["http_path"],
-                method=binding["http_method"],
-                args=args,
-                secret=secret,
-                secret_header=settings.nodered_invoke_secret_header,
-                timeout=settings.nodered_invoke_timeout_seconds,
-                trace_headers=trace_headers,
-            )
-        except NoderedError as exc:
-            metrics.invoke_rejected_total.labels("nodered_error").inc()
-            metrics.invoke_total.labels(slug, "error").inc()
-            if exc.retryable:
-                # 5xx -> xAgent retries with the same Idempotency-Key (replay-safe).
-                raise ApiError(
-                    ErrorCode.SERVICE_UNAVAILABLE, exc.message, status_code=502
-                ) from exc
-            # 4xx -> terminal; xAgent will not retry.
-            raise ApiError(
-                ErrorCode.VALIDATION_ERROR, exc.message, status_code=422
-            ) from exc
-
-    body: dict[str, Any] = {"tool": snake_name, "result": result}
-
-    # ── (9) 10 MiB output cap ───────────────────────────────────────────────────
-    serialized = json.dumps(body)
-    size = len(serialized.encode("utf-8"))
-    if size > settings.max_output_bytes:
-        metrics.invoke_rejected_total.labels("output_too_large").inc()
-        metrics.invoke_total.labels(slug, "error").inc()
-        raise ApiError(
-            ErrorCode.PAYLOAD_TOO_LARGE,
-            f"Workflow result ({size} bytes) exceeds the {settings.max_output_bytes}-byte cap.",
-            status_code=413,
-            details={"reason": "OUTPUT_BYTES_EXCEEDED", "bytes": size,
-                     "max_bytes": settings.max_output_bytes},
+            ErrorCode.IDEMPOTENCY_REQUEST_IN_FLIGHT,
+            "A request with this Idempotency-Key is already in progress; retry shortly.",
+            status_code=503,
+            headers={"Retry-After": "1"},
         )
 
-    metrics.invoke_total.labels(slug, "ok").inc()
+    try:
+        # ── (6) Rate limit (fail-open) ──────────────────────────────────────────
+        await rate_limit.enforce(valkey, principal, dimension="invoke", settings=settings)
 
-    # ── (10) Store for idempotent replay ────────────────────────────────────────
-    await idempotency.store(valkey, idem_key, principal, 200, body, scope=slug, settings=settings)
+        # ── parse + (7) input_schema validation ─────────────────────────────────
+        payload = await _read_json(request)
+        args = _extract_args(payload, snake_name)
+        try:
+            schema_validate.validate(args, binding["input_schema"])
+        except schema_validate.SchemaViolation as exc:
+            metrics.invoke_rejected_total.labels("schema_invalid").inc()
+            raise ApiError(
+                ErrorCode.VALIDATION_ERROR,
+                f"Input schema validation failed: {exc.message}",
+                status_code=422,
+                details={"pointer": exc.pointer, "reason": exc.message},
+            ) from exc
 
-    return _json_response(body, 200, serialized=serialized)
+        # ── (8) Dispatch to the tenant's Node-RED workflow ──────────────────────
+        secret = resolve_secret(binding["invoke_secret_ref"], settings)
+        trace_headers = _trace_headers(request)
+        client = request.app.state.http_client
+        with metrics.invoke_duration_seconds.time():
+            try:
+                result = await invoke_workflow(
+                    client,
+                    internal_host=binding["internal_host"],
+                    http_node_root=binding["http_node_root"],
+                    http_path=binding["http_path"],
+                    method=binding["http_method"],
+                    args=args,
+                    secret=secret,
+                    secret_header=settings.nodered_invoke_secret_header,
+                    timeout=settings.nodered_invoke_timeout_seconds,
+                    trace_headers=trace_headers,
+                )
+            except NoderedError as exc:
+                metrics.invoke_rejected_total.labels("nodered_error").inc()
+                metrics.invoke_total.labels(slug, "error").inc()
+                if exc.retryable:
+                    # 5xx -> xAgent retries with the same Idempotency-Key (replay-safe).
+                    raise ApiError(
+                        ErrorCode.SERVICE_UNAVAILABLE, exc.message, status_code=502
+                    ) from exc
+                # 4xx -> terminal; xAgent will not retry.
+                raise ApiError(
+                    ErrorCode.VALIDATION_ERROR, exc.message, status_code=422
+                ) from exc
+
+        body: dict[str, Any] = {"tool": snake_name, "result": result}
+
+        # ── (9) 10 MiB output cap ───────────────────────────────────────────────
+        serialized = json.dumps(body)
+        size = len(serialized.encode("utf-8"))
+        if size > settings.max_output_bytes:
+            metrics.invoke_rejected_total.labels("output_too_large").inc()
+            metrics.invoke_total.labels(slug, "error").inc()
+            raise ApiError(
+                ErrorCode.PAYLOAD_TOO_LARGE,
+                f"Workflow result ({size} bytes) exceeds the {settings.max_output_bytes}-byte cap.",
+                status_code=413,
+                details={"reason": "OUTPUT_BYTES_EXCEEDED", "bytes": size,
+                         "max_bytes": settings.max_output_bytes},
+            )
+
+        metrics.invoke_total.labels(slug, "ok").inc()
+
+        # ── (10) Store for idempotent replay ────────────────────────────────────
+        await idempotency.store(valkey, idem_key, principal, 200, body, scope=slug, settings=settings)
+
+        return _json_response(body, 200, serialized=serialized)
+    finally:
+        # Release the in-flight lock so a legitimate later retry can proceed (the stored replay
+        # covers a retry that arrives after a SUCCESS; the TTL is the backstop if this never runs).
+        await idempotency.release_inflight(valkey, idem_key, principal, scope=slug, settings=settings)
 
 
 def _trace_headers(request: Request) -> dict[str, str]:

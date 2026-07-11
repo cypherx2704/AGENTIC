@@ -101,6 +101,11 @@ class ValkeyClient:
         bound = timeout_seconds if timeout_seconds is not None else self._ping_timeout
         await asyncio.wait_for(client.set(key, value, ex=ttl_seconds), timeout=bound)
 
+    async def delete(self, key: str, *, timeout_seconds: float | None = None) -> None:
+        client = self._ensure_client()
+        bound = timeout_seconds if timeout_seconds is not None else self._ping_timeout
+        await asyncio.wait_for(client.delete(key), timeout=bound)
+
     async def close(self) -> None:
         if self._client is None:
             return

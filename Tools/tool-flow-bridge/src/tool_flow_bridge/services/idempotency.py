@@ -41,6 +41,61 @@ def _record_key(prefix: str, tenant_id: str, scope: str, key: str) -> str:
     return f"{prefix}{tenant_id}:{scope}:{key}"
 
 
+def _lock_key(prefix: str, tenant_id: str, scope: str, key: str) -> str:
+    """The in-flight lock key (distinct from the stored-result record key)."""
+    return f"{prefix}{tenant_id}:{scope}:{key}:lock"
+
+
+async def acquire_inflight(
+    valkey: ValkeyClient | None,
+    key: str | None,
+    principal: Principal,
+    *,
+    scope: str,
+    settings: Settings | None = None,
+) -> bool:
+    """Try to claim the in-flight lock for this Idempotency-Key. Returns True if claimed (proceed),
+    False if another request with the same key is already executing (caller should reject-and-retry).
+
+    FAIL-OPEN: disabled / no key / no Valkey / Valkey error -> True (proceed without the guarantee),
+    matching the replay path — availability over the dedup guarantee.
+    """
+    settings = settings or get_settings()
+    if not settings.idempotency_enabled or not key or valkey is None:
+        return True
+    lock_key = _lock_key(settings.idempotency_key_prefix, principal.tenant_id, scope, key)
+    try:
+        return await valkey.set_if_absent(
+            lock_key,
+            "1",
+            ttl_seconds=settings.idempotency_lock_ttl_seconds,
+            timeout_seconds=settings.idempotency_valkey_timeout_seconds,
+        )
+    except Exception as exc:  # noqa: BLE001 — fail open: proceed without the lock
+        _failopen("acquire_inflight", "valkey_unavailable", principal, error=str(exc))
+        return True
+
+
+async def release_inflight(
+    valkey: ValkeyClient | None,
+    key: str | None,
+    principal: Principal,
+    *,
+    scope: str,
+    settings: Settings | None = None,
+) -> None:
+    """Release the in-flight lock (best-effort) so a legitimate later retry can proceed. The TTL is
+    the backstop if this never runs (e.g. the process dies mid-flight)."""
+    settings = settings or get_settings()
+    if not settings.idempotency_enabled or not key or valkey is None:
+        return
+    lock_key = _lock_key(settings.idempotency_key_prefix, principal.tenant_id, scope, key)
+    try:
+        await valkey.delete(lock_key, timeout_seconds=settings.idempotency_valkey_timeout_seconds)
+    except Exception as exc:  # noqa: BLE001 — best-effort release; TTL is the backstop
+        _failopen("release_inflight", "valkey_unavailable", principal, error=str(exc))
+
+
 async def get_replay(
     valkey: ValkeyClient | None,
     key: str | None,
