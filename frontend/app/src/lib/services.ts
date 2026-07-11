@@ -4,23 +4,57 @@
  * enforces credentials + CSRF + Contract-2 error normalization.
  */
 
-import { api } from './bff-client';
+import { api, streamUrl } from './bff-client';
 import type {
+  AccessMode,
+  AccessResolution,
   Agent,
+  ServiceClientView,
+  SigningKeyView,
+  TenantView,
+  Webhook,
+  WebhookDelivery,
   AgentRuntime,
   AgentRuntimeRegistration,
   ApiKeyListItem,
   AuditListResponse,
   AuditVerifyResult,
+  CheckResult,
   CostRow,
   CreateKeyResponse,
+  CustomRule,
+  CustomRuleInput,
+  DeactivateAgentResult,
+  GdprWipeResult,
   GroupedResult,
+  KbDetail,
   KbListResponse,
+  KbStatus,
+  KnowledgeBase,
   LlmModel,
+  MemoryRecord,
+  MemorySearchResponse,
+  MemorySession,
+  MemoryVisibility,
   Policy,
   PolicyListResponse,
+  RagAcl,
+  RagDocument,
+  RagDocumentListResponse,
+  RagQueryResponse,
+  RagSearchMode,
+  RagUploadUrl,
+  RotateKeyResponse,
+  SimulationResult,
+  SkillView,
   TaskListResponse,
   TaskResponse,
+  ToolView,
+  FlowTool,
+  PublishFlowToolRequest,
+  PublishFlowToolResult,
+  EditorSession,
+  NoderedFlow,
   UsageRow,
   ViolationListResponse,
 } from './types';
@@ -143,6 +177,14 @@ export function listTasks(
   return api<TaskListResponse>('xagent', '/v1/tasks', { query: params, signal });
 }
 
+/**
+ * Cancel a pending/running task (`DELETE /v1/tasks/{id}`). Terminal tasks are a no-op/409.
+ * Returns the task's post-cancel state when the gateway echoes it (else resolves void).
+ */
+export function cancelTask(taskId: string): Promise<TaskResponse | void> {
+  return api<TaskResponse | void>('xagent', `/v1/tasks/${taskId}`, { method: 'DELETE' });
+}
+
 // ── LLMs: models / usage / cost ─────────────────────────────────────────────────────────
 export function listModels(signal?: AbortSignal): Promise<{ data: LlmModel[] }> {
   return api<{ data: LlmModel[] }>('llms', '/v1/models', { signal });
@@ -200,21 +242,206 @@ export function listViolations(
 }
 
 // ── RAG: knowledge bases ────────────────────────────────────────────────────────────────
-export function listKnowledgeBases(signal?: AbortSignal): Promise<KbListResponse> {
-  return api<KbListResponse>('rag', '/v1/kbs', { signal });
+/**
+ * List KBs in the tenant. The RAG service returns a **bare array** (`KbResponse[]`); older/
+ * alternate gateways wrapped it as `{data|knowledge_bases|items|kbs}`. Normalize every shape
+ * to a plain `KnowledgeBase[]` so callers never have to unwrap.
+ */
+export async function listKnowledgeBases(signal?: AbortSignal): Promise<KnowledgeBase[]> {
+  const raw = await api<KbListResponse | KnowledgeBase[]>('rag', '/v1/kbs', { signal });
+  if (Array.isArray(raw)) return raw as KnowledgeBase[];
+  const r = raw as KbListResponse & { items?: KnowledgeBase[]; kbs?: KnowledgeBase[] };
+  return r.data ?? r.knowledge_bases ?? r.items ?? r.kbs ?? [];
 }
 
-export interface KbQueryResult {
-  results?: Array<{ chunk_id?: string; score?: number; text?: string; [k: string]: unknown }>;
-  data?: Array<Record<string, unknown>>;
-  [k: string]: unknown;
+export function getKnowledgeBase(kbId: string, signal?: AbortSignal): Promise<KbDetail> {
+  return api<KbDetail>('rag', `/v1/kbs/${kbId}`, { signal });
 }
 
+/** KB rollup counts (document/chunk totals, pending/failed) — enriches the KB list + detail. */
+export function getKbStatus(kbId: string, signal?: AbortSignal): Promise<KbStatus> {
+  return api<KbStatus>('rag', `/v1/kbs/${kbId}/status`, { signal });
+}
+
+export function createKnowledgeBase(body: {
+  name: string;
+  description?: string | null;
+  chunking_strategy?: 'fixed' | 'sentence';
+  chunk_size?: number;
+  chunk_overlap?: number;
+  embedding_model_alias?: string;
+  private?: boolean;
+}): Promise<KbDetail> {
+  return api<KbDetail>('rag', '/v1/kbs', { method: 'POST', body });
+}
+
+export function deleteKnowledgeBase(kbId: string): Promise<void> {
+  return api<void>('rag', `/v1/kbs/${kbId}`, { method: 'DELETE' });
+}
+
+/** Retrieval query with the full flag matrix (search_mode/min_score/rerank/filters are opt-in). */
 export function queryKnowledgeBase(
   kbId: string,
-  body: { query: string; top_k?: number; min_score?: number },
-): Promise<KbQueryResult> {
-  return api<KbQueryResult>('rag', `/v1/kbs/${kbId}/query`, { method: 'POST', body });
+  body: {
+    query: string;
+    top_k?: number;
+    min_score?: number;
+    filters?: Record<string, unknown> | null;
+    search_mode?: RagSearchMode;
+    ef_search?: number;
+    rerank?: boolean;
+    decompose?: boolean;
+    multi_query?: boolean;
+  },
+): Promise<RagQueryResponse> {
+  return api<RagQueryResponse>('rag', `/v1/kbs/${kbId}/query`, { method: 'POST', body });
+}
+
+// ── RAG: documents (ingest lifecycle) ─────────────────────────────────────────────────────
+/** Inline ingest: paste ≤100 KiB of markdown/text directly (no object store round-trip). */
+export function inlineIngest(
+  kbId: string,
+  body: { name: string; content: string; source_type?: 'markdown' | 'text'; metadata?: Record<string, unknown> },
+): Promise<RagDocument> {
+  return api<RagDocument>('rag', `/v1/kbs/${kbId}/documents`, { method: 'POST', body });
+}
+
+/** Step 1 of file upload: get a presigned PUT URL + the doc_id to finalize with. */
+export function requestUploadUrl(
+  kbId: string,
+  body: { filename: string; size_bytes: number; content_type: string },
+): Promise<RagUploadUrl> {
+  return api<RagUploadUrl>('rag', `/v1/kbs/${kbId}/documents/upload-url`, { method: 'POST', body });
+}
+
+/**
+ * Step 3 of file upload: after the browser PUTs the bytes to the presigned URL, finalize
+ * enqueues ingestion. Idempotent on `doc_id` (Contract-9) — pass an Idempotency-Key so a
+ * retried finalize never double-enqueues.
+ */
+export function finalizeDocument(kbId: string, docId: string, idempotencyKey?: string): Promise<RagDocument> {
+  return api<RagDocument>('rag', `/v1/kbs/${kbId}/documents/finalize`, {
+    method: 'POST',
+    body: { doc_id: docId },
+    headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
+  });
+}
+
+export function listDocuments(
+  kbId: string,
+  params: { limit?: number; offset?: number } = {},
+  signal?: AbortSignal,
+): Promise<RagDocumentListResponse> {
+  return api<RagDocumentListResponse>('rag', `/v1/kbs/${kbId}/documents`, { query: { ...params }, signal });
+}
+
+export function getDocument(kbId: string, docId: string, signal?: AbortSignal): Promise<RagDocument> {
+  return api<RagDocument>('rag', `/v1/kbs/${kbId}/documents/${docId}`, { signal });
+}
+
+export function deleteDocument(kbId: string, docId: string): Promise<void> {
+  return api<void>('rag', `/v1/kbs/${kbId}/documents/${docId}`, { method: 'DELETE' });
+}
+
+// ── RAG: KB ACLs (who can read/query/ingest/write/admin a KB) ──────────────────────────────
+export function listKbAcls(kbId: string, signal?: AbortSignal): Promise<{ acls: RagAcl[] }> {
+  return api<{ acls: RagAcl[] }>('rag', `/v1/kbs/${kbId}/acls`, { signal });
+}
+
+export function addKbAcl(kbId: string, acl: RagAcl): Promise<RagAcl> {
+  return api<RagAcl>('rag', `/v1/kbs/${kbId}/acls`, { method: 'POST', body: acl });
+}
+
+export function replaceKbAcls(kbId: string, acls: RagAcl[]): Promise<{ acls: RagAcl[] }> {
+  return api<{ acls: RagAcl[] }>('rag', `/v1/kbs/${kbId}/acls`, { method: 'PUT', body: { acls } });
+}
+
+export function deleteKbAcl(kbId: string, principalType: string, principalId: string): Promise<void> {
+  return api<void>('rag', `/v1/kbs/${kbId}/acls/${principalType}/${encodeURIComponent(principalId)}`, {
+    method: 'DELETE',
+  });
+}
+
+// ── Memory service (principal-scoped agent memory) ─────────────────────────────────────────
+/** Vector search over the caller's memories (+ tenant_shared when include_shared). */
+export function searchMemories(
+  body: {
+    query: string;
+    top_k?: number;
+    type?: string | null;
+    tags?: string[] | null;
+    include_shared?: boolean;
+    session_scope_id?: string | null;
+    agent_scope_id?: string | null;
+  },
+  signal?: AbortSignal,
+): Promise<MemorySearchResponse> {
+  return api<MemorySearchResponse>('memory', '/v1/memories/search', { method: 'POST', body, signal });
+}
+
+/**
+ * Store a memory. Idempotency-Key short-circuits BEFORE embedding server-side, so pass one
+ * to make a retried store safe (never re-embeds, never double-inserts).
+ */
+export function storeMemory(
+  body: {
+    content: string;
+    type?: string;
+    scope?: MemoryVisibility;
+    tags?: string[];
+    metadata?: Record<string, unknown>;
+    session_id?: string | null;
+    ttl_seconds?: number | null;
+    importance?: number | null;
+  },
+  idempotencyKey?: string,
+): Promise<MemoryRecord> {
+  return api<MemoryRecord>('memory', '/v1/memories', {
+    method: 'POST',
+    body,
+    headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
+  });
+}
+
+export function getMemory(id: string, signal?: AbortSignal): Promise<MemoryRecord> {
+  return api<MemoryRecord>('memory', `/v1/memories/${id}`, { signal });
+}
+
+export function updateMemory(
+  id: string,
+  body: {
+    content?: string;
+    scope?: MemoryVisibility;
+    tags?: string[];
+    metadata?: Record<string, unknown>;
+    ttl_seconds?: number | null;
+  },
+): Promise<MemoryRecord> {
+  return api<MemoryRecord>('memory', `/v1/memories/${id}`, { method: 'PUT', body });
+}
+
+export function deleteMemory(id: string): Promise<void> {
+  return api<void>('memory', `/v1/memories/${id}`, { method: 'DELETE' });
+}
+
+export function createMemorySession(body: {
+  session_id: string;
+  title?: string | null;
+  metadata?: Record<string, unknown>;
+}): Promise<MemorySession> {
+  return api<MemorySession>('memory', '/v1/sessions', { method: 'POST', body });
+}
+
+/**
+ * GDPR right-to-erasure: wipe every memory for a principal. Defaults to the caller's own
+ * principal; an admin (mem:write) may target another principal in the same tenant by id.
+ */
+export function gdprWipeMemories(body: {
+  principal_type?: string | null;
+  principal_id?: string | null;
+  reason?: string | null;
+}): Promise<GdprWipeResult> {
+  return api<GdprWipeResult>('memory', '/v1/gdpr/wipe', { method: 'POST', body });
 }
 
 // ── LLM provider connections (BYOK — keys stored AES-encrypted in the DB, per tenant) ──
@@ -424,22 +651,484 @@ export function deleteLlmRule(ruleId: string): Promise<void> {
   return api<void>('llms', `/v1/llm-rules/${ruleId}`, { method: 'DELETE' });
 }
 
-// ── Tools: per-agent access control ──────────────────────────────────────────────────────
+// ── Tools registry (MCP tool servers) ──────────────────────────────────────────────────────
+/** List tools visible to the tenant (platform + own, tenant-priority shadowed). */
+export async function listTools(signal?: AbortSignal): Promise<ToolView[]> {
+  const r = await api<{ data?: ToolView[] } | ToolView[]>('tools', '/v1/tools', { signal });
+  return Array.isArray(r) ? r : (r.data ?? []);
+}
+
+export function getTool(name: string, version?: string, signal?: AbortSignal): Promise<ToolView> {
+  return api<ToolView>('tools', `/v1/tools/${encodeURIComponent(name)}`, {
+    query: version ? { version } : undefined,
+    signal,
+  });
+}
+
+/** Register a new tenant tool from a Contract-4 MCP manifest (requires tool:admin). */
+export function registerTool(manifest: Record<string, unknown>): Promise<Record<string, unknown>> {
+  return api('tools', '/v1/tools', { method: 'POST', body: manifest });
+}
+
+// ── Tool Builder (flow-tool-bridge: visual Node-RED flows -> MCP tools) ──────────────────────
+/** Ensure the tenant's Node-RED editor is provisioned; returns readiness + the iframe path. */
+export function openEditorSession(): Promise<EditorSession> {
+  return api<EditorSession>('toolbuilder', '/v1/editor-sessions', { method: 'POST', body: {} });
+}
+
+/** List this tenant's published flow-tools. */
+export async function listFlowTools(signal?: AbortSignal): Promise<FlowTool[]> {
+  const r = await api<{ data?: FlowTool[] } | FlowTool[]>('toolbuilder', '/v1/flow-tools', { signal });
+  return Array.isArray(r) ? r : (r.data ?? []);
+}
+
+/** Publish (or re-publish) a Node-RED flow as an MCP tool (requires tool:admin). */
+export function publishFlowTool(body: PublishFlowToolRequest): Promise<PublishFlowToolResult> {
+  return api<PublishFlowToolResult>('toolbuilder', '/v1/flow-tools', { method: 'POST', body });
+}
+
+/** Unpublish (retire) a flow-tool. */
+export function unpublishFlowTool(slug: string): Promise<{ slug: string; status: string }> {
+  return api('toolbuilder', `/v1/flow-tools/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+}
+
+/** List the tenant's Node-RED flow tabs (the Publish dialog's workflow picker). */
+export async function listNoderedFlows(signal?: AbortSignal): Promise<NoderedFlow[]> {
+  const r = await api<{ data?: NoderedFlow[] } | NoderedFlow[]>('toolbuilder', '/v1/flows', { signal });
+  return Array.isArray(r) ? r : (r.data ?? []);
+}
+
+/** Run a published tool with sample args (owner-only) — the UI's Test action. */
+export function testFlowTool(
+  slug: string,
+  args: Record<string, unknown>,
+): Promise<{ tool: string; result: unknown }> {
+  return api('toolbuilder', `/v1/flow-tools/${encodeURIComponent(slug)}/test`, {
+    method: 'POST',
+    body: { args },
+  });
+}
+
 export function getToolAccess(
   toolName: string,
   params: { agent_id?: string; capability?: string } = {},
   signal?: AbortSignal,
-): Promise<{ tool: string; agent_id: string; access_mode: string; restricted: boolean }> {
-  return api('tools', `/v1/tools/${toolName}/access`, { query: { ...params }, signal });
+): Promise<AccessResolution> {
+  return api<AccessResolution>('tools', `/v1/tools/${encodeURIComponent(toolName)}/access`, {
+    query: { ...params },
+    signal,
+  });
 }
 
 export function setToolAccess(
   toolName: string,
-  body: { agent_id: string; access_mode: string; capability?: string },
-): Promise<unknown> {
-  return api('tools', `/v1/tools/${toolName}/access`, { method: 'PUT', body });
+  body: { agent_id: string; access_mode: AccessMode; capability?: string },
+): Promise<Record<string, unknown>> {
+  return api('tools', `/v1/tools/${encodeURIComponent(toolName)}/access`, { method: 'PUT', body });
 }
 
 export function listRestrictedTools(signal?: AbortSignal): Promise<{ data: Array<Record<string, unknown>> }> {
   return api('tools', '/v1/restricted-tools', { signal });
+}
+
+export function markToolRestricted(toolName: string, reason?: string): Promise<Record<string, unknown>> {
+  return api('tools', `/v1/restricted-tools/${encodeURIComponent(toolName)}`, {
+    method: 'POST',
+    body: { reason: reason ?? 'restricted' },
+  });
+}
+
+// ── Skills registry (mirrors Tools) ─────────────────────────────────────────────────────────
+export async function listSkills(signal?: AbortSignal): Promise<SkillView[]> {
+  const r = await api<{ data?: SkillView[] } | SkillView[]>('skills', '/v1/skills', { signal });
+  return Array.isArray(r) ? r : (r.data ?? []);
+}
+
+export function getSkill(name: string, version?: string, signal?: AbortSignal): Promise<SkillView> {
+  return api<SkillView>('skills', `/v1/skills/${encodeURIComponent(name)}`, {
+    query: version ? { version } : undefined,
+    signal,
+  });
+}
+
+export function registerSkill(manifest: Record<string, unknown>): Promise<Record<string, unknown>> {
+  return api('skills', '/v1/skills', { method: 'POST', body: manifest });
+}
+
+export function getSkillAccess(
+  skillName: string,
+  params: { agent_id?: string; capability?: string } = {},
+  signal?: AbortSignal,
+): Promise<AccessResolution> {
+  return api<AccessResolution>('skills', `/v1/skills/${encodeURIComponent(skillName)}/access`, {
+    query: { ...params },
+    signal,
+  });
+}
+
+export function setSkillAccess(
+  skillName: string,
+  body: { agent_id: string; access_mode: AccessMode; capability?: string },
+): Promise<Record<string, unknown>> {
+  return api('skills', `/v1/skills/${encodeURIComponent(skillName)}/access`, { method: 'PUT', body });
+}
+
+export function listRestrictedSkills(signal?: AbortSignal): Promise<{ data: Array<Record<string, unknown>> }> {
+  return api('skills', '/v1/restricted-skills', { signal });
+}
+
+export function markSkillRestricted(skillName: string, reason?: string): Promise<Record<string, unknown>> {
+  return api('skills', `/v1/restricted-skills/${encodeURIComponent(skillName)}`, {
+    method: 'POST',
+    body: { reason: reason ?? 'restricted' },
+  });
+}
+
+// ── Guardrails: custom rules (tenant-authored) ───────────────────────────────────────────────
+export async function listCustomRules(signal?: AbortSignal): Promise<CustomRule[]> {
+  const r = await api<{ rules?: CustomRule[]; data?: CustomRule[] } | CustomRule[]>('guardrails', '/v1/rules', {
+    signal,
+  });
+  return Array.isArray(r) ? r : (r.rules ?? r.data ?? []);
+}
+
+/** Single-rule reads/writes return a `{ rule: {...} }` envelope; unwrap to the bare record. */
+function unwrapRule(r: { rule?: CustomRule } | CustomRule): CustomRule {
+  return (r as { rule?: CustomRule }).rule ?? (r as CustomRule);
+}
+
+export async function getCustomRule(ruleId: string, signal?: AbortSignal): Promise<CustomRule> {
+  return unwrapRule(await api<{ rule?: CustomRule } | CustomRule>('guardrails', `/v1/rules/${ruleId}`, { signal }));
+}
+
+export async function createCustomRule(body: CustomRuleInput): Promise<CustomRule> {
+  return unwrapRule(
+    await api<{ rule?: CustomRule } | CustomRule>('guardrails', '/v1/rules', { method: 'POST', body }),
+  );
+}
+
+export async function updateCustomRule(ruleId: string, body: CustomRuleInput): Promise<CustomRule> {
+  return unwrapRule(
+    await api<{ rule?: CustomRule } | CustomRule>('guardrails', `/v1/rules/${ruleId}`, { method: 'PUT', body }),
+  );
+}
+
+export function deleteCustomRule(ruleId: string): Promise<void> {
+  return api<void>('guardrails', `/v1/rules/${ruleId}`, { method: 'DELETE' });
+}
+
+// ── Guardrails: check playground + policy simulation + assignment + redaction rotate ─────────────
+/** Test text against the live effective policy (input direction). Always 200, even on block. */
+export function checkInput(body: {
+  text: string;
+  input_text?: string;
+  untrusted_spans?: string[];
+}): Promise<CheckResult> {
+  return api<CheckResult>('guardrails', '/v1/check/input', { method: 'POST', body });
+}
+
+/** Test text against the live effective policy (output direction). `input_text` = the original prompt. */
+export function checkOutput(body: {
+  text: string;
+  input_text?: string;
+  grounding?: string[];
+}): Promise<CheckResult> {
+  return api<CheckResult>('guardrails', '/v1/check/output', { method: 'POST', body });
+}
+
+/** Simulate a STORED policy against sample text — decision + per-rule trace, nothing persisted. */
+export function simulateStoredPolicy(
+  policyId: string,
+  body: { text: string; input_text?: string; direction?: 'input' | 'output' },
+): Promise<SimulationResult> {
+  return api<SimulationResult>('guardrails', `/v1/policies/${policyId}/simulate`, { method: 'POST', body });
+}
+
+/** Simulate an INLINE DRAFT policy (unsaved rules) against sample text. */
+export function simulateDraftPolicy(body: {
+  text: string;
+  input_text?: string;
+  direction?: 'input' | 'output';
+  rules: Array<{ rule_id: string; enabled: boolean; action_override?: string | null }>;
+  fail_mode_override?: string | null;
+  stream_mode?: string;
+}): Promise<SimulationResult> {
+  return api<SimulationResult>('guardrails', '/v1/policies/simulate', { method: 'POST', body });
+}
+
+/** Repoint an agent at a policy (atomic assignment). */
+export function assignPolicy(policyId: string, agentId: string): Promise<Record<string, unknown>> {
+  return api('guardrails', `/v1/policies/${policyId}/assign`, { method: 'POST', body: { agent_id: agentId } });
+}
+
+/** Rotate the tenant's redaction HMAC key (tenant:admin); the old key stays valid during grace. */
+export function rotateRedactionKey(): Promise<Record<string, unknown>> {
+  return api('guardrails', '/v1/redaction-keys/rotate', { method: 'POST', body: {} });
+}
+
+// ── LLMs: BYOK connection rotate ─────────────────────────────────────────────────────────────
+/**
+ * Rotate a BYOK provider key: register a new active secret and put the old one into a grace
+ * window (both valid during grace). The raw secret is sent once and never returned.
+ */
+export function rotateLlmConnection(
+  keyId: string,
+  body: { secret: string; priority?: number },
+): Promise<Record<string, unknown>> {
+  return api('llms', `/v1/keys/${keyId}/rotate`, { method: 'POST', body });
+}
+
+// ── LLMs: chat completion (playground) ───────────────────────────────────────────────────────
+export interface ChatMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+}
+
+export interface ChatCompletionResult {
+  id?: string;
+  model?: string;
+  choices?: Array<{
+    index?: number;
+    message?: { role?: string; content?: string };
+    finish_reason?: string;
+  }>;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+    [k: string]: unknown;
+  };
+  [k: string]: unknown;
+}
+
+/**
+ * Run a chat completion through the gateway to test a model/alias/BYOK/rule end-to-end.
+ * Forced non-streaming so it flows through the buffered BFF proxy; usage is returned inline.
+ */
+export function chatCompletion(body: {
+  model: string;
+  messages: ChatMessage[];
+  max_tokens?: number;
+  temperature?: number;
+}): Promise<ChatCompletionResult> {
+  return api<ChatCompletionResult>('llms', '/v1/chat/completions', {
+    method: 'POST',
+    body: { ...body, stream: false },
+  });
+}
+
+// ── LLMs: embeddings / classify / rerank testers ─────────────────────────────────────────────
+export interface EmbeddingResult {
+  data?: Array<{ embedding: number[]; index?: number }>;
+  model?: string;
+  usage?: { prompt_tokens?: number; total_tokens?: number; [k: string]: unknown };
+  [k: string]: unknown;
+}
+
+/** Embed one or more strings — returns the vector(s) + token usage. */
+export function createEmbeddings(body: { input: string | string[]; model?: string }): Promise<EmbeddingResult> {
+  return api<EmbeddingResult>('llms', '/v1/embeddings', { method: 'POST', body });
+}
+
+export interface ClassifyResult {
+  verdict?: string;
+  categories?: Record<string, number> | Array<{ category: string; score: number }>;
+  model?: string;
+  [k: string]: unknown;
+}
+
+/** Safety-classify a string (verdict + per-category scores). Default alias 'safety-default'. */
+export function classifyText(body: { input: string; model?: string }): Promise<ClassifyResult> {
+  return api<ClassifyResult>('llms', '/v1/classify', { method: 'POST', body });
+}
+
+export interface RerankResult {
+  results?: Array<{ index: number; relevance_score?: number; score?: number; [k: string]: unknown }>;
+  model?: string;
+  usage?: Record<string, unknown>;
+  [k: string]: unknown;
+}
+
+/** Rerank candidate documents against a query (cross-encoder relevance). Default alias 'rerank-default'. */
+export function rerankDocuments(body: {
+  query: string;
+  documents: Array<{ text: string }>;
+  model?: string;
+  top_n?: number;
+}): Promise<RerankResult> {
+  return api<RerankResult>('llms', '/v1/rerank', { method: 'POST', body });
+}
+
+// ── Auth: credential control (rotate key, edit/deactivate agent, revoke tokens) ──────────────────
+/** Rotate an agent's API key: mints a new secret (shown once) + a grace window on the old key. */
+export function rotateAgentKey(
+  agentId: string,
+  keyId: string,
+  body: { scopes?: string[]; name?: string; expires_in_days?: number } = {},
+): Promise<RotateKeyResponse> {
+  return api<RotateKeyResponse>('auth', `/v1/agents/${agentId}/keys/${keyId}/rotate`, { method: 'POST', body });
+}
+
+export function updateAgent(
+  agentId: string,
+  body: { allowed_scopes?: string[]; capabilities?: unknown; metadata?: unknown },
+): Promise<Agent> {
+  return api<Agent>('auth', `/v1/agents/${agentId}`, { method: 'PATCH', body });
+}
+
+/** Deactivate an agent — cascade-revokes its keys + tokens. */
+export function deactivateAgent(agentId: string): Promise<DeactivateAgentResult> {
+  return api<DeactivateAgentResult>('auth', `/v1/agents/${agentId}`, { method: 'DELETE' });
+}
+
+/** Kill-switch a single token by its jti (immediate revocation via the shared Valkey mirror). */
+export function revokeToken(jti: string, reason?: string): Promise<void> {
+  return api<void>('auth', '/v1/tokens/revoke', { method: 'POST', body: { jti, reason } });
+}
+
+/** Revoke ALL of an agent's outstanding tokens (bumps its revocation epoch). */
+export function revokeAllTokens(agentId: string, reason?: string): Promise<Record<string, unknown>> {
+  return api('auth', `/v1/agents/${agentId}/revoke-all-tokens`, { method: 'POST', body: { reason } });
+}
+
+// ── Auth admin: webhooks (tenant:admin) ──────────────────────────────────────────────────────
+// The auth service uses Contract-21 wire names (`sub_id`, `signing_secret`, `last_status_code`);
+// normalize them to the frontend's `id`/`secret`/`response_status` so the UI has one clean shape.
+function normWebhook(w: Webhook): Webhook {
+  const raw = w as Record<string, unknown>;
+  return {
+    ...w,
+    id: (w.id ?? (raw.sub_id as string | undefined)) as string,
+    secret: (w.secret ?? (raw.signing_secret as string | undefined)) ?? undefined,
+  };
+}
+
+function normDelivery(d: WebhookDelivery): WebhookDelivery {
+  const raw = d as Record<string, unknown>;
+  return {
+    ...d,
+    id: (d.id ?? d.delivery_id) as string | undefined,
+    response_status: (d.response_status ?? (raw.last_status_code as number | null | undefined)) ?? null,
+  };
+}
+
+export async function listWebhooks(signal?: AbortSignal): Promise<Webhook[]> {
+  const r = await api<{ subscriptions?: Webhook[]; data?: Webhook[] } | Webhook[]>('auth', '/v1/webhooks', { signal });
+  const arr = Array.isArray(r) ? r : (r.subscriptions ?? r.data ?? []);
+  return arr.map(normWebhook);
+}
+
+/** Create a webhook subscription. `event_types: ['*']` = all events. Returns the signing secret ONCE. */
+export async function createWebhook(body: { url: string; event_types: string[] }): Promise<Webhook> {
+  return normWebhook(await api<Webhook>('auth', '/v1/webhooks', { method: 'POST', body }));
+}
+
+export function deleteWebhook(id: string): Promise<void> {
+  return api<void>('auth', `/v1/webhooks/${id}`, { method: 'DELETE' });
+}
+
+/** Rotate a webhook's signing secret; the new secret is returned ONCE. */
+export async function rotateWebhookSecret(id: string): Promise<Webhook> {
+  return normWebhook(await api<Webhook>('auth', `/v1/webhooks/${id}/rotate-secret`, { method: 'POST', body: {} }));
+}
+
+/** Resume a paused/disabled webhook (re-enable delivery). */
+export async function resumeWebhook(id: string): Promise<Webhook> {
+  return normWebhook(await api<Webhook>('auth', `/v1/webhooks/${id}/resume`, { method: 'POST', body: {} }));
+}
+
+/**
+ * Replay deliveries: a specific one when `deliveryId` is given, else ALL recent failed deliveries
+ * (the backend now treats an absent delivery_id as "replay recent failures" and returns `{replayed}`).
+ */
+export function replayWebhook(id: string, deliveryId?: string): Promise<Record<string, unknown>> {
+  const body = deliveryId ? { delivery_id: deliveryId } : {};
+  return api('auth', `/v1/webhooks/${id}/replay`, { method: 'POST', body });
+}
+
+export async function listWebhookDeliveries(id: string, signal?: AbortSignal): Promise<WebhookDelivery[]> {
+  const r = await api<{ deliveries?: WebhookDelivery[]; data?: WebhookDelivery[] } | WebhookDelivery[]>(
+    'auth',
+    `/v1/webhooks/${id}/deliveries`,
+    { signal },
+  );
+  const arr = Array.isArray(r) ? r : (r.deliveries ?? r.data ?? []);
+  return arr.map(normDelivery);
+}
+
+// ── Auth admin: tenant settings (self) ─────────────────────────────────────────────────────────
+export function getMyTenant(signal?: AbortSignal): Promise<TenantView> {
+  return api<TenantView>('auth', '/v1/tenants/me', { signal });
+}
+
+/** Update the caller's own tenant (tenant:admin). Currently editable: display name + metadata. */
+export function updateMyTenant(body: { name?: string; source_metadata?: Record<string, unknown> }): Promise<TenantView> {
+  return api<TenantView>('auth', '/v1/tenants/me', { method: 'PATCH', body });
+}
+
+// ── Auth admin: audit export ─────────────────────────────────────────────────────────────────
+/**
+ * Build a cookie-authenticated download URL for the audit-log export. Use it as an
+ * `<a href download>` (same-origin GET rides the session cookie) — the response is a file
+ * (CSV/NDJSON), so it must NOT go through the JSON `api()` path.
+ */
+export function auditExportUrl(params: { from?: string; to?: string; format?: string } = {}): string {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) if (v) qs.set(k, String(v));
+  const s = qs.toString();
+  return streamUrl('auth', `/v1/audit-log/export${s ? `?${s}` : ''}`);
+}
+
+// ── Auth admin: platform admin (scope-gated on platform:admin) ───────────────────────────────────
+export async function listSigningKeys(signal?: AbortSignal): Promise<SigningKeyView[]> {
+  const r = await api<{ keys?: SigningKeyView[]; data?: SigningKeyView[] } | SigningKeyView[]>(
+    'auth',
+    '/v1/admin/signing-keys',
+    { signal },
+  );
+  return Array.isArray(r) ? r : (r.keys ?? r.data ?? []);
+}
+
+/** Rotate the signing key (graceful — promotes the staged next key). */
+export function rotateSigningKey(): Promise<Record<string, unknown>> {
+  return api('auth', '/v1/admin/signing-keys/rotate', { method: 'POST', body: {} });
+}
+
+/**
+ * Emergency signing-key rotation (immediate; invalidates tokens signed by the old key). Gated by an
+ * out-of-band emergency token, sent as `X-Emergency-Token` (the BFF forwards it) — the operator must
+ * supply the value provisioned in the auth service's emergency-rotate token file.
+ */
+export function emergencyRotateSigningKey(emergencyToken: string): Promise<Record<string, unknown>> {
+  return api('auth', '/v1/admin/signing-keys/emergency-rotate', {
+    method: 'POST',
+    body: {},
+    headers: emergencyToken ? { 'X-Emergency-Token': emergencyToken } : undefined,
+  });
+}
+
+export async function listServiceClients(signal?: AbortSignal): Promise<ServiceClientView[]> {
+  const r = await api<{ data?: ServiceClientView[]; clients?: ServiceClientView[] } | ServiceClientView[]>(
+    'auth',
+    '/v1/admin/service-clients',
+    { signal },
+  );
+  return Array.isArray(r) ? r : (r.data ?? r.clients ?? []);
+}
+
+export function createServiceClient(body: {
+  name: string;
+  service_name?: string;
+  scopes: string[];
+}): Promise<ServiceClientView> {
+  return api<ServiceClientView>('auth', '/v1/admin/service-clients', { method: 'POST', body });
+}
+
+export function deleteServiceClient(id: string): Promise<void> {
+  return api<void>('auth', `/v1/admin/service-clients/${id}`, { method: 'DELETE' });
+}
+
+/** Rotate a service client's secret; the new secret is returned ONCE. */
+export function rotateServiceClientSecret(id: string): Promise<ServiceClientView> {
+  return api<ServiceClientView>('auth', `/v1/admin/service-clients/${id}/rotate-secret`, { method: 'POST', body: {} });
 }

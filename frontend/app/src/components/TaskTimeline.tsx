@@ -6,16 +6,16 @@ import { formatDuration, formatNumber } from '@/lib/utils';
 
 /** Human label for the canonical xAgent step names. */
 const STEP_LABELS: Record<string, string> = {
-  guardrail_check_input: 'Guardrail (input)',
-  load: 'Load agent config',
-  prompt_build: 'Build prompt',
-  rag_query: 'RAG retrieval',
-  memory_retrieve: 'Memory retrieve',
-  memory_write: 'Memory write',
-  llm_call: 'LLM call',
-  tool_loop: 'Tool loop',
-  guardrail_check_output: 'Guardrail (output)',
-  event: 'Emit event',
+  guardrail_check_input: 'Guardrail (Input)',
+  load: 'Load Agent Config',
+  prompt_build: 'Build Prompt',
+  rag_query: 'RAG Retrieval',
+  memory_retrieve: 'Memory Retrieve',
+  memory_write: 'Memory Write',
+  llm_call: 'LLM Call',
+  tool_loop: 'Tool Loop',
+  guardrail_check_output: 'Guardrail (Output)',
+  event: 'Emit Event',
 };
 
 function label(step: string): string {

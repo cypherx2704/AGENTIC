@@ -6,6 +6,7 @@ import {
   Button,
   Card,
   CardBody,
+  CopyButton,
   ErrorBanner,
   Loading,
   StatusBadge,
@@ -15,7 +16,7 @@ import {
 import type { Column } from '@/components/ui';
 import { useAgentList } from '@/lib/useAgentList';
 import type { Agent } from '@/lib/types';
-import { formatTime, shortId } from '@/lib/utils';
+import { formatTime } from '@/lib/utils';
 
 export interface AgentListProps {
   /** Chosen agent — fired on row click (and on the action button, if `actionLabel` is set). */
@@ -45,12 +46,12 @@ export function AgentList({ onSelect, actionLabel, fallback, emptyLabel }: Agent
     {
       key: 'agent_id',
       header: 'Agent ID',
-      render: (a) => <span className="font-mono text-xs text-muted">{shortId(a.agent_id, 12)}</span>,
+      render: (a) => <CopyButton value={a.agent_id} label="Copy ID" />,
     },
     { key: 'status', header: 'Status', render: (a) => <StatusBadge status={a.status} /> },
     {
       key: 'scopes',
-      header: 'Allowed scopes',
+      header: 'Allowed Scopes',
       render: (a) => (
         <div className="flex flex-wrap gap-1">
           {(a.allowed_scopes ?? []).slice(0, 3).map((s) => (
@@ -127,7 +128,7 @@ export function AgentList({ onSelect, actionLabel, fallback, emptyLabel }: Agent
         <div className="flex items-center justify-center gap-3 border-t border-border p-3">
           <span className="text-xs text-muted">{agents.length} loaded</span>
           <Button size="sm" variant="secondary" loading={loadingMore} onClick={() => void onLoadMore()}>
-            Load more
+            Load More
           </Button>
         </div>
       )}

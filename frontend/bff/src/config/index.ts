@@ -144,6 +144,9 @@ function parseUpstreams(env: Env): Record<string, string> {
     ['xagent', 'XAGENT_URL', false],
     ['rag', 'RAG_URL', false],
     ['tools', 'TOOL_REGISTRY_URL', false],
+    ['memory', 'MEMORY_URL', false],
+    ['skills', 'SKILL_REGISTRY_URL', false],
+    ['toolbuilder', 'TOOL_BUILDER_URL', false],
   ];
   const out: Record<string, string> = {};
   for (const [name, key, mandatory] of spec) {

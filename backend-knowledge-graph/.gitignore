@@ -1,0 +1,19 @@
+# bkg local graph + AI cache (never committed)
+.bkg/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# SQLite artifacts
+*.db
+*.db-wal
+*.db-shm
+*.sqlite

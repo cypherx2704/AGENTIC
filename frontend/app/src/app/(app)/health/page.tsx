@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { PageHeader } from '@/components/AppShell';
+import { Page, PageBody, PageHeader } from '@/components/AppShell';
 import { Badge, Card, CardBody, CardHeader, ErrorBanner, Loading } from '@/components/ui';
 import { bffFetch } from '@/lib/bff-client';
 import { config } from '@/lib/config';
@@ -78,12 +78,13 @@ export default function HealthPage() {
   }, []);
 
   return (
-    <div>
+    <Page>
       <PageHeader
-        title="Platform health"
+        title="Platform Health"
         description={`livez / readyz of each service via the BFF (auto-refresh ${config.healthPollMs / 1000}s).`}
-        actions={lastChecked ? <span className="text-xs text-muted">checked {lastChecked.toLocaleTimeString()}</span> : null}
+        actions={lastChecked ? <span className="text-xs text-muted">Checked {lastChecked.toLocaleTimeString()}</span> : null}
       />
+      <PageBody>
 
       {error ? (
         <ErrorBanner
@@ -102,7 +103,7 @@ export default function HealthPage() {
           </CardBody>
         </Card>
       ) : (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {services.map((s) => {
             const healthy = s.readyz != null && s.readyz >= 200 && s.readyz < 300;
             return (
@@ -111,11 +112,11 @@ export default function HealthPage() {
                 <CardBody>
                   <div className="flex flex-col gap-3">
                     <div className="flex items-center justify-between">
-                      <span className="text-sm text-muted">livez</span>
+                      <span className="text-sm text-muted">Liveness</span>
                       {probeBadge(s.livez)}
                     </div>
                     <div className="flex items-center justify-between">
-                      <span className="text-sm text-muted">readyz</span>
+                      <span className="text-sm text-muted">Readiness</span>
                       {probeBadge(s.readyz)}
                     </div>
                   </div>
@@ -125,6 +126,7 @@ export default function HealthPage() {
           })}
         </div>
       )}
-    </div>
+      </PageBody>
+    </Page>
   );
 }

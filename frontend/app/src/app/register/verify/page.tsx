@@ -112,7 +112,7 @@ function VerifyInner() {
   if (phase === 'error') {
     return (
       <Card className="w-full max-w-md">
-        <CardHeader title="Verification failed" description="This link could not be used." />
+        <CardHeader title="Verification Failed" description="This link could not be used." />
         <CardBody>
           <div className="flex flex-col gap-4">
             <ErrorBanner error={error} />
@@ -121,10 +121,10 @@ function VerifyInner() {
             </p>
             <div className="flex items-center gap-2">
               <Link href="/register">
-                <Button size="sm">Start over</Button>
+                <Button size="md">Start Over</Button>
               </Link>
-              <Link href="/login" className="text-sm text-brand hover:underline">
-                Back to sign in
+              <Link href="/login" className="text-[13px] font-medium text-brand hover:underline">
+                Back to Sign In
               </Link>
             </div>
           </div>
@@ -137,7 +137,7 @@ function VerifyInner() {
   return (
     <Card className="w-full max-w-md">
       <CardHeader
-        title="Your tenant is ready 🎉"
+        title="Your Tenant Is Ready"
         description={loggedIn ? "You're signed in. Save your admin API key below." : 'Save your admin API key, then sign in.'}
       />
       <CardBody>
@@ -150,13 +150,13 @@ function VerifyInner() {
           {result && (
             <>
               <div>
-                <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted">Admin API key</p>
+                <p className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-faint">Admin API Key</p>
                 <code className="block break-all rounded-md border border-border bg-surface-2 px-3 py-3 font-mono text-sm text-fg">
                   {result.api_key}
                 </code>
                 <div className="mt-2">
                   <Button variant="secondary" size="sm" onClick={copyKey}>
-                    {copied ? 'Copied' : 'Copy key'}
+                    {copied ? 'Copied' : 'Copy Key'}
                   </Button>
                 </div>
               </div>
@@ -172,7 +172,7 @@ function VerifyInner() {
 
           {loggedIn ? (
             <Button size="lg" onClick={() => router.replace('/')}>
-              Enter console
+              Enter Console
             </Button>
           ) : (
             <div className="flex flex-col gap-2">
@@ -181,7 +181,7 @@ function VerifyInner() {
               </p>
               <Link href="/login">
                 <Button size="lg" className="w-full">
-                  Go to sign in
+                  Go to Sign In
                 </Button>
               </Link>
             </div>
@@ -206,7 +206,7 @@ export default function VerifyPage() {
     <div className="flex min-h-screen items-center justify-center bg-bg p-4">
       <div className="w-full max-w-md">
         <div className="mb-6 flex items-center justify-center gap-2">
-          <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand text-lg font-bold text-brand-fg">
+          <span className="flex h-9 w-9 items-center justify-center rounded-md bg-brand text-lg font-bold text-brand-fg">
             C
           </span>
           <span className="text-lg font-semibold text-fg">{config.appName}</span>

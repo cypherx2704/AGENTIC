@@ -2,21 +2,89 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Design tokens — a clean dark-first palette. RGB triples so Tailwind's
-   <alpha-value> opacity modifiers work (e.g. bg-brand/15). */
+/* ============================================================================
+   Design tokens — restrained enterprise console.
+   Neutral grayscale ground · ONE accent (blue) · semantic color only.
+   Values are RGB triples so Tailwind's <alpha-value> modifiers work
+   (e.g. bg-brand/10). Dark is the base; light + the explicit theme toggle
+   override through data-theme, which always wins over the media query.
+   ============================================================================ */
 :root {
-  --bg: 13 17 23;
-  --surface: 22 27 34;
-  --surface-2: 33 38 45;
-  --border: 48 54 61;
-  --fg: 230 237 243;
-  --muted: 139 148 158;
-  --brand: 88 166 255;
-  --brand-fg: 13 17 23;
-  --success: 63 185 80;
-  --warning: 210 153 34;
-  --danger: 248 81 73;
-  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  color-scheme: dark;
+  --bg: 14 16 19;
+  --surface: 22 24 28;
+  --surface-2: 27 30 35;
+  --border: 41 45 52;
+  --border-2: 54 59 68;
+  --fg: 228 231 235;
+  --fg-strong: 243 245 247;
+  --muted: 138 144 153;
+  --faint: 99 105 113;
+  --brand: 76 141 240;   /* the single accent — primary action, active, links, focus */
+  --brand-fg: 11 14 18;
+  --info: 76 141 240;    /* blue = information (shares the accent) */
+  --success: 63 184 79;
+  --warning: 214 160 42;
+  --danger: 229 84 78;   /* critical */
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+    --bg: 246 248 250;
+    --surface: 255 255 255;
+    --surface-2: 246 248 250;
+    --border: 216 222 228;
+    --border-2: 196 204 212;
+    --fg: 31 35 40;
+    --fg-strong: 11 14 18;
+    --muted: 101 109 118;
+    --faint: 139 148 158;
+    --brand: 9 105 218;
+    --brand-fg: 255 255 255;
+    --info: 9 105 218;
+    --success: 26 127 55;
+    --warning: 154 103 0;
+    --danger: 207 34 46;
+  }
+}
+
+/* Explicit toggle — must override the media query in both directions. */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: 14 16 19;
+  --surface: 22 24 28;
+  --surface-2: 27 30 35;
+  --border: 41 45 52;
+  --border-2: 54 59 68;
+  --fg: 228 231 235;
+  --fg-strong: 243 245 247;
+  --muted: 138 144 153;
+  --faint: 99 105 113;
+  --brand: 76 141 240;
+  --brand-fg: 11 14 18;
+  --info: 76 141 240;
+  --success: 63 184 79;
+  --warning: 214 160 42;
+  --danger: 229 84 78;
+}
+:root[data-theme='light'] {
+  color-scheme: light;
+  --bg: 246 248 250;
+  --surface: 255 255 255;
+  --surface-2: 246 248 250;
+  --border: 216 222 228;
+  --border-2: 196 204 212;
+  --fg: 31 35 40;
+  --fg-strong: 11 14 18;
+  --muted: 101 109 118;
+  --faint: 139 148 158;
+  --brand: 9 105 218;
+  --brand-fg: 255 255 255;
+  --info: 9 105 218;
+  --success: 26 127 55;
+  --warning: 154 103 0;
+  --danger: 207 34 46;
 }
 
 html,
@@ -27,12 +95,19 @@ body {
 body {
   background-color: rgb(var(--bg));
   color: rgb(var(--fg));
-  font-family: var(--font-sans);
+  font-family: var(--font-sans), ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 * {
   border-color: rgb(var(--border));
+}
+
+::selection {
+  background: rgb(var(--brand) / 0.22);
 }
 
 /* Thin, themed scrollbars for the dense data views. */
@@ -41,9 +116,39 @@ body {
   width: 10px;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgb(var(--surface-2));
+  background: rgb(var(--border-2));
   border-radius: 6px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--faint));
 }
 ::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* Subtle accent ring on the active pipeline stage. In the palette, never neon.
+   The reduced-motion block below disables it. */
+@keyframes cx-ring {
+  0% {
+    box-shadow: 0 0 0 0 rgb(var(--brand) / 0.32);
+  }
+  70% {
+    box-shadow: 0 0 0 5px rgb(var(--brand) / 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgb(var(--brand) / 0);
+  }
+}
+.cx-ring {
+  animation: cx-ring 1.8s ease-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

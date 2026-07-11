@@ -33,6 +33,9 @@ export interface UpstreamResponse {
   };
   text(): Promise<string>;
   json(): Promise<unknown>;
+  /** Present on the real WHATWG fetch; used by the Node-RED editor proxy for binary-safe
+   *  passthrough (fonts/images). Optional so test fakes need only implement text()/json(). */
+  arrayBuffer?(): Promise<ArrayBuffer>;
   readonly body?: unknown;
 }
 

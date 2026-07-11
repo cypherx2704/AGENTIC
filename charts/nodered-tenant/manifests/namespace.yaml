@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cypherx-tools
+  labels:
+    app.kubernetes.io/part-of: cypherx-flow-tools
+    # Istio is NOT injected here — tenant Node-RED runs untrusted workflow code and must stay
+    # off the mesh; its NetworkPolicy is the isolation boundary.
+    istio-injection: disabled

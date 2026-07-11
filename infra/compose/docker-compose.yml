@@ -47,6 +47,8 @@ volumes:
   valkey-data:
   redpanda-data:
   minio-data:
+  # Tool Builder: the shared dev Node-RED userDir (flows + credentials).
+  nodered-data:
   # Observability profile (--profile observability) persistence.
   prometheus-data:
   grafana-data:
@@ -296,7 +298,8 @@ services:
         "guardrails":"${SERVICE_BOOTSTRAP_SECRET_GUARDRAILS:-local-dev-guardrails-secret}",
         "rag":"${SERVICE_BOOTSTRAP_SECRET_RAG:-local-dev-rag-secret}",
         "memory":"${SERVICE_BOOTSTRAP_SECRET_MEMORY:-local-dev-memory-secret}",
-        "cypherx-a1":"${SERVICE_BOOTSTRAP_SECRET_CYPHERXA1:-local-dev-cypherxa1-secret}"}}}}
+        "cypherx-a1":"${SERVICE_BOOTSTRAP_SECRET_CYPHERXA1:-local-dev-cypherxa1-secret}",
+        "tool-flow-bridge":"${SERVICE_BOOTSTRAP_SECRET_FLOWBRIDGE:-local-dev-flowbridge-secret}"}}}}
     ports:
       - "8080:8080"
     depends_on:
@@ -714,6 +717,96 @@ services:
       start_period: 20s
       retries: 5
 
+  # -------------------------------------------------------------------------------------------------------------------
+  # nodered — the visual (Node-RED) execution backend for the Tool Builder. Hardened + white-labeled image. In this
+  # dev stack ONE shared instance serves every tenant (bridge PROVISIONER_MODE=static); production runs one instance
+  # per tenant (see charts/nodered-tenant + the bridge KubernetesProvisioner). Editor + Admin API at /bff/nodered
+  # (matches the BFF proxy path); HTTP-In tool endpoints under /flow. The bridge is the only trusted caller.
+  # -------------------------------------------------------------------------------------------------------------------
+  nodered:
+    build:
+      context: ../../Tools/tool-flow-bridge/nodered
+      dockerfile: Dockerfile
+    image: cypherx/nodered-tenant:local
+    container_name: cypherx-nodered
+    restart: unless-stopped
+    networks: [cypherx]
+    environment:
+      PORT: "1880"
+      NODERED_ADMIN_ROOT: ${NODERED_ADMIN_ROOT:-/bff/nodered}
+      NODERED_HTTP_NODE_ROOT: ${NODERED_HTTP_NODE_ROOT:-/flow}
+      # Shared dev secrets — MUST match the bridge's STATIC_NODERED_* values below.
+      NODERED_ADMIN_TOKEN: ${NODERED_ADMIN_TOKEN:-local-dev-nodered-admin-token}
+      NODERED_INVOKE_SECRET: ${NODERED_INVOKE_SECRET:-local-dev-nodered-invoke-secret}
+      NODERED_CREDENTIAL_SECRET: ${NODERED_CREDENTIAL_SECRET:-local-dev-nodered-credential-secret}
+      CYPHERX_INVOKE_SECRET_HEADER: ${NODERED_INVOKE_SECRET_HEADER:-x-cypherx-tool-secret}
+      # Dev: full palette + community-node installs so you can build ANY kind of tool.
+      NODERED_ALLOW_PALETTE_INSTALL: ${NODERED_ALLOW_PALETTE_INSTALL:-true}
+    volumes:
+      - nodered-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:1880/bff/nodered/',{headers:{authorization:'Bearer '+(process.env.NODERED_ADMIN_TOKEN||'')}},r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))\""]
+      interval: 15s
+      timeout: 5s
+      start_period: 25s
+      retries: 5
+
+  # -------------------------------------------------------------------------------------------------------------------
+  # tool-flow-bridge — Python (uv). Turns Node-RED workflows into Contract-4 MCP tools: publish control plane + a
+  # per-workflow MCP runtime (/w/<slug>/{manifest,mcp/v1/invoke}). Owns Postgres schema flow_tools (role
+  # flow_tools_user, Neon POOLED). Registers tools in tool-registry via a Contract-12 service token. Host map 8096->8080.
+  # -------------------------------------------------------------------------------------------------------------------
+  tool-flow-bridge:
+    build:
+      context: ../../Tools/tool-flow-bridge
+      dockerfile: Dockerfile
+    image: cypherx/tool-flow-bridge:local
+    container_name: cypherx-tool-flow-bridge
+    restart: unless-stopped
+    networks: [cypherx]
+    environment:
+      PORT: "8080"
+      HOST: "0.0.0.0"
+      DATABASE_URL: ${FLOW_TOOLS_DATABASE_URL}
+      VALKEY_URL: ${VALKEY_URL:-redis://valkey:6379}
+      AUTH_JWKS_URL: ${AUTH_JWKS_URL:-http://auth-service:8080/.well-known/jwks.json}
+      AUTH_ISSUER_URL: ${AUTH_ISSUER_URL:-http://auth-service:8080}
+      AUTH_PLATFORM_AUDIENCE: ${AUTH_PLATFORM_AUDIENCE:-cypherx-platform}
+      AUTH_SERVICE_URL: ${AUTH_SERVICE_URL:-http://auth-service:8080}
+      SERVICE_PRINCIPAL_NAME: tool-flow-bridge
+      SERVICE_BOOTSTRAP_SECRET: ${SERVICE_BOOTSTRAP_SECRET_FLOWBRIDGE:-local-dev-flowbridge-secret}
+      TOOL_REGISTRY_URL: ${TOOL_REGISTRY_URL:-http://tool-registry:8080}
+      BRIDGE_BASE_URL: ${BRIDGE_BASE_URL:-http://tool-flow-bridge:8080}
+      NODERED_ADMIN_ROOT: ${NODERED_ADMIN_ROOT:-/bff/nodered}
+      NODERED_INVOKE_SECRET_HEADER: ${NODERED_INVOKE_SECRET_HEADER:-X-CypherX-Tool-Secret}
+      # static provisioner: every tenant resolves to the one shared dev Node-RED above.
+      PROVISIONER_MODE: ${FLOWBRIDGE_PROVISIONER_MODE:-static}
+      STATIC_NODERED_INTERNAL_HOST: ${STATIC_NODERED_INTERNAL_HOST:-http://nodered:1880}
+      STATIC_NODERED_HTTP_NODE_ROOT: ${NODERED_HTTP_NODE_ROOT:-/flow}
+      STATIC_NODERED_ADMIN_TOKEN: ${NODERED_ADMIN_TOKEN:-local-dev-nodered-admin-token}
+      STATIC_NODERED_INVOKE_SECRET: ${NODERED_INVOKE_SECRET:-local-dev-nodered-invoke-secret}
+      STATIC_NODERED_CREDENTIAL_SECRET: ${NODERED_CREDENTIAL_SECRET:-local-dev-nodered-credential-secret}
+      DEFAULT_ACCESS_MODE: ${FLOWBRIDGE_DEFAULT_ACCESS_MODE:-ask}
+      ENVIRONMENT: ${ENVIRONMENT:-local}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    ports:
+      - "8096:8080"
+    depends_on:
+      valkey:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+      tool-registry:
+        condition: service_healthy
+      nodered:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/livez',timeout=3).status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+
   # ===================================================================================================================
   # CoreProjects — cypherx-a1 (Autonomous Engineering Memory) + its stateless mcp-eng-memory MCP server.
   # cypherx-a1 is a CONSUMING APP (peer of xagent): owns Postgres schema cypherx_a1 (runtime role cxa1_user, Neon
@@ -854,6 +947,12 @@ services:
       RAG_URL: ${RAG_SERVICE_URL:-http://rag:8080}
       # Tool Registry — backs the BFF /bff/api/tools/* proxy (per-agent tool access control UI).
       TOOL_REGISTRY_URL: ${TOOL_REGISTRY_URL:-http://tool-registry:8080}
+      # Memory — backs /bff/api/memory/* (Memory Explorer: store/search/CRUD/sessions/GDPR).
+      MEMORY_URL: ${MEMORY_SERVICE_URL:-http://memory:8080}
+      # Skill Registry — backs /bff/api/skills/* (Skills catalog + per-agent access control UI).
+      SKILL_REGISTRY_URL: ${SKILL_REGISTRY_URL:-http://skill-registry:8080}
+      # Flow-Tool-Bridge — backs /bff/api/toolbuilder/* (publish) + the /bff/nodered/* editor proxy.
+      TOOL_BUILDER_URL: ${TOOL_BUILDER_URL:-http://tool-flow-bridge:8080}
       UPSTREAM_TIMEOUT_MS: ${UPSTREAM_TIMEOUT_MS:-120000}
     ports:
       - "8092:8088"
@@ -1006,6 +1105,8 @@ services:
       MEM_DB_PASSWORD: ${MEM_DB_PASSWORD:-}
       TOOL_DB_PASSWORD: ${TOOL_DB_PASSWORD:-}
       SKILL_DB_PASSWORD: ${SKILL_DB_PASSWORD:-}
+      CYPHERXA1_DB_PASSWORD: ${CYPHERXA1_DB_PASSWORD:-}
+      FLOW_TOOLS_DB_PASSWORD: ${FLOW_TOOLS_DB_PASSWORD:-}
     entrypoint: ["/bin/sh", "/migrate.sh"]
     volumes:
       - ./migrate.sh:/migrate.sh:ro
@@ -1018,6 +1119,7 @@ services:
       - ../../Tools/tool-registry/db/migrations:/migrations/tool-registry:ro
       - ../../Skills/skill-registry/db/migrations:/migrations/skill-registry:ro
       - ../../CoreProjects/cypherx-a1/db/migrations:/migrations/cypherx-a1:ro
+      - ../../Tools/tool-flow-bridge/db/migrations:/migrations/tool-flow-bridge:ro
     restart: "no"
 
   # ===================================================================================================================

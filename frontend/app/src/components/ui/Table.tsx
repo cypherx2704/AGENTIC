@@ -25,9 +25,9 @@ export function Table<T>({
     <div className="overflow-x-auto">
       <table className="w-full border-collapse text-sm">
         <thead>
-          <tr className="border-b border-border text-left">
+          <tr className="text-left">
             {columns.map((c) => (
-              <th key={c.key} className={cn('px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-muted', c.className)}>
+              <th key={c.key} className={cn('border-b border-border px-3 py-2.5 text-xs font-medium text-muted', c.className)}>
                 {c.header}
               </th>
             ))}
@@ -36,7 +36,7 @@ export function Table<T>({
         <tbody>
           {rows.length === 0 ? (
             <tr>
-              <td colSpan={columns.length} className="px-4 py-10 text-center text-sm text-muted">
+              <td colSpan={columns.length} className="px-3 py-9 text-center text-sm text-muted">
                 {empty ?? 'No records.'}
               </td>
             </tr>
@@ -46,12 +46,12 @@ export function Table<T>({
                 key={rowKey(row, i)}
                 onClick={onRowClick ? () => onRowClick(row) : undefined}
                 className={cn(
-                  'border-b border-border/60 transition-colors',
+                  'border-b border-border transition-colors last:border-0',
                   onRowClick && 'cursor-pointer hover:bg-surface-2',
                 )}
               >
                 {columns.map((c) => (
-                  <td key={c.key} className={cn('px-4 py-2.5 align-top text-fg', c.className)}>
+                  <td key={c.key} className={cn('px-3 py-2.5 align-middle text-fg', c.className)}>
                     {c.render(row)}
                   </td>
                 ))}

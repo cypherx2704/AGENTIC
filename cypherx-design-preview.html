@@ -1,0 +1,533 @@
+<style>
+  /* ============================================================
+     CypherX Console — enterprise redesign (restrained)
+     Reference: GitHub Enterprise · Linear · Datadog · Stripe · Cloudflare.
+     Neutral grayscale · one accent (blue) · semantic color only ·
+     dense · flat · typography-driven hierarchy. No gradients/glows.
+     Real app: Inter (UI) + IBM Plex Mono (data) via next/font.
+     Preview approximates with system stacks (CSP blocks font CDNs).
+     ============================================================ */
+
+  :root {
+    /* neutral grayscale ground */
+    --bg: #0E1013;
+    --surface: #16181C;
+    --surface-2: #1B1E23;
+    --elev: #202329;
+    --border: #292D34;
+    --border-2: #363B44;
+    --fg: #E4E7EB;
+    --fg-strong: #F3F5F7;
+    --muted: #8A9099;
+    --faint: #636971;
+    /* ONE accent — used only for primary action, active state, links, focus */
+    --accent: #4C8DF0;
+    --accent-fg: #0B0E12;
+    --accent-weak: rgba(76, 141, 240, 0.14);
+    --accent-line: rgba(76, 141, 240, 0.40);
+    /* semantic — meaning only */
+    --success: #3FB84F;
+    --warning: #D6A02A;
+    --critical: #E5544E;
+    --info: #4C8DF0;
+
+    --font-ui: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+    --r: 6px;
+    --r-sm: 5px;
+    --sb: 230px;
+    --shadow: none;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #F6F8FA; --surface: #FFFFFF; --surface-2: #F6F8FA; --elev: #FFFFFF;
+      --border: #D8DEE4; --border-2: #C4CCD4; --fg: #1F2328; --fg-strong: #0B0E12; --muted: #656D76; --faint: #8B949E;
+      --accent: #0969DA; --accent-fg: #FFFFFF; --accent-weak: rgba(9,105,218,.08); --accent-line: rgba(9,105,218,.35);
+      --success: #1A7F37; --warning: #9A6700; --critical: #CF222E; --info: #0969DA;
+      --shadow: 0 1px 2px rgba(31,35,40,.06);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0E1013; --surface: #16181C; --surface-2: #1B1E23; --elev: #202329;
+    --border: #292D34; --border-2: #363B44; --fg: #E4E7EB; --fg-strong: #F3F5F7; --muted: #8A9099; --faint: #636971;
+    --accent: #4C8DF0; --accent-fg: #0B0E12; --accent-weak: rgba(76,141,240,.14); --accent-line: rgba(76,141,240,.40);
+    --success: #3FB84F; --warning: #D6A02A; --critical: #E5544E; --info: #4C8DF0; --shadow: none;
+  }
+  :root[data-theme="light"] {
+    --bg: #F6F8FA; --surface: #FFFFFF; --surface-2: #F6F8FA; --elev: #FFFFFF;
+    --border: #D8DEE4; --border-2: #C4CCD4; --fg: #1F2328; --fg-strong: #0B0E12; --muted: #656D76; --faint: #8B949E;
+    --accent: #0969DA; --accent-fg: #FFFFFF; --accent-weak: rgba(9,105,218,.08); --accent-line: rgba(9,105,218,.35);
+    --success: #1A7F37; --warning: #9A6700; --critical: #CF222E; --info: #0969DA;
+    --shadow: 0 1px 2px rgba(31,35,40,.06);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font-family: var(--font-ui); font-size: 13px; line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 4px; }
+  .mono { font-family: var(--font-mono); }
+  .tnum { font-variant-numeric: tabular-nums; }
+  .label { font-size: 11px; color: var(--muted); font-weight: 500; }
+  .meta { font-size: 12px; color: var(--muted); }
+
+  /* ---------- shell ---------- */
+  .app { display: grid; grid-template: "top top" 48px "side main" 1fr / var(--sb) 1fr; height: 100dvh; overflow: hidden; }
+
+  .topbar {
+    grid-area: top; display: flex; align-items: center; gap: 12px;
+    padding: 0 12px; background: var(--surface); border-bottom: 1px solid var(--border);
+  }
+  .brand { display: flex; align-items: center; gap: 8px; width: calc(var(--sb) - 24px); }
+  .brand__mark {
+    width: 22px; height: 22px; display: grid; place-items: center; border-radius: 5px;
+    background: var(--accent); color: var(--accent-fg); font-weight: 700; font-size: 13px;
+  }
+  .brand__name { font-weight: 650; font-size: 13.5px; letter-spacing: -.01em; color: var(--fg-strong); }
+  .search {
+    flex: 1; max-width: 420px; display: flex; align-items: center; gap: 7px;
+    height: 28px; padding: 0 8px; border: 1px solid var(--border); border-radius: var(--r);
+    background: var(--bg); color: var(--muted); font-size: 12.5px;
+  }
+  .search kbd { margin-left: auto; font-family: var(--font-mono); font-size: 10px; padding: 1px 5px; border-radius: 4px; border: 1px solid var(--border-2); color: var(--muted); }
+  .topbar__spacer { flex: 1; }
+  .env { display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 9px; border: 1px solid var(--border); border-radius: var(--r); font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); }
+  .env .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
+  .iconbtn { width: 28px; height: 28px; display: grid; place-items: center; border: 1px solid var(--border); border-radius: var(--r); background: transparent; color: var(--muted); }
+  .iconbtn:hover { color: var(--fg); border-color: var(--border-2); }
+  .avatar { width: 26px; height: 26px; border-radius: 5px; display: grid; place-items: center; background: var(--surface-2); color: var(--fg); font-weight: 650; font-size: 11px; border: 1px solid var(--border); }
+
+  /* ---------- sidebar ---------- */
+  .side { grid-area: side; border-right: 1px solid var(--border); background: var(--surface); overflow-y: auto; padding: 8px 8px 8px; display: flex; flex-direction: column; }
+  .navgroup { margin-top: 10px; }
+  .navgroup:first-child { margin-top: 2px; }
+  .navgroup__label { padding: 4px 8px; font-size: 10px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); }
+  .nav { list-style: none; margin: 0; padding: 0; }
+  .nav a { position: relative; display: flex; align-items: center; gap: 9px; padding: 5px 8px; border-radius: var(--r); color: var(--muted); font-weight: 500; font-size: 13px; }
+  .nav a svg { width: 15px; height: 15px; flex: none; }
+  .nav a .count { margin-left: auto; font-family: var(--font-mono); font-size: 10.5px; color: var(--faint); }
+  .nav a:hover { background: var(--surface-2); color: var(--fg); }
+  .nav a.active { background: var(--surface-2); color: var(--fg-strong); font-weight: 550; }
+  .nav a.active svg { color: var(--fg); }
+  .nav a.active::before { content: ""; position: absolute; left: -8px; top: 6px; bottom: 6px; width: 2px; border-radius: 2px; background: var(--accent); }
+  .nav a.active .count { color: var(--critical); }
+  .side__foot { margin-top: auto; padding: 8px; display: flex; align-items: center; gap: 8px; border-top: 1px solid var(--border); }
+  .side__ident { min-width: 0; }
+  .side__ident b { display: block; font-size: 12px; color: var(--fg); }
+  .side__ident span { display: block; font-family: var(--font-mono); font-size: 10px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* ---------- main ---------- */
+  .main { grid-area: main; overflow-y: auto; }
+  .wrap { max-width: none; padding: 14px 18px 48px; }
+  .view { display: none; }
+  .view.active { display: block; }
+
+  .phead { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+  .phead h1 { font-size: 18px; font-weight: 650; letter-spacing: -.01em; margin: 0; color: var(--fg-strong); }
+  .phead .crumb { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+  .phead p { margin: 2px 0 0; color: var(--muted); font-size: 12.5px; }
+  .phead__actions { display: flex; gap: 7px; }
+
+  .btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: var(--r); border: 1px solid var(--border-2); background: var(--surface); color: var(--fg); font-weight: 500; font-size: 12.5px; }
+  .btn svg { width: 14px; height: 14px; }
+  .btn:hover { background: var(--surface-2); }
+  .btn--primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 550; }
+  .btn--primary:hover { background: var(--accent); filter: brightness(1.05); }
+  .btn--sm { height: 24px; padding: 0 8px; font-size: 12px; }
+
+  /* ---------- cards (flat) ---------- */
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); box-shadow: var(--shadow); }
+  .card__h { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 12px; border-bottom: 1px solid var(--border); }
+  .card__h h2 { margin: 0; font-size: 13px; font-weight: 600; color: var(--fg-strong); }
+  .card__h .sub { color: var(--muted); font-size: 11.5px; }
+  .card__b { padding: 12px; }
+
+  .grid { display: grid; gap: 12px; }
+  .g-2 { grid-template-columns: 1.6fr 1fr; }
+  @media (max-width: 1040px) { .g-2 { grid-template-columns: 1fr; } }
+
+  /* ---------- metrics strip (dense, one bordered row) ---------- */
+  .metrics { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--border); border-radius: var(--r); background: var(--surface); overflow: hidden; margin-bottom: 12px; }
+  .metric { padding: 10px 13px; border-left: 1px solid var(--border); display: flex; flex-direction: column; gap: 4px; }
+  .metric:first-child { border-left: none; }
+  .metric__top { display: flex; align-items: center; justify-content: space-between; }
+  .metric__val { font-size: 20px; font-weight: 650; letter-spacing: -.01em; color: var(--fg-strong); }
+  .metric__val.crit { color: var(--fg-strong); }
+  .metric__spark { height: 18px; display: flex; align-items: flex-end; gap: 2px; opacity: .8; }
+  .metric__spark i { flex: 1; background: var(--border-2); border-radius: 1px; }
+  .delta { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+  .delta.up { color: var(--success); } .delta.dn { color: var(--critical); }
+  @media (max-width: 720px) { .metrics { grid-template-columns: repeat(2, 1fr); } .metric:nth-child(3) { border-left: none; } }
+
+  /* ---------- table (dense) ---------- */
+  .tablewrap { overflow-x: auto; }
+  table.t { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  table.t th { text-align: left; font-weight: 500; font-size: 11px; color: var(--muted); padding: 7px 12px; border-bottom: 1px solid var(--border); background: var(--surface); }
+  table.t td { padding: 7px 12px; border-bottom: 1px solid var(--border); }
+  table.t tr:last-child td { border-bottom: none; }
+  table.t tbody tr:hover td { background: var(--surface-2); }
+  table.t .id { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); }
+  .agent { font-family: var(--font-mono); font-size: 11.5px; color: var(--fg); }
+  .num { text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--fg); }
+
+  /* status = small dots + compact pills, semantic only */
+  .status { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
+  .status .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  .s-ok .dot { background: var(--success); } .s-run .dot { background: var(--accent); } .s-warn .dot { background: var(--warning); } .s-crit .dot { background: var(--critical); }
+  .s-ok { color: var(--fg); } .s-run { color: var(--fg); } .s-warn { color: var(--fg); } .s-crit { color: var(--fg); }
+  .pill { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 500; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border-2); color: var(--muted); background: var(--surface); }
+  .pill .dot { width: 6px; height: 6px; border-radius: 50%; }
+  .pill--ok { color: var(--success); border-color: color-mix(in srgb, var(--success) 40%, var(--border)); }
+  .pill--ok .dot { background: var(--success); }
+
+  .stagechip { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+
+  /* ---------- guardrail decisions (muted, semantic) ---------- */
+  .decisions { display: flex; flex-direction: column; gap: 10px; }
+  .decbar { display: flex; height: 8px; border-radius: 2px; overflow: hidden; background: var(--surface-2); }
+  .decbar > span { display: block; }
+  .decrow { display: flex; align-items: center; gap: 8px; font-size: 12.5px; padding: 4px 0; border-top: 1px solid var(--border); }
+  .decrow:first-child { border-top: none; }
+  .decrow .dot { width: 8px; height: 8px; border-radius: 2px; }
+  .decrow span { color: var(--muted); }
+  .decrow b { margin-left: auto; font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--fg); font-weight: 500; }
+  .decrow .pct { color: var(--faint); font-family: var(--font-mono); font-size: 11px; width: 42px; text-align: right; }
+
+  /* ---------- health (compact) ---------- */
+  .health { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: var(--r); overflow: hidden; }
+  .svc { display: flex; align-items: center; gap: 8px; padding: 8px 11px; background: var(--surface); font-size: 12.5px; }
+  .svc .dot { width: 7px; height: 7px; border-radius: 50%; }
+  .svc .name { font-family: var(--font-mono); font-size: 12px; color: var(--fg); }
+  .svc small { margin-left: auto; color: var(--muted); font-size: 11px; }
+
+  /* ---------- builder ---------- */
+  .fieldrow { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+  @media (max-width: 720px) { .fieldrow { grid-template-columns: 1fr; } }
+  .field { display: flex; flex-direction: column; gap: 5px; }
+  .field > label { font-size: 12px; font-weight: 550; color: var(--fg); }
+  .field .hint { font-size: 11.5px; color: var(--muted); }
+  .control { height: 30px; padding: 0 9px; border-radius: var(--r); border: 1px solid var(--border-2); background: var(--bg); color: var(--fg); font: inherit; font-size: 12.5px; width: 100%; }
+  textarea.control { height: auto; min-height: 74px; padding: 7px 9px; resize: vertical; font-family: var(--font-mono); font-size: 12px; line-height: 1.5; }
+  select.control { appearance: none; background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%238A9099' stroke-width='1.6'><path d='M4 6.5l4 4 4-4'/></svg>"); background-repeat: no-repeat; background-position: right 8px center; padding-right: 28px; }
+  .control:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-weak); }
+  .tokens { display: flex; flex-wrap: wrap; gap: 6px; }
+  .tok { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 11.5px; padding: 3px 5px 3px 8px; border-radius: var(--r-sm); border: 1px solid var(--border-2); background: var(--surface-2); color: var(--fg); }
+  .tok x { color: var(--faint); cursor: pointer; font-style: normal; }
+  .tok x:hover { color: var(--critical); }
+  .tok--add { border-style: dashed; color: var(--accent); background: transparent; cursor: pointer; }
+  .segmented { display: inline-flex; border: 1px solid var(--border-2); border-radius: var(--r); overflow: hidden; }
+  .segmented button { border: none; border-left: 1px solid var(--border-2); background: var(--surface); color: var(--muted); padding: 5px 11px; font-size: 12px; font-weight: 500; }
+  .segmented button:first-child { border-left: none; }
+  .segmented button.on { background: var(--surface-2); color: var(--fg-strong); }
+  .slider { display: flex; align-items: center; gap: 10px; }
+  .slider input { flex: 1; accent-color: var(--accent); }
+  .slider b { font-family: var(--font-mono); font-size: 12.5px; min-width: 38px; text-align: right; color: var(--fg); }
+  .switchrow { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 0; border-top: 1px solid var(--border); }
+  .switchrow:first-child { border-top: none; }
+  .switchrow .t b { font-size: 12.5px; font-weight: 550; } .switchrow .t p { margin: 1px 0 0; font-size: 11.5px; color: var(--muted); }
+  .toggle { position: relative; width: 34px; height: 20px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border-2); flex: none; }
+  .toggle::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--muted); transition: .12s; }
+  .toggle.on { background: var(--accent); border-color: var(--accent); }
+  .toggle.on::after { left: 16px; background: #fff; }
+
+  .idbar { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; margin-bottom: 2px; }
+
+  /* execution pipeline rail — nodes + connectors in the palette, subtle accent pulse */
+  .rail { display: flex; align-items: flex-start; width: 100%; }
+  .rnode { display: flex; flex-direction: column; align-items: center; flex: 1; min-width: 0; }
+  .rlw { display: flex; align-items: center; width: 100%; }
+  .rseg { height: 1px; flex: 1; background: var(--border-2); }
+  .rseg.lit { background: color-mix(in srgb, var(--accent) 55%, transparent); }
+  .rseg.hide { opacity: 0; }
+  .rdot { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--border-2); background: var(--surface); margin: 0 6px; flex: none; }
+  .rdot.done { border-color: var(--accent); background: var(--accent); }
+  .rdot.active { border-color: var(--accent); background: var(--accent); animation: cx-ring 1.8s ease-out infinite; }
+  .rdot.block { border-color: var(--critical); background: var(--critical); }
+  .rlabel { margin-top: 6px; font-size: 11.5px; font-weight: 500; color: var(--fg); }
+  .rlabel.idle { color: var(--muted); }
+  .rmeta { margin-top: 2px; font-family: var(--font-mono); font-size: 10px; color: var(--faint); }
+  @keyframes cx-ring {
+    0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 32%, transparent); }
+    70% { box-shadow: 0 0 0 5px transparent; }
+    100% { box-shadow: 0 0 0 0 transparent; }
+  }
+
+  .stickybar { position: sticky; bottom: 0; margin-top: 4px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 12px; border: 1px solid var(--border); border-radius: var(--r); background: var(--surface); }
+  .stickybar .muted { color: var(--muted); font-size: 12px; }
+  .note { display: flex; gap: 8px; padding: 8px 10px; border-radius: var(--r); background: var(--surface-2); border: 1px solid var(--border); font-size: 11.5px; color: var(--muted); }
+  .note svg { width: 14px; height: 14px; color: var(--muted); flex: none; margin-top: 1px; }
+
+  .menubtn { display: none; }
+  @media (max-width: 900px) {
+    .app { grid-template: "top top" 48px "main main" 1fr / 1fr; }
+    .side { position: fixed; z-index: 40; top: 48px; bottom: 0; left: 0; width: 240px; transform: translateX(-102%); transition: transform .18s ease; }
+    .app.nav-open .side { transform: none; }
+    .brand { width: auto; } .menubtn { display: grid; } .search { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; animation: none !important; } }
+</style>
+
+<div class="app" id="app">
+  <header class="topbar">
+    <button class="iconbtn menubtn" id="menuBtn" aria-label="Open navigation"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18" stroke-linecap="round"/></svg></button>
+    <div class="brand"><span class="brand__mark">C</span><span class="brand__name">CypherX</span></div>
+    <div class="search" role="button" tabindex="0"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4" stroke-linecap="round"/></svg><span>Search agents, tasks, traces…</span><kbd>⌘K</kbd></div>
+    <div class="topbar__spacer"></div>
+    <div class="env"><span class="dot"></span>prod</div>
+    <button class="iconbtn" id="themeBtn" aria-label="Toggle theme" title="Toggle theme"><svg id="themeIcon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8Z"/></svg></button>
+    <div class="avatar" title="orchestrator">OR</div>
+  </header>
+
+  <aside class="side">
+    <div class="navgroup">
+      <div class="navgroup__label">Overview</div>
+      <ul class="nav"><li><a data-view="dashboard" class="active" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="8" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="11" width="7" height="10" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>Overview</a></li></ul>
+    </div>
+    <div class="navgroup">
+      <div class="navgroup__label">Agents</div>
+      <ul class="nav">
+        <li><a data-view="dashboard" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c0-3.3 3.1-5.5 7-5.5s7 2.2 7 5.5"/></svg>Agents<span class="count">12</span></a></li>
+        <li><a data-view="builder" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l7 4v6c0 4-3 6.5-7 8-4-1.5-7-4-7-8V7z"/><path d="M9.5 12l1.8 1.8L15 10" stroke-linecap="round"/></svg>Agent Builder</a></li>
+        <li><a data-view="dashboard" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M8 7l3 9M16 7l-3 9"/></svg>Orchestrator</a></li>
+      </ul>
+    </div>
+    <div class="navgroup">
+      <div class="navgroup__label">Operations</div>
+      <ul class="nav">
+        <li><a data-view="dashboard" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 12h4l2-6 3 12 2-6h3" stroke-linecap="round" stroke-linejoin="round"/></svg>Task Runner</a></li>
+        <li><a data-view="dashboard" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01" stroke-linecap="round"/></svg>Task Feed</a></li>
+        <li><a data-view="dashboard" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>Approvals<span class="count">3</span></a></li>
+      </ul>
+    </div>
+    <div class="navgroup">
+      <div class="navgroup__label">Safety</div>
+      <ul class="nav"><li><a data-view="dashboard" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l7 3v6c0 4-3 7-7 9-4-2-7-5-7-9V6z"/></svg>Guardrails</a></li></ul>
+    </div>
+    <div class="navgroup">
+      <div class="navgroup__label">Knowledge</div>
+      <ul class="nav">
+        <li><a data-view="dashboard" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 4h13a1 1 0 0 1 1 1v14a2 2 0 0 0-2-2H5z"/></svg>Knowledge Bases</a></li>
+        <li><a data-view="dashboard" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3a4 4 0 0 1 4 4 3 3 0 0 1 0 6 4 4 0 0 1-8 0 3 3 0 0 1 0-6 4 4 0 0 1 4-4Z"/></svg>Memory</a></li>
+      </ul>
+    </div>
+    <div class="navgroup">
+      <div class="navgroup__label">Models</div>
+      <ul class="nav">
+        <li><a data-view="dashboard" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6" rx="1"/></svg>LLM Connections</a></li>
+        <li><a data-view="dashboard" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M4 12h16M4 17h10"/></svg>Aliases &amp; Rules</a></li>
+        <li><a data-view="dashboard" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19V5M4 19h16M8 15l3-4 3 2 4-6"/></svg>Usage &amp; Cost</a></li>
+      </ul>
+    </div>
+    <div class="navgroup">
+      <div class="navgroup__label">Platform</div>
+      <ul class="nav">
+        <li><a data-view="dashboard" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4l-6 6 3 3 6-6a4 4 0 0 0 5.4-5.4l-2.3 2.3-2-2z"/></svg>Tools &amp; Skills</a></li>
+        <li><a data-view="dashboard" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="8" cy="8" r="4"/><path d="M11 11l7 7-2 2-2-1-1-2-2-1z"/></svg>API Keys</a></li>
+        <li><a data-view="dashboard" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7l8-4 8 4-8 4z"/><path d="M4 7v6l8 4 8-4V7"/></svg>Tenant &amp; Quotas</a></li>
+        <li><a data-view="dashboard" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 5h6M8 5a2 2 0 0 0-2 2v12l3-2 2 2 2-2 3 2V7a2 2 0 0 0-2-2"/></svg>Audit Log</a></li>
+        <li><a data-view="dashboard" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12h4l2 6 4-14 2 8h6" stroke-linecap="round" stroke-linejoin="round"/></svg>Platform Health</a></li>
+      </ul>
+    </div>
+    <div class="side__foot"><span class="avatar">OR</span><div class="side__ident"><b>orchestrator</b><span>tnt_9f3c · acme-labs</span></div></div>
+  </aside>
+
+  <main class="main">
+    <div class="wrap">
+
+      <!-- ---------- OVERVIEW ---------- -->
+      <section class="view active" id="view-dashboard">
+        <div class="phead">
+          <div>
+            <div class="crumb">acme-labs · prod</div>
+            <h1>Overview</h1>
+          </div>
+          <div class="phead__actions">
+            <button class="btn">Run task</button>
+            <button class="btn btn--primary"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14" stroke-linecap="round"/></svg>New agent</button>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:12px">
+          <div class="card__h">
+            <h2>Live pipeline</h2>
+            <span class="sub" style="display:inline-flex;align-items:center;gap:9px">
+              <span class="agent">support-triage</span>
+              <span class="id" style="font-size:11px">4f9a…c21</span>
+              <span class="pill" style="color:var(--accent);border-color:color-mix(in srgb,var(--accent) 40%,var(--border))"><span class="dot" style="background:var(--accent)"></span>Running</span>
+            </span>
+          </div>
+          <div class="card__b">
+            <div class="rail">
+              <div class="rnode"><div class="rlw"><span class="rseg hide"></span><span class="rdot done"></span><span class="rseg lit"></span></div><span class="rlabel">Guard in</span><span class="rmeta">4ms · allow</span></div>
+              <div class="rnode"><div class="rlw"><span class="rseg lit"></span><span class="rdot done"></span><span class="rseg lit"></span></div><span class="rlabel">Prompt</span><span class="rmeta">1ms</span></div>
+              <div class="rnode"><div class="rlw"><span class="rseg lit"></span><span class="rdot active"></span><span class="rseg"></span></div><span class="rlabel">LLM</span><span class="rmeta">smart · 812 tok</span></div>
+              <div class="rnode"><div class="rlw"><span class="rseg"></span><span class="rdot"></span><span class="rseg"></span></div><span class="rlabel idle">Guard out</span></div>
+              <div class="rnode"><div class="rlw"><span class="rseg"></span><span class="rdot"></span><span class="rseg"></span></div><span class="rlabel idle">Tools</span></div>
+              <div class="rnode"><div class="rlw"><span class="rseg"></span><span class="rdot"></span><span class="rseg hide"></span></div><span class="rlabel idle">Memory</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="metrics">
+          <div class="metric"><div class="metric__top"><span class="label">Active agents</span></div><div class="metric__val tnum">12</div><div class="metric__spark"><i style="height:40%"></i><i style="height:55%"></i><i style="height:50%"></i><i style="height:70%"></i><i style="height:65%"></i><i style="height:85%"></i><i style="height:100%"></i></div></div>
+          <div class="metric"><div class="metric__top"><span class="label">Tasks · 24h</span><span class="delta up">+8.2%</span></div><div class="metric__val tnum">1,204</div><div class="metric__spark"><i style="height:50%"></i><i style="height:45%"></i><i style="height:60%"></i><i style="height:55%"></i><i style="height:75%"></i><i style="height:70%"></i><i style="height:90%"></i></div></div>
+          <div class="metric"><div class="metric__top"><span class="label">Blocked · 24h</span><span class="delta dn">+3</span></div><div class="metric__val tnum">18</div><div class="metric__spark"><i style="height:30%"></i><i style="height:20%"></i><i style="height:45%"></i><i style="height:35%"></i><i style="height:55%"></i><i style="height:40%"></i><i style="height:60%"></i></div></div>
+          <div class="metric"><div class="metric__top"><span class="label">Spend · 24h</span><span class="delta dn">−5.1%</span></div><div class="metric__val tnum">$4.20</div><div class="metric__spark"><i style="height:70%"></i><i style="height:85%"></i><i style="height:60%"></i><i style="height:75%"></i><i style="height:55%"></i><i style="height:50%"></i><i style="height:45%"></i></div></div>
+        </div>
+
+        <div class="grid g-2" style="margin-bottom:12px">
+          <div class="card">
+            <div class="card__h"><h2>Recent tasks</h2><a class="meta" href="#">View all</a></div>
+            <div class="tablewrap">
+              <table class="t">
+                <thead><tr><th>Trace</th><th>Agent</th><th>Stage</th><th>Status</th><th style="text-align:right">Tokens</th><th style="text-align:right">Cost</th><th style="text-align:right">Age</th></tr></thead>
+                <tbody>
+                  <tr><td class="id">4f9a…c21</td><td class="agent">support-triage</td><td class="stagechip">llm</td><td><span class="status s-run"><span class="dot"></span>Running</span></td><td class="num">812</td><td class="num">$0.004</td><td class="num" style="color:var(--muted)">3s</td></tr>
+                  <tr><td class="id">a01b…7de</td><td class="agent">invoice-extractor</td><td class="stagechip">memory</td><td><span class="status s-ok"><span class="dot"></span>Done</span></td><td class="num">2,140</td><td class="num">$0.011</td><td class="num" style="color:var(--muted)">1m</td></tr>
+                  <tr><td class="id">77c3…0a4</td><td class="agent">docs-copilot</td><td class="stagechip">guard-in</td><td><span class="status s-crit"><span class="dot"></span>Blocked</span></td><td class="num">0</td><td class="num">$0.000</td><td class="num" style="color:var(--muted)">2m</td></tr>
+                  <tr><td class="id">b920…9f1</td><td class="agent">deploy-sentinel</td><td class="stagechip">tools</td><td><span class="status s-ok"><span class="dot"></span>Done</span></td><td class="num">1,006</td><td class="num">$0.006</td><td class="num" style="color:var(--muted)">4m</td></tr>
+                  <tr><td class="id">e5d1…22c</td><td class="agent">support-triage</td><td class="stagechip">guard-out</td><td><span class="status s-warn"><span class="dot"></span>Redacted</span></td><td class="num">640</td><td class="num">$0.003</td><td class="num" style="color:var(--muted)">6m</td></tr>
+                  <tr><td class="id">c7f0…4b8</td><td class="agent">invoice-extractor</td><td class="stagechip">llm</td><td><span class="status s-ok"><span class="dot"></span>Done</span></td><td class="num">1,530</td><td class="num">$0.008</td><td class="num" style="color:var(--muted)">7m</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card__h"><h2>Guardrail decisions</h2><span class="sub">24h · 1,204</span></div>
+            <div class="card__b decisions">
+              <div class="decbar"><span style="width:93%;background:var(--success)"></span><span style="width:3.6%;background:var(--warning)"></span><span style="width:1.8%;background:var(--info)"></span><span style="width:1.6%;background:var(--critical)"></span></div>
+              <div>
+                <div class="decrow"><span class="dot" style="background:var(--success)"></span><span>Allowed</span><b>1,120</b><span class="pct">93.0%</span></div>
+                <div class="decrow"><span class="dot" style="background:var(--warning)"></span><span>Warned</span><b>44</b><span class="pct">3.7%</span></div>
+                <div class="decrow"><span class="dot" style="background:var(--info)"></span><span>Redacted</span><b>22</b><span class="pct">1.8%</span></div>
+                <div class="decrow"><span class="dot" style="background:var(--critical)"></span><span>Blocked</span><b>18</b><span class="pct">1.5%</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card__h"><h2>Platform health</h2><a class="meta" href="#">Details</a></div>
+          <div class="card__b" style="padding:0">
+            <div class="health" style="border:none;border-radius:0">
+              <div class="svc"><span class="dot" style="background:var(--success)"></span><span class="name">auth</span><small>ready</small></div>
+              <div class="svc"><span class="dot" style="background:var(--success)"></span><span class="name">llms</span><small>ready</small></div>
+              <div class="svc"><span class="dot" style="background:var(--success)"></span><span class="name">guardrails</span><small>ready</small></div>
+              <div class="svc"><span class="dot" style="background:var(--success)"></span><span class="name">rag</span><small>ready</small></div>
+              <div class="svc"><span class="dot" style="background:var(--warning)"></span><span class="name">memory</span><small>degraded</small></div>
+              <div class="svc"><span class="dot" style="background:var(--success)"></span><span class="name">xagent</span><small>ready</small></div>
+              <div class="svc"><span class="dot" style="background:var(--success)"></span><span class="name">tools</span><small>ready</small></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ---------- AGENT BUILDER ---------- -->
+      <section class="view" id="view-builder">
+        <div class="phead">
+          <div>
+            <div class="idbar">
+              <span class="crumb">Agents /</span>
+              <span class="pill pill--ok"><span class="dot"></span>Active</span>
+              <span class="id mono" style="font-size:11.5px">agt_7c42e9 · v4</span>
+            </div>
+            <h1>support-triage</h1>
+            <p>Configure everything this agent can do — no database, no redeploy.</p>
+          </div>
+          <div class="phead__actions">
+            <button class="btn">Duplicate</button>
+            <button class="btn">Save draft</button>
+            <button class="btn btn--primary">Publish</button>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:12px">
+          <div class="card__h"><h2>Execution pipeline</h2><span class="sub">runs in this order on every task</span></div>
+          <div class="card__b">
+            <div class="rail">
+              <div class="rnode"><div class="rlw"><span class="rseg hide"></span><span class="rdot done"></span><span class="rseg lit"></span></div><span class="rlabel">Guard in</span><span class="rmeta">strict-pii</span></div>
+              <div class="rnode"><div class="rlw"><span class="rseg lit"></span><span class="rdot done"></span><span class="rseg lit"></span></div><span class="rlabel">Prompt</span><span class="rmeta">system</span></div>
+              <div class="rnode"><div class="rlw"><span class="rseg lit"></span><span class="rdot done"></span><span class="rseg lit"></span></div><span class="rlabel">LLM</span><span class="rmeta">smart</span></div>
+              <div class="rnode"><div class="rlw"><span class="rseg lit"></span><span class="rdot done"></span><span class="rseg lit"></span></div><span class="rlabel">Guard out</span><span class="rmeta">strict-pii</span></div>
+              <div class="rnode"><div class="rlw"><span class="rseg lit"></span><span class="rdot done"></span><span class="rseg lit"></span></div><span class="rlabel">Tools</span><span class="rmeta">2 enabled</span></div>
+              <div class="rnode"><div class="rlw"><span class="rseg lit"></span><span class="rdot done"></span><span class="rseg hide"></span></div><span class="rlabel">Memory</span><span class="rmeta">agent</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid g-2" style="margin-bottom:12px">
+          <div class="card">
+            <div class="card__h"><h2>Model &amp; prompt</h2></div>
+            <div class="card__b" style="display:flex;flex-direction:column;gap:12px">
+              <div class="fieldrow">
+                <div class="field"><label>Model</label><select class="control"><option>smart — best available</option><option>claude-opus-4-8</option><option>claude-sonnet-5</option><option>gpt-4o</option></select><span class="hint">Aliases resolve per task type.</span></div>
+                <div class="field"><label>Token budget / task</label><input class="control mono" value="8000" /><span class="hint">Task fails closed if exceeded.</span></div>
+              </div>
+              <div class="field"><label>System prompt</label><textarea class="control">You are support-triage for acme-labs. Classify the ticket, pull the most relevant KB passages, and draft a reply. Never invent order numbers — cite the source.</textarea></div>
+              <div class="fieldrow">
+                <div class="field"><label>Temperature</label><div class="slider"><input type="range" min="0" max="100" value="20" /><b class="mono">0.20</b></div></div>
+                <div class="field"><label>Max output tokens</label><input class="control mono" value="1024" /></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card__h"><h2>Safety &amp; memory</h2></div>
+            <div class="card__b" style="display:flex;flex-direction:column;gap:12px">
+              <div class="field"><label>Guardrail policy</label><select class="control"><option>strict-pii (v7)</option><option>default-platform</option><option>relaxed-internal</option></select><span class="hint">Runs before the model and before the reply is returned.</span></div>
+              <div class="field"><label>Memory scope</label><div class="segmented"><button>None</button><button class="on">Agent</button><button>User</button><button>Session</button><button>Tenant</button></div><span class="hint">Agent scope recalls its own past tasks only.</span></div>
+              <div>
+                <div class="switchrow"><div class="t"><b>Tool loop</b><p>Call tools and read results before answering.</p></div><div class="toggle on" role="switch" aria-checked="true"></div></div>
+                <div class="switchrow"><div class="t"><b>Stream responses</b><p>Emit tokens over SSE as produced.</p></div><div class="toggle on" role="switch" aria-checked="true"></div></div>
+                <div class="switchrow"><div class="t"><b>Approval on high-risk tools</b><p>Pause for an approver before a flagged tool runs.</p></div><div class="toggle" role="switch" aria-checked="false"></div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:12px">
+          <div class="card__h"><h2>Capabilities</h2><span class="sub">what this agent may reach</span></div>
+          <div class="card__b" style="display:flex;flex-direction:column;gap:14px">
+            <div class="field"><label>Tools</label><div class="tokens"><span class="tok">web-search <x>×</x></span><span class="tok">http-client <x>×</x></span><span class="tok tok--add">+ Add</span></div></div>
+            <div class="field"><label>Knowledge bases</label><div class="tokens"><span class="tok">kb·support-docs <x>×</x></span><span class="tok">kb·order-policy <x>×</x></span><span class="tok tok--add">+ Attach</span></div><span class="hint">Top-3 per KB · min score 0.55 · <a href="#">tune</a></span></div>
+            <div class="field"><label>Allowed scopes</label><div class="tokens"><span class="tok">tasks:run <x>×</x></span><span class="tok">rag:query <x>×</x></span><span class="tok">memory:read <x>×</x></span><span class="tok">memory:write <x>×</x></span><span class="tok tok--add">+ Add</span></div></div>
+          </div>
+        </div>
+
+        <div class="stickybar"><span class="muted">Unsaved changes · last published 2h ago</span><div style="display:flex;gap:7px"><button class="btn btn--sm">Discard</button><button class="btn btn--sm">Save draft</button><button class="btn btn--primary btn--sm">Publish</button></div></div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<script>
+  (function () {
+    var root = document.documentElement;
+    var app = document.getElementById('app');
+    var sun = "M12 2v2M12 20v2M4 12H2M22 12h-2M5.6 5.6 4.2 4.2M19.8 19.8l-1.4-1.4M18.4 5.6l1.4-1.4M4.2 19.8l1.4-1.4";
+    var moon = "M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8Z";
+    function isDark() { var t = root.getAttribute('data-theme'); return t ? t === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches; }
+    function paintIcon() { var i = document.getElementById('themeIcon'); i.innerHTML = isDark() ? '<circle cx="12" cy="12" r="4"/><path d="' + sun + '" stroke-linecap="round"/>' : '<path d="' + moon + '"/>'; }
+    paintIcon();
+    document.getElementById('themeBtn').addEventListener('click', function () { root.setAttribute('data-theme', isDark() ? 'light' : 'dark'); paintIcon(); });
+    var links = document.querySelectorAll('.nav a[data-view]');
+    function show(view) {
+      document.querySelectorAll('.view').forEach(function (v) { v.classList.remove('active'); });
+      var el = document.getElementById('view-' + view); if (el) el.classList.add('active');
+      links.forEach(function (a) { a.classList.remove('active'); });
+      var target = view === 'builder' ? document.querySelector('.nav a[data-view="builder"]') : document.querySelector('.nav a[data-view="dashboard"]');
+      if (target) target.classList.add('active');
+      app.classList.remove('nav-open'); document.querySelector('.main').scrollTop = 0;
+    }
+    links.forEach(function (a) { a.addEventListener('click', function (e) { e.preventDefault(); show(a.getAttribute('data-view')); }); });
+    document.getElementById('menuBtn').addEventListener('click', function () { app.classList.toggle('nav-open'); });
+  })();
+</script>

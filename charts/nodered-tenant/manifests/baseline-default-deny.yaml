@@ -1,0 +1,12 @@
+# Namespace-wide default-deny (ingress + egress) for cypherx-tools. Belt-and-braces: any pod
+# without a more-specific allow policy is fully isolated. The provisioner adds a per-instance
+# policy that re-allows exactly: ingress from the bridge, egress to DNS + the CIDR allow-list.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: cypherx-tools
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+  # No ingress/egress rules => deny all (except what per-pod policies additively allow).

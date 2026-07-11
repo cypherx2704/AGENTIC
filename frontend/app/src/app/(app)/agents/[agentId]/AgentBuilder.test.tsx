@@ -52,19 +52,19 @@ describe('AgentBuilder', () => {
 
   it('exposes the full memory_scope enum including "session"', () => {
     renderBuilder(makeRuntime('active'));
-    const select = screen.getByLabelText('Memory scope') as HTMLSelectElement;
+    const select = screen.getByLabelText('Memory Scope') as HTMLSelectElement;
     const options = Array.from(select.options).map((o) => o.value);
     expect(options).toEqual(['none', 'agent', 'user', 'tenant', 'session']);
   });
 
-  it('defaults the tool execution mode to "multiple request" and saves tool_loop_enabled=true', async () => {
+  it('defaults the tool loop ON and saves tool_loop_enabled=true', async () => {
     const user = userEvent.setup();
     putRuntimeMock.mockResolvedValue(makeRuntime('pending_config'));
-    // Runtime with no tool_loop_enabled (pre-0007) must default to the multi-call mode.
+    // Runtime with no tool_loop_enabled (pre-0007) must default to the multi-call loop.
     renderBuilder(makeRuntime('pending_config'));
 
-    const select = screen.getByLabelText('Tool execution mode') as HTMLSelectElement;
-    expect(select.value).toBe('multiple');
+    const toggle = screen.getByRole('switch');
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
 
     await user.click(screen.getByRole('button', { name: /save config/i }));
 
@@ -73,12 +73,12 @@ describe('AgentBuilder', () => {
     expect(body.tool_loop_enabled).toBe(true);
   });
 
-  it('switching to "per request" saves tool_loop_enabled=false', async () => {
+  it('toggling the tool loop off saves tool_loop_enabled=false', async () => {
     const user = userEvent.setup();
     putRuntimeMock.mockResolvedValue(makeRuntime('pending_config'));
     renderBuilder(makeRuntime('pending_config'));
 
-    await user.selectOptions(screen.getByLabelText('Tool execution mode'), 'single');
+    await user.click(screen.getByRole('switch'));
     await user.click(screen.getByRole('button', { name: /save config/i }));
 
     await waitFor(() => expect(putRuntimeMock).toHaveBeenCalledTimes(1));
@@ -86,10 +86,10 @@ describe('AgentBuilder', () => {
     expect(body.tool_loop_enabled).toBe(false);
   });
 
-  it('reflects an existing tool_loop_enabled=false runtime in the select', () => {
+  it('reflects an existing tool_loop_enabled=false runtime in the switch', () => {
     renderBuilder({ ...makeRuntime('active'), tool_loop_enabled: false });
-    const select = screen.getByLabelText('Tool execution mode') as HTMLSelectElement;
-    expect(select.value).toBe('single');
+    const toggle = screen.getByRole('switch');
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
   });
 
   it('saving config calls putRuntime once with the form values', async () => {

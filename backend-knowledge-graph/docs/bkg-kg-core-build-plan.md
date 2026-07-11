@@ -6,6 +6,35 @@
 
 ---
 
+## AMENDMENTS (2026-07-11) — Python engine · FastAPI-first · DB behind a port
+
+Three decisions supersede the TypeScript/Express specifics in the body below. Where the body says TS/Express/ts-morph, read the mappings here. Everything about the *architecture* (determinism-oracle-first, the memoized incremental engine, early cutoff, projection/firewall queries, stable identity, content-addressed hashing, query-time cross-file stitching, the four oracle invariants) is unchanged and language-agnostic.
+
+**A1 — The engine is written in Python** (not TypeScript). Rationale: the first (and near-term only) target is the founder's Python FastAPI projects, and deep FastAPI/Pydantic analysis runs *in-process* in Python (LibCST / Jedi / mypy + Pydantic's own `model_json_schema()`), which is exactly the depth that is the moat. Stack mapping:
+
+| Design doc (TS) | bkg (Python) |
+| --- | --- |
+| pnpm monorepo `@bkg/*` | one `bkg` package, src-layout, clear module boundaries (split to a uv workspace when the OSS/license boundary matters) |
+| zod frozen protocol | **pydantic v2** frozen models (`src/bkg/protocol/`) |
+| BLAKE3 (js) | **`blake3`** (PyPI) — `src/bkg/protocol/canonical.py` |
+| better-sqlite3 | **stdlib `sqlite3`** (WAL), behind the port |
+| fast-check (property tests) | **hypothesis** + deterministic `random.Random(seed)` |
+| web-tree-sitter (structure) | **py-tree-sitter** (P3) |
+| ts-morph (depth) | **LibCST / Jedi / Pydantic introspection** (P4) |
+| `@modelcontextprotocol/sdk` | **Python MCP SDK** (P3+) |
+
+**A2 — First adapter is FastAPI, not Express.** The `RouterMount` IR was already frozen to cover `include_router` (§6), so the protocol is unchanged. Roadmap deltas: **P3** builds the real **FastAPI** adapter (`@app.get`/`APIRouter`/`include_router(prefix=)`/path+query params/`Depends` → `GUARDED_BY`); **P4 depth** resolves **Pydantic models** (fields, types, `response_model=`, nested models) instead of ts-morph types; **P5's** second-framework stub becomes another Python framework (Flask/Django REST) or a TS framework via a Node sidecar. Express/Nest and other TS frameworks move to post-core breadth (via the same `Adapter` contract + a Node sidecar for TS depth — the mirror of the doc's original Python-sidecar plan).
+
+**A3 — The database is hidden behind the `GraphStore` port** (strengthened from §8's swap seam). The engine, pipeline, and adapters depend only on the `GraphStore` ABC + the `open_store()` factory; exactly **one** module (`src/bkg/store/sqlite_store.py`) imports `sqlite3`. Swapping to another store later = one new subclass, zero changes elsewhere.
+
+**Location:** the project lives at `AGENTIC/backend-knowledge-graph/` (this folder), fully isolated from `CoreProjects/cypherx-a1/`.
+
+### ✅ P0 status — DONE and verified (2026-07-11)
+
+P0 is implemented and green: frozen protocol (`bkg.protocol`), canonical serializer + BLAKE3 (`bkg.protocol.canonical`), the `GraphStore` port + `SqliteGraphStore` (`bkg.store`), the materialize/snapshot bridge (`bkg.snapshot`), and the **determinism harness** (`tests/`). Verified: **8/8 pytest green** (byte-identical snapshot across 100 repeats, 25 shuffled insertion orders, and teardown/reload; OS-independent by construction; single-fact change isolates to a single fingerprint) + **ruff clean** + **mypy clean**. Next: **P1** — the demand-driven memoized incremental engine + the 4-invariant oracle on a synthetic graph, before any FastAPI parsing.
+
+---
+
 ## 0. Context — the one idea that shapes everything
 
 The whole product depends on the knowledge graph, so we build the graph first. But the research is unambiguous about *what makes it defensible*: **"a code graph over MCP" is already commoditized free OSS (≥6 clones).** The moat is exactly three things, and only these:
