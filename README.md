@@ -191,6 +191,14 @@ Added end-to-end observability using distributed tracing and centralized monitor
 Designed every service to operate independently or as part of the larger ecosystem.
 Built a scalable cloud-native foundation capable of supporting future AI workloads.
 
+Documentation
+https://drive.google.com/file/d/1RDXQZhR2plwuvasJ5jE790yvtA-YbBMH/view?usp=sharing
+
+Video Link
+https://youtu.be/u-w19OywweE
+
+Pictures
+https://drive.google.com/drive/u/0/folders/13k9m1oWxZ-riKIkd9g7S2TuOCcVpSwH1
 
 What We Learned
 
