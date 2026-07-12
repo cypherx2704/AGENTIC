@@ -40,9 +40,15 @@ async def in_tenant[T](
     tenant_id: str,
     fn: Callable[[AsyncConnection], Awaitable[T]],
 ) -> T:
-    """Run ``fn(conn)`` inside one transaction with ``app.tenant_id`` set for RLS."""
+    """Run ``fn(conn)`` inside one transaction with ``app.tenant_id`` set for RLS.
+
+    ``tenant_id`` is coerced to ``str``: callers may pass a ``uuid.UUID`` read straight off a
+    DB row (e.g. ``mcp_row["tenant_id"]``), and psycopg would bind that as Postgres ``uuid`` —
+    ``set_config(text, uuid, bool)`` has no overload, so the call would fail. ``str()`` keeps the
+    second argument ``text`` regardless of the caller's type.
+    """
     async with pool.connection() as conn, conn.transaction():
-        await conn.execute("SELECT set_config('app.tenant_id', %s, true)", (tenant_id,))
+        await conn.execute("SELECT set_config('app.tenant_id', %s, true)", (str(tenant_id),))
         return await fn(conn)
 
 
