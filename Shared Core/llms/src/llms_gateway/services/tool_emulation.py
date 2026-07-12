@@ -248,6 +248,22 @@ def extract_tool_call(text: str | None) -> tuple[dict[str, Any] | None, str]:
     return None, text.strip()
 
 
+# Shown to the user only when a model's final answer was itself a broken/rejected tool-call
+# protocol attempt (so the raw ``{"tool_call": ...}`` never surfaces as the answer).
+_EMULATION_FALLBACK = "I couldn't complete that with the available tools — please rephrase or try again."
+
+
+def _strip_tool_call_protocol(text: str) -> str:
+    """Drop a leaked ``{...\"tool_call\"...}`` protocol block, keeping any prose before it.
+
+    A flaky (usually small ~8B) model sometimes echoes the tool-call protocol as its FINAL answer,
+    or malforms/truncates the JSON so it can't be parsed into a real tool call. Either way the raw
+    protocol must never reach the user as the answer — keep the leading prose, drop the JSON block.
+    """
+    brace = text.find("{")
+    return text[:brace].strip() if brace != -1 else text.strip()
+
+
 def parse_emulated_response(
     response: ChatCompletionResponse, allowed_names: list[str]
 ) -> ChatCompletionResponse:
@@ -255,22 +271,32 @@ def parse_emulated_response(
 
     A tool call is accepted only when its name is in ``allowed_names`` (the offered tools),
     so a hallucinated tool name falls through as a normal text answer instead of driving a
-    wasted loop iteration.
+    wasted loop iteration. If the text was a tool-call protocol ATTEMPT that we could NOT accept
+    (malformed/truncated JSON, or a disallowed tool name), the raw protocol is stripped so it can
+    never leak to the user as the final answer.
     """
     if not response.choices:
         return response
     choice = response.choices[0]
-    tc, preface = extract_tool_call(choice.message.content)
-    if tc is None or (allowed_names and tc["name"] not in allowed_names):
+    content = choice.message.content
+    tc, preface = extract_tool_call(content)
+    if tc is not None and (not allowed_names or tc["name"] in allowed_names):
+        call = ToolCall(
+            id=f"call_{uuid.uuid4().hex[:24]}",
+            function=FunctionCall(name=tc["name"], arguments=json.dumps(tc["arguments"], ensure_ascii=False)),
+        )
+        choice.message.tool_calls = [call]
+        choice.message.content = preface or None
+        choice.finish_reason = "tool_calls"
+        logger.info("tool_emulation_parsed_call", tool=tc["name"])
         return response
-    call = ToolCall(
-        id=f"call_{uuid.uuid4().hex[:24]}",
-        function=FunctionCall(name=tc["name"], arguments=json.dumps(tc["arguments"], ensure_ascii=False)),
-    )
-    choice.message.tool_calls = [call]
-    choice.message.content = preface or None
-    choice.finish_reason = "tool_calls"
-    logger.info("tool_emulation_parsed_call", tool=tc["name"])
+    # Not a usable tool call. If the model was ATTEMPTING the protocol (the marker survives in the
+    # text), strip the protocol JSON so a malformed/truncated call or a disallowed tool name can't
+    # surface verbatim as the answer (finding: an 8B emulated model leaked `{"tool_call": ...}`).
+    if content and '"tool_call"' in content:
+        cleaned = (preface if tc is not None else _strip_tool_call_protocol(content)).strip()
+        choice.message.content = cleaned or _EMULATION_FALLBACK
+        logger.warning("tool_emulation_protocol_leak_suppressed", preview=content[:120])
     return response
 
 
