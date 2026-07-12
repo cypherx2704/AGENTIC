@@ -6,7 +6,8 @@ Idempotent, ordered SQL migrations for the `tools` schema. Apply with any runner
 | File | Purpose |
 |------|---------|
 | `20260611_0001__init.sql` | `tools`, `tool_versions`, `tool_capabilities`, `tool_health`; indexes; **corrected split RLS + WITH CHECK** (the marketplace-hole fix) on every table incl. `tool_capabilities`; `tool_user` grants. |
-| `20260611_0002__seed.sql` | Platform `tool-web-search` tool + version (Contract-4 manifest) + capability/scope row + health row. |
+| `20260611_0002__seed.sql` | (Historical) platform `tool-web-search` tool + version (Contract-4 manifest) + capability/scope row + health row. **Decommissioned by `20260712_0008`** — retained for append-only history. |
+| `20260712_0008__decommission_tool_web_search.sql` | Removes the retired `tool-web-search` platform seed (rows + CASCADE + dangling `agent_tool_access`). Its capability is replaced by the public `web_search` flow-tool (server `mcp-web-search`), bootstrapped by `tool-flow-bridge`. Apply only AFTER the replacement is deployed and verified (see the cutover note in `Tools/tool-flow-bridge/docs/web-search-public-tool.md`). |
 
 Apply locally (superuser), e.g.:
 
