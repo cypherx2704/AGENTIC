@@ -52,6 +52,7 @@ def _manifest(server_name: str, tool_names: list[str]) -> dict[str, Any]:
             }
             for tn in tool_names
         ],
+        "mcp": {"transport": "streamable-http", "endpoint": "/mcp"},
     }
 
 
@@ -70,10 +71,10 @@ class _FakeMcp:
     results: dict[str, Any]
     calls: list[dict[str, Any]] = field(default_factory=list)
 
-    async def invoke(self, invoke_url: str, tool: str, args: dict[str, Any], *, task_id: str,
-                     tool_call_id: str, agent_jwt: str, on_behalf_of: str | None = None) -> McpResult:
-        # `tool` here is EXACTLY what xAgent sends as the invoke `tool` field — the assertion target.
-        self.calls.append({"invoke_url": invoke_url, "tool": tool, "args": args})
+    async def invoke_mcp(self, mcp_url: str, tool: str, args: dict[str, Any], *, task_id: str,
+                         tool_call_id: str, agent_jwt: str, on_behalf_of: str | None = None) -> McpResult:
+        # `tool` here is EXACTLY what xAgent sends as the tools/call `name` — the assertion target.
+        self.calls.append({"mcp_url": mcp_url, "tool": tool, "args": args})
         return self.results.get(tool) or McpResult(tool=tool, result={"ok": True})
 
 
@@ -168,24 +169,21 @@ async def test_multi_tool_server_offers_all_tools() -> None:
     assert offered_names == ["fetch_url", "web_search"]
 
 
-# ── legacy manifest (no tools[]) falls back to one tool named after the server ──────────
-async def test_legacy_manifest_without_tools_falls_back_to_server_name() -> None:
-    legacy = ToolResolution(
+# ── a manifest with no `mcp` transport is DROPPED (MCP is the only wire; no fallback) ────
+async def test_manifest_without_mcp_descriptor_is_dropped() -> None:
+    no_mcp = ToolResolution(
         name="legacy-tool", version="1.0.0",
-        manifest={"description": "flat legacy manifest", "input_schema": {"type": "object"}},
+        manifest={"description": "no mcp descriptor",
+                  "tools": [{"name": "legacy-tool", "input_schema": {"type": "object"}}]},
         invoke_url="http://tool",
     )
-    registry = _FakeRegistry(resolutions={"legacy-tool": legacy})
-    mcp = _FakeMcp(results={"legacy-tool": McpResult(tool="legacy-tool", result="r")})
-    llms = _FakeLlms(completions=[
-        _completion(tool_calls=[ToolCall(id="c1", name="legacy-tool", arguments={})]),
-        _completion(content="done"),
-    ])
+    registry = _FakeRegistry(resolutions={"legacy-tool": no_mcp})
+    mcp = _FakeMcp(results={})
+    llms = _FakeLlms(completions=[])  # never called: nothing resolves -> loop no-ops
     deps.set_enhancement_clients(registry_client=registry, mcp_client=mcp)
     deps.set_clients(guardrails_client=None, llms_client=llms)
 
     await ToolLoopStage().run(_ctx(_agent(["legacy-tool"])))
 
-    # No tools[] -> single tool named after the server (prior behaviour preserved).
-    assert [t["function"]["name"] for t in llms.offered[0]] == ["legacy-tool"]
-    assert mcp.calls[0]["tool"] == "legacy-tool"
+    assert mcp.calls == []      # not invoked (no MCP endpoint advertised)
+    assert llms.offered == []   # not offered — the loop returned early with nothing resolved

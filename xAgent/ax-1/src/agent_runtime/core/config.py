@@ -200,7 +200,11 @@ class Settings(BaseSettings):
     stage_enable_skill_load: bool = False  # 📋 Phase 8
     stage_enable_prompt_build: bool = True
     stage_enable_llm: bool = True
-    stage_enable_tool_loop: bool = False  # 📋 Phase 7
+    # Phase 7 — ENABLED by default: the stage self-skips (no client call, no audit row) for any
+    # agent with empty allowed_tools or tool_loop_enabled=false, so a toolless task is unchanged
+    # (still exactly 3 audit rows). Only tool-configured agents run the LLM<->MCP loop. Set
+    # STAGE_ENABLE_TOOL_LOOP=false to force it off for an environment.
+    stage_enable_tool_loop: bool = True
     stage_enable_post_guardrail: bool = True
     stage_enable_memory_write: bool = False  # 📋 Phase 6
 
@@ -252,9 +256,9 @@ class Settings(BaseSettings):
     skill_registry_timeout_seconds: float = 10.0
 
     # MCP tool invocation (invoke_url resolved from the registry, e.g. tool-web-search):
-    # GET {invoke_url}/manifest, POST {invoke_url}/mcp/v1/invoke. The client guards each
-    # (endpoint, agent) pair with a circuit breaker, retries on connection-error/5xx but
-    # NEVER on a 4xx, and stamps an Idempotency-Key derived from (task_id, tool_call_id).
+    # GET {invoke_url}/manifest, then real MCP at {invoke_url}/mcp (initialize -> tools/call).
+    # The client guards each (endpoint, agent) pair with a circuit breaker, retries on
+    # connection-error/5xx but NEVER on a 4xx, and stamps an Idempotency-Key from (task_id, tool_call_id).
     mcp_timeout_seconds: float = 30.0
     # Retries on a connection error / 5xx (a 4xx is terminal and never retried). The
     # initial attempt plus this many retries = total attempts.

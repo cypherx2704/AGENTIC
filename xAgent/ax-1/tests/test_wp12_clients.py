@@ -20,6 +20,7 @@ RegistryClient:
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import httpx
@@ -93,7 +94,7 @@ def _install_clock(monkeypatch: Any, module: Any) -> _Clock:
 
 # ════════════════════════════ McpClient circuit breaker ════════════════════════════
 INVOKE_URL = "http://tool-x"
-_INVOKE_ENDPOINT = f"{INVOKE_URL}/mcp/v1/invoke"
+_INVOKE_ENDPOINT = f"{INVOKE_URL}/mcp"  # real-MCP endpoint (initialize -> tools/call)
 
 
 def _mcp(settings: Settings) -> tuple[McpClient, httpx.AsyncClient]:
@@ -102,10 +103,32 @@ def _mcp(settings: Settings) -> tuple[McpClient, httpx.AsyncClient]:
 
 
 async def _invoke(client: McpClient, *, tool_call_id: str = "tc-1") -> Any:
-    return await client.invoke(
-        INVOKE_URL, "search", {"q": "x"}, task_id="task-1", tool_call_id=tool_call_id,
+    return await client.invoke_mcp(
+        _INVOKE_ENDPOINT, "search", {"q": "x"}, task_id="task-1", tool_call_id=tool_call_id,
         agent_jwt=AGENT_JWT, on_behalf_of=ON_BEHALF,
     )
+
+
+def _init_ok() -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": "mcp-init",
+            "result": {"protocolVersion": "2025-06-18", "capabilities": {},
+                       "serverInfo": {"name": "t", "version": "1"}}}
+
+
+def _call_ok(value: Any) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": 1,
+            "result": {"structuredContent": value, "content": [{"type": "text", "text": "x"}],
+                       "isError": False}}
+
+
+def _ok_handler(value: Any) -> Any:
+    """respx side_effect: answer initialize + tools/call for a successful invoke_mcp call."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        method = json.loads(request.content)["method"]
+        return httpx.Response(200, json=_init_ok() if method == "initialize" else _call_ok(value))
+
+    return handler
 
 
 @respx.mock
@@ -157,7 +180,7 @@ async def test_mcp_breaker_half_open_success_closes(monkeypatch: Any) -> None:
 
         # Advance past cooldown -> HALF-OPEN: one trial call is allowed and SUCCEEDS -> CLOSE.
         clock.advance(11.0)
-        route.mock(return_value=httpx.Response(200, json={"tool": "search", "result": {"ok": 1}}))
+        route.mock(side_effect=_ok_handler({"ok": 1}))
         result = await _invoke(client, tool_call_id="trial")
         assert result.result == {"ok": 1}
 
@@ -213,7 +236,7 @@ async def test_mcp_4xx_is_terminal_never_retried_never_trips_breaker(monkeypatch
         assert route.call_count == 1  # NOT retried despite retries=3
 
         # The 4xx did NOT trip the breaker (threshold=1) — a subsequent call still flows.
-        route.mock(return_value=httpx.Response(200, json={"tool": "search", "result": "ok"}))
+        route.mock(side_effect=_ok_handler("ok"))
         result = await _invoke(client, tool_call_id="good")
         assert result.result == "ok"
     finally:
@@ -228,14 +251,17 @@ async def test_mcp_5xx_retried_up_to_attempts(monkeypatch: Any) -> None:
     # retries=2 -> 3 total attempts; high threshold so the breaker does not interfere.
     settings = _settings(mcp_retry_attempts=2, mcp_circuit_breaker_threshold=10)
     client, http = _mcp(settings)
-    # First two attempts 5xx, third succeeds.
-    responses = [httpx.Response(500), httpx.Response(500), httpx.Response(200, json={"result": "ok"})]
+    # Each attempt is an initialize POST; the successful 3rd attempt also does a tools/call POST.
+    responses = [
+        httpx.Response(500), httpx.Response(500),
+        httpx.Response(200, json=_init_ok()), httpx.Response(200, json=_call_ok("ok")),
+    ]
     route = respx.post(_INVOKE_ENDPOINT).mock(side_effect=responses)
     try:
         result = await _invoke(client, tool_call_id="retry")
         assert result.result == "ok"
-        assert route.call_count == 3  # initial + 2 retries
-        # Idempotency-Key is the SAME (task:tool_call_id) on every retry.
+        assert route.call_count == 4  # 2 failed inits + successful init + tools/call
+        # Idempotency-Key is the SAME (task:tool_call_id) on every attempt (init + call).
         keys = {call.request.headers.get("Idempotency-Key") for call in route.calls}
         assert keys == {"task-1:retry"}
     finally:

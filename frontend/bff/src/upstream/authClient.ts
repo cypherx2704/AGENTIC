@@ -29,7 +29,7 @@ export interface ExchangeResult {
   readonly scopes: readonly string[];
 }
 
-/** Result of an end-user login / Google exchange — carries the identity the session is built from. */
+/** Result of an end-user login / Google exchange / refresh — the identity the session is built from. */
 export interface UserSessionResult {
   readonly userId: string;
   readonly tenantId: string;
@@ -37,6 +37,10 @@ export interface UserSessionResult {
   readonly token: string;
   readonly tokenType: string;
   readonly expiresIn: number;
+  /** Opaque refresh token the BFF holds server-side to silently re-mint `token` (never sent to the SPA). */
+  readonly refreshToken: string;
+  /** Seconds until the refresh token's absolute cap (0 if the auth service returned none). */
+  readonly refreshExpiresIn: number;
   readonly scopes: readonly string[];
 }
 
@@ -175,6 +179,30 @@ export class AuthClient {
     return this.toSession(obj);
   }
 
+  /**
+   * Silent renewal — exchange the refresh token for a fresh <=1h access JWT (same session). Throws
+   * AuthExchangeError (401) when the refresh token is expired/revoked, which the caller treats as a
+   * dead session (→ re-login).
+   */
+  async refreshSession(refreshToken: string, trace: TraceContext): Promise<UserSessionResult> {
+    const obj = await this.postJson('/v1/auth/refresh', { refresh_token: refreshToken }, trace);
+    return this.toSession(obj);
+  }
+
+  /** Best-effort session revocation on logout. Never throws — logout must always clear local state. */
+  async revokeRefresh(refreshToken: string, trace: TraceContext): Promise<void> {
+    try {
+      await this.call(
+        `${this.baseUrl}/v1/auth/logout`,
+        'POST',
+        JSON.stringify({ refresh_token: refreshToken }),
+        trace,
+      );
+    } catch {
+      /* logout is idempotent server-side; ignore upstream failures */
+    }
+  }
+
   // ── internals ──────────────────────────────────────────────────────────────────
 
   private async postJson(
@@ -236,6 +264,8 @@ export class AuthClient {
       token,
       tokenType: str('token_type') || 'Bearer',
       expiresIn: typeof obj.expires_in === 'number' ? (obj.expires_in as number) : 3600,
+      refreshToken: str('refresh_token'),
+      refreshExpiresIn: typeof obj.refresh_expires_in === 'number' ? (obj.refresh_expires_in as number) : 0,
       scopes,
     };
   }

@@ -161,6 +161,83 @@ class Settings(BaseSettings):
     # Contract-19 usage event. Set False to suppress (e.g. a noisy local loop).
     memory_usage_events_enabled: bool = True
 
+    # ── B1: halfvec / binary quantization for the HNSW ANN scan ──────────────────
+    # ADDITIVE + DEFAULT-OFF. Controls the vector type used by the ANN first pass on the
+    # Postgres repo (the base vector(1536) column is UNCHANGED — this only picks which
+    # index + cast the planner uses):
+    #   'off'           (DEFAULT): scan the full-precision vector(1536) HNSW index — today.
+    #   'halfvec'       : scan the halfvec(1536) expression HNSW index (2x smaller index,
+    #                     near-identical recall); adds a negligible ::halfvec cast per query.
+    #   'binary_rerank' : a bit(1536) Hamming first pass, then a full-precision cosine rerank
+    #                     of that candidate window (most aggressive; optional second index).
+    # The offline in-memory harness runs no SQL, so this knob is inert there (documented gap:
+    # true HNSW ANN recall at a given ef_search needs a pgvector-backed eval track).
+    memory_vector_quantization: str = "off"  # off | halfvec | binary_rerank
+
+    # ── B2: content-hash embedding cache (Valkey) ────────────────────────────────
+    # ADDITIVE + DEFAULT-OFF. When on, embed_many/embed_one key an exact cache on
+    # hash(model + dim + text): a HIT returns the cached vector (sub-ms Valkey GET, no
+    # gateway round-trip); a MISS embeds once and writes back. The key namespaces model+dim
+    # so a model/dim change can NEVER serve a stale vector. FAILS OPEN on any Valkey error
+    # (skip the cache, embed normally). Default off => byte-identical to today.
+    memory_embedding_cache_enabled: bool = False
+    memory_embedding_cache_ttl_seconds: int = 7 * 24 * 3600  # 7 days
+    memory_embedding_cache_key_prefix: str = "cypherx:mem:emb:"
+
+    # ── B3: explicit HNSW build params + query-time ef_search ─────────────────────
+    # m / ef_construction are ONE-TIME index-build params (migration #5 rebuilds the base
+    # HNSW index WITH these values); they mirror pgvector's defaults so a rebuild is
+    # behavior-preserving. ef_search is the per-query GUC that bounds how many candidates
+    # the HNSW scan returns (pgvector default 40). memory_hnsw_ef_search=0 (DEFAULT) means
+    # DO NOT emit `SET LOCAL hnsw.ef_search` — the connection default is used, so the
+    # default query path is byte-identical. Raise it toward the oversample window
+    # (top_k * oversample) to make the two-pass oversample real and lift recall@k.
+    memory_hnsw_m: int = 16
+    memory_hnsw_ef_construction: int = 64
+    memory_hnsw_ef_search: int = 0  # 0 => do not emit SET LOCAL (preserve pgvector default)
+
+    # ── B4: ACT-R base-level activation (recency x frequency) ────────────────────
+    # ADDITIVE + DEFAULT-OFF. The composite's recency term uses exponential decay by
+    # default ('exponential'); 'power_actr' switches it to ACT-R base-level activation
+    # B = frequency_weight*ln(access_count) - d*ln(age), fusing how RECENTLY and how OFTEN
+    # a memory was retrieved (power-law decay). memory_scoring_frequency_weight=0.0 (DEFAULT)
+    # means no frequency contribution, so with decay='exponential' the path is unchanged.
+    memory_scoring_decay: str = "exponential"  # exponential | power_actr
+    memory_scoring_frequency_weight: float = 0.0
+    memory_actr_decay_d: float = 0.5  # ACT-R power-law decay exponent (Anderson: ~0.5)
+
+    # ── B5: salient-fact extraction at ingest ────────────────────────────────────
+    # ADDITIVE + DEFAULT-OFF. When on, POST /v1/memories decomposes multi-fact content into
+    # atomic facts (real deterministic split; optional llms-gateway chat seam) and stores
+    # each fact as its own row+embedding. Runs AFTER the content cap + Idempotency-Key
+    # short-circuit and BEFORE embedding. Fails soft to storing the raw content. Ingest-only;
+    # the read path is untouched. Default off => byte-identical single-row store.
+    memory_extraction_enabled: bool = False
+    memory_extraction_llm_enabled: bool = False  # use the gateway seam (else heuristic split)
+    memory_extraction_max_facts: int = 16  # hard fan-out ceiling per request
+
+    # ── B6: MMR diversity re-rank of the candidate window ────────────────────────
+    # ADDITIVE + DEFAULT-OFF. When on, the read re-rank step greedily maximizes
+    # lambda*relevance - (1-lambda)*max(sim to already-selected) so the top_k covers
+    # distinct facets instead of k near-paraphrases. Query-time only, no extra DB/embed
+    # round-trip (needs candidate vectors resident: the PG repo fetches v.embedding ONLY
+    # when this flag is on, so the default path stays byte-identical). Fails soft to the
+    # existing order. lambda=1.0 == pure relevance, lambda=0.0 == pure diversity.
+    memory_mmr_enabled: bool = False
+    memory_mmr_lambda: float = 0.5
+
+    # ── B7: associative memory linking + graph-expansion retrieval ───────────────
+    # ADDITIVE + DEFAULT-OFF. When on, store() writes explicit edges from a new memory to
+    # its nearest associative neighbours (memory.memory_links, RLS-scoped like memories),
+    # and search() does a bounded 1-hop, embedding-free link expansion after the ANN
+    # oversample (ONE extra DB round-trip, no extra vector/embed call) to surface memories
+    # the single-shot cosine missed. Fails soft to the vector-only set. Default off =>
+    # byte-identical.
+    memory_linking_enabled: bool = False
+    memory_linking_max_neighbors: int = 3  # edges written per store
+    memory_linking_sim_min: float = 0.50  # min cosine to consider two memories associated
+    memory_linking_expansion_limit: int = 10  # max linked rows pulled in at retrieval
+
     # ── Behaviour toggles ──────────────────────────────────────────────────────
     # When true the embeddings client always uses the deterministic mock embedder
     # (alias of embeddings_mock_fallback for parity with the other services'

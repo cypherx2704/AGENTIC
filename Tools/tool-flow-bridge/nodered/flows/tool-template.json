@@ -1,0 +1,49 @@
+[
+  {
+    "id": "tab_sum_tool",
+    "type": "tab",
+    "label": "Sum Tool (template)",
+    "disabled": false,
+    "info": "Starter template for a CypherX flow-tool: an `http in` trigger -> your logic -> an `http response`. Rename the http-in URL and edit the function, then Deploy and Publish."
+  },
+  {
+    "id": "http_in_sum",
+    "type": "http in",
+    "z": "tab_sum_tool",
+    "name": "trigger",
+    "url": "/sum",
+    "method": "post",
+    "upload": false,
+    "swaggerDoc": "",
+    "x": 150,
+    "y": 120,
+    "wires": [["fn_compute"]]
+  },
+  {
+    "id": "fn_compute",
+    "type": "function",
+    "z": "tab_sum_tool",
+    "name": "compute",
+    "func": "const b = msg.payload || {};\nmsg.payload = { sum: (Number(b.a) || 0) + (Number(b.b) || 0) };\nreturn msg;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 360,
+    "y": 120,
+    "wires": [["http_response_sum"]]
+  },
+  {
+    "id": "http_response_sum",
+    "type": "http response",
+    "z": "tab_sum_tool",
+    "name": "respond",
+    "statusCode": "200",
+    "headers": {},
+    "x": 570,
+    "y": 120,
+    "wires": []
+  }
+]

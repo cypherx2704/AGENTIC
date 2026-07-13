@@ -240,18 +240,19 @@ curl -s $GUARD/v1/violations -H "$AUTHH" | python -m json.tool
 # PART 8 — Tools, per-agent access modes & HIL
 
 ```bash
-# Discover tools (platform + your tenant):
-curl -s $TOOLS/v1/tools -H "$AUTHH" | python -m json.tool        # => tool-web-search
-curl -s $TOOLS/v1/tools/tool-web-search -H "$AUTHH" | python -m json.tool
+# Discover tools (platform + your tenant). The public web_search flow-tool (server `mcp-web-search`,
+# which replaced the retired tool-web-search service) is discoverable to every tenant:
+curl -s $TOOLS/v1/tools -H "$AUTHH" | python -m json.tool        # => mcp-web-search
+curl -s $TOOLS/v1/tools/mcp-web-search -H "$AUTHH" | python -m json.tool
 
 # Per-agent access mode (none|ask|automated) — tenant:admin. Flip it and read it back:
-curl -s -X PUT $TOOLS/v1/tools/tool-web-search/access -H "$AUTHH" -H 'Content-Type: application/json' \
+curl -s -X PUT $TOOLS/v1/tools/mcp-web-search/access -H "$AUTHH" -H 'Content-Type: application/json' \
   -d "{\"agent_id\":\"$AGENT\",\"access_mode\":\"automated\"}" | python -m json.tool
-curl -s "$TOOLS/v1/tools/tool-web-search/access?agent_id=$AGENT" -H "$AUTHH" | python -m json.tool
+curl -s "$TOOLS/v1/tools/mcp-web-search/access?agent_id=$AGENT" -H "$AUTHH" | python -m json.tool
 
 # Restricted-tools registry:
 curl -s $TOOLS/v1/restricted-tools -H "$AUTHH" | python -m json.tool
-curl -s -X POST $TOOLS/v1/restricted-tools/tool-web-search -H "$AUTHH" -H 'Content-Type: application/json' -d '{"reason":"demo"}' | python -m json.tool
+curl -s -X POST $TOOLS/v1/restricted-tools/mcp-web-search -H "$AUTHH" -H 'Content-Type: application/json' -d '{"reason":"demo"}' | python -m json.tool
 ```
 
 ### Drive a tool through a task (the tool loop)
@@ -260,7 +261,7 @@ runtime lists `allowed_tools`. Reconfigure the agent and submit a tool-y task:
 ```bash
 curl -s -X PUT $XAGENT/v1/agents/$AGENT/runtime -H "$AUTHH" -H 'Content-Type: application/json' -d '{
   "name":"orchestrator","system_prompt":"Use tools when helpful.","llm_model":"small",
-  "allowed_tools":["tool-web-search"],"allowed_skills":[],"allowed_kb_ids":[],"memory_scope":"none"}' >/dev/null
+  "allowed_tools":["mcp-web-search"],"allowed_skills":[],"allowed_kb_ids":[],"memory_scope":"none"}' >/dev/null
 R=$(curl -s -X POST $XAGENT/v1/tasks -H "$AUTHH" -H 'Content-Type: application/json' \
   -d "{\"agent_id\":\"$AGENT\",\"input\":{\"message\":\"search the web for today's weather in Paris\"}}")
 echo "$R" | python -c "import sys,json;d=json.load(sys.stdin);print('status:',d.get('status'));[print(' step:',s['step'],s['status']) for s in d.get('task_steps',[])]"
@@ -270,7 +271,7 @@ so an 8B model invokes the tool just like a frontier one. With `access_mode:none
 `tool_access_denied`; with `ask` it pauses for HIL (Part 12).
 
 > A *successful* tool invocation also needs the agent JWT to carry the tool's invoke scope
-> (`tool:tool-web-search:invoke`) — orchestrators don't have it by default, so the invoke is fed back to the
+> (`tool:mcp-web-search:invoke`) — orchestrators don't have it by default, so the invoke is fed back to the
 > model as a scope error (fail-soft). Grant the scope on the api_key **and** agent to see a clean invoke.
 
 ---
@@ -368,7 +369,7 @@ docker exec cypherx-redpanda rpk topic consume cypherx.agent.task.completed --nu
 # PART 14 — Appendix: granting a NEW scope (for `skill:admin` / `tool:invoke` tests)
 
 Token scopes = **api_key.scopes ∩ agent.allowed_scopes** (intersection at mint). To grant a scope an
-orchestrator lacks by default (e.g. `skill:admin`, `tool:tool-web-search:invoke`), add it to **both** the
+orchestrator lacks by default (e.g. `skill:admin`, `tool:mcp-web-search:invoke`), add it to **both** the
 api_key and the agent, then re-mint. Quick DB way (Doppler is blocked locally, so use the owner DSN from
 `.env`):
 ```bash

@@ -1,0 +1,31 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nodered-platform-dev
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  # The SINGLETON platform (public) Node-RED runtime that hosts PUBLIC (promoted) tools — the
+  # egress-ALLOW counterpart to the per-tenant egress-DENY runtimes (nodered-tenant). Deploys the
+  # Deployment + PVC + Service + egress-ALLOW NetworkPolicy + the Doppler-synced nodered-platform-secrets
+  # (admin/invoke/credential + the platform PROVIDER KEYS). Depends on the nodered-tenant app for the
+  # cypherx-tools namespace + baseline default-deny.
+  source:
+    repoURL: https://github.com/cypherx-ai/cypherx-charts.git
+    targetRevision: main
+    path: charts/nodered-platform/manifests
+    directory:
+      recurse: false
+      # Skip the reference template; the real secret is nodered-platform-secrets.dopplersecret.yaml.
+      exclude: '*.example.yaml'
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cypherx-tools
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

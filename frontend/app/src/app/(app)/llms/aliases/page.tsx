@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { PageHeader } from '@/components/AppShell';
+import { Page, PageBody, PageHeader } from '@/components/AppShell';
 import {
   Badge,
   Button,
@@ -10,8 +10,11 @@ import {
   CardBody,
   CardHeader,
   ErrorBanner,
+  humanizeStatus,
   Input,
   Loading,
+  Select,
+  Switch,
   Table,
   useToast,
 } from '@/components/ui';
@@ -31,19 +34,23 @@ import {
 
 export default function LlmAliasesPage() {
   return (
-    <div className="flex flex-col gap-6">
+    <Page>
       <PageHeader
-        title="LLM aliases & rules"
+        title="LLM Aliases & Rules"
         description="Define task-typed model aliases (one default per tenant) and the user-owned rules that allow/block models or exempt them from billing."
         actions={
-          <Link href="/llms" className="text-sm text-brand hover:underline">
+          <Link href="/llms" className="text-[13px] font-medium text-brand hover:underline">
             ← LLM Connections
           </Link>
         }
       />
-      <AliasesCard />
-      <RulesCard />
-    </div>
+      <PageBody>
+        <div className="flex flex-col gap-3">
+          <AliasesCard />
+          <RulesCard />
+        </div>
+      </PageBody>
+    </Page>
   );
 }
 
@@ -98,28 +105,29 @@ function AliasesCard() {
       key: 'alias',
       header: 'Alias',
       render: (a) => (
-        <span className="font-medium text-fg">
-          {a.alias} {a.is_default ? <Badge>default</Badge> : null}
+        <span className="inline-flex items-center gap-2 font-medium text-fg">
+          {a.alias} {a.is_default ? <Badge tone="info">Default</Badge> : null}
         </span>
       ),
     },
     { key: 'model', header: 'Model', render: (a) => <span className="font-mono text-xs">{a.model_id}</span> },
-    { key: 'provider', header: 'Provider', render: (a) => a.provider },
-    { key: 'task', header: 'Task type', render: (a) => (a.task_type ? <Badge>{a.task_type}</Badge> : <span className="text-muted">—</span>) },
+    { key: 'provider', header: 'Provider', render: (a) => <span className="capitalize">{a.provider}</span> },
+    { key: 'task', header: 'Task Type', render: (a) => (a.task_type ? <Badge>{a.task_type}</Badge> : <span className="text-muted">—</span>) },
     {
       key: 'scope',
       header: 'Scope',
-      render: (a) => <span className="text-xs text-muted">{a.tenant_id ? 'tenant' : 'platform'}</span>,
+      render: (a) => <span className="text-xs text-muted">{a.tenant_id ? 'Tenant' : 'Platform'}</span>,
     },
     {
       key: 'actions',
       header: '',
+      className: 'text-right',
       render: (a) =>
         a.tenant_id ? (
-          <div className="flex gap-2">
+          <div className="flex justify-end gap-2">
             {!a.is_default && (
               <Button size="sm" variant="secondary" onClick={() => setDefault(a)}>
-                Make default
+                Make Default
               </Button>
             )}
             <Button size="sm" variant="danger" onClick={() => remove(a)}>
@@ -127,22 +135,25 @@ function AliasesCard() {
             </Button>
           </div>
         ) : (
-          <span className="text-xs text-muted">read-only</span>
+          <span className="text-xs text-muted">Read-Only</span>
         ),
     },
   ];
 
   return (
     <Card>
-      <CardHeader title="Model aliases" description="The first alias created becomes the default; an alias's task_type guides the orchestrator's model choice per sub-agent task." />
+      <CardHeader
+        title="Model Aliases"
+        description="The first alias created becomes the default; an alias's task_type guides the orchestrator's model choice per sub-agent task."
+      />
       <CardBody className="flex flex-col gap-4">
-        <form onSubmit={add} className="flex flex-wrap items-end gap-2">
-          <Input label="Alias" value={form.alias} onChange={(e) => setForm({ ...form, alias: e.target.value })} className="w-32" required />
-          <Input label="Model id" value={form.model_id} onChange={(e) => setForm({ ...form, model_id: e.target.value })} className="w-48" required />
-          <Input label="Provider" value={form.provider} onChange={(e) => setForm({ ...form, provider: e.target.value })} className="w-32" required />
-          <Input label="Task type" value={form.task_type} onChange={(e) => setForm({ ...form, task_type: e.target.value })} className="w-40" placeholder="code-generation" />
-          <Button type="submit" size="sm" loading={busy} disabled={!form.alias.trim() || !form.model_id.trim()}>
-            Add alias
+        <form onSubmit={add} className="grid grid-cols-2 gap-3 sm:grid-cols-5 sm:items-end">
+          <Input label="Alias" value={form.alias} onChange={(e) => setForm({ ...form, alias: e.target.value })} required />
+          <Input label="Model ID" value={form.model_id} onChange={(e) => setForm({ ...form, model_id: e.target.value })} required />
+          <Input label="Provider" value={form.provider} onChange={(e) => setForm({ ...form, provider: e.target.value })} required />
+          <Input label="Task Type" value={form.task_type} onChange={(e) => setForm({ ...form, task_type: e.target.value })} placeholder="code-generation" />
+          <Button type="submit" size="md" className="h-9" loading={busy} disabled={!form.alias.trim() || !form.model_id.trim()}>
+            Add Alias
           </Button>
         </form>
         {error ? (
@@ -196,12 +207,13 @@ function RulesCard() {
 
   const columns: Array<Column<LlmRule>> = [
     { key: 'model', header: 'Model', render: (r) => <span className="font-mono text-xs">{r.provider}/{r.model_id}</span> },
-    { key: 'type', header: 'Rule', render: (r) => <Badge>{r.rule_type}</Badge> },
-    { key: 'agents', header: 'Agents', render: (r) => (r.can_be_used_by_agents ? 'allowed' : 'blocked') },
-    { key: 'billing', header: 'Billing', render: (r) => (r.billing_bypass ? <Badge>exempt</Badge> : 'metered') },
+    { key: 'type', header: 'Rule', render: (r) => <Badge tone={r.rule_type === 'block' ? 'danger' : 'success'}>{humanizeStatus(r.rule_type)}</Badge> },
+    { key: 'agents', header: 'Agents', render: (r) => (r.can_be_used_by_agents ? 'Allowed' : 'Blocked') },
+    { key: 'billing', header: 'Billing', render: (r) => (r.billing_bypass ? <Badge tone="info">Exempt</Badge> : <span className="text-muted">Metered</span>) },
     {
       key: 'actions',
       header: '',
+      className: 'text-right',
       render: (r) => (
         <Button size="sm" variant="danger" onClick={() => remove(r)}>
           Delete
@@ -212,33 +224,35 @@ function RulesCard() {
 
   return (
     <Card>
-      <CardHeader title="User LLM rules" description="The tenant-owned 'ultimate truth': block models, restrict agent use, or exempt user-added models from billing." />
+      <CardHeader
+        title="User LLM Rules"
+        description="The tenant-owned 'ultimate truth': block models, restrict agent use, or exempt user-added models from billing."
+      />
       <CardBody className="flex flex-col gap-4">
-        <form onSubmit={add} className="flex flex-wrap items-end gap-2">
-          <Input label="Provider" value={form.provider} onChange={(e) => setForm({ ...form, provider: e.target.value })} className="w-32" required />
-          <Input label="Model id" value={form.model_id} onChange={(e) => setForm({ ...form, model_id: e.target.value })} className="w-48" required />
-          <label className="flex flex-col gap-1 text-sm">
-            <span className="text-muted">Rule</span>
-            <select
-              className="rounded-md border border-border bg-surface px-2 py-2 text-sm"
-              value={form.rule_type}
-              onChange={(e) => setForm({ ...form, rule_type: e.target.value })}
-            >
-              <option value="allow">allow</option>
-              <option value="block">block</option>
-            </select>
-          </label>
-          <label className="flex items-center gap-2 text-sm text-muted">
-            <input type="checkbox" checked={form.billing_bypass} onChange={(e) => setForm({ ...form, billing_bypass: e.target.checked })} />
-            billing bypass
-          </label>
-          <label className="flex items-center gap-2 text-sm text-muted">
-            <input type="checkbox" checked={form.can_be_used_by_agents} onChange={(e) => setForm({ ...form, can_be_used_by_agents: e.target.checked })} />
-            agents allowed
-          </label>
-          <Button type="submit" size="sm" loading={busy} disabled={!form.model_id.trim()}>
-            Save rule
-          </Button>
+        <form onSubmit={add} className="flex flex-col gap-4">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            <Input label="Provider" value={form.provider} onChange={(e) => setForm({ ...form, provider: e.target.value })} required />
+            <Input label="Model ID" value={form.model_id} onChange={(e) => setForm({ ...form, model_id: e.target.value })} required />
+            <Select label="Rule" value={form.rule_type} onChange={(e) => setForm({ ...form, rule_type: e.target.value })}>
+              <option value="allow">Allow</option>
+              <option value="block">Block</option>
+            </Select>
+          </div>
+          <div className="flex flex-wrap items-center gap-4">
+            <Switch
+              checked={form.billing_bypass}
+              onChange={(v) => setForm({ ...form, billing_bypass: v })}
+              label="Billing Bypass"
+            />
+            <Switch
+              checked={form.can_be_used_by_agents}
+              onChange={(v) => setForm({ ...form, can_be_used_by_agents: v })}
+              label="Agents Allowed"
+            />
+            <Button type="submit" size="md" className="ml-auto" loading={busy} disabled={!form.model_id.trim()}>
+              Save Rule
+            </Button>
+          </div>
         </form>
         {error ? (
           <ErrorBanner error={error} title="Could not load rules" />

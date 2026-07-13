@@ -77,6 +77,14 @@ class QueryRequest(_Base):
     # today's behaviour. ``min_score`` is NOT re-applied to fused/reranked scores (they are
     # rank-fusion / relevance scores, not cosine similarities) — see the query handler.
     rerank: bool = False
+    # OPTIONAL multi-hop query decomposition. No-op unless RAG_DECOMPOSE_ENABLED is on (then the
+    # query is split into ≤ decompose_max_subquestions sub-questions, retrieved per sub-question,
+    # unioned+deduped, and fed to the rerank stage). Default false ⇒ today's single-query path.
+    decompose: bool = False
+    # OPTIONAL multi-query expansion (RAG-Fusion). No-op unless RAG_MULTIQUERY_ENABLED is on (then
+    # the query is expanded into paraphrases, retrieved per variant, and fused with app-level RRF).
+    # A recall lever. Default false ⇒ today's single-query path.
+    multi_query: bool = False
 
 
 class QueryHitSource(_Base):

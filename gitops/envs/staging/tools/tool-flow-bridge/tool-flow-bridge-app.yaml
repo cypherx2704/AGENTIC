@@ -1,0 +1,30 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tool-flow-bridge-staging
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/cypherx-ai/cypherx-charts.git
+    targetRevision: main
+    path: charts/tool-flow-bridge
+    helm:
+      valueFiles:
+        - values.yaml
+      parameters:
+        - name: cypherx-service.image.tag
+          value: "0.1.0"
+        - name: cypherx-service.environment
+          value: staging
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cypherx-tools
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

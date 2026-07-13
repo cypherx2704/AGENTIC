@@ -39,7 +39,7 @@ function LoginForm() {
 
   return (
     <Card className="w-full max-w-md">
-      <CardHeader title={`Sign in to ${config.appName}`} description="Sign in with your email and password, or continue with Google." />
+      <CardHeader title={`Sign In to ${config.appName}`} description="Sign in with your email and password, or continue with Google." />
       <CardBody>
         <form onSubmit={onSubmit} className="flex flex-col gap-4">
           <Input
@@ -64,7 +64,7 @@ function LoginForm() {
             <p className="text-sm text-danger">Google sign-in failed. Please try again.</p>
           ) : null}
           <Button type="submit" loading={submitting} disabled={!email.trim() || !password} size="lg">
-            Sign in
+            Sign In
           </Button>
         </form>
 
@@ -75,17 +75,22 @@ function LoginForm() {
         </div>
 
         {/* Full-page navigation to the BFF Google start (it 302s to Google's consent screen). */}
-        <a
-          href={googleLoginUrl()}
-          className="flex w-full items-center justify-center gap-2 rounded-md border border-border bg-surface px-4 py-2.5 text-sm font-medium text-fg hover:bg-bg"
+        <Button
+          type="button"
+          variant="secondary"
+          size="lg"
+          className="w-full"
+          onClick={() => {
+            window.location.href = googleLoginUrl();
+          }}
         >
-          <span className="font-bold text-brand">G</span> Continue with Google
-        </a>
+          Continue With Google
+        </Button>
 
         <p className="mt-4 text-center text-sm text-muted">
           New to {config.appName}?{' '}
           <Link href="/register" className="text-brand hover:underline">
-            Create an account
+            Create an Account
           </Link>
         </p>
       </CardBody>
@@ -98,7 +103,7 @@ export default function LoginPage() {
     <div className="flex min-h-screen items-center justify-center bg-bg p-4">
       <div className="w-full max-w-md">
         <div className="mb-6 flex items-center justify-center gap-2">
-          <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand text-lg font-bold text-brand-fg">
+          <span className="flex h-9 w-9 items-center justify-center rounded-md bg-brand text-lg font-bold text-brand-fg">
             C
           </span>
           <span className="text-lg font-semibold text-fg">{config.appName}</span>

@@ -86,7 +86,7 @@ groups:
   - name: platform-availability
     rules:
       - alert: ServiceDown
-        expr: up{job=~"auth-service|llms-gateway|guardrails-service|xagent|rag|memory|tool-registry|tool-web-search|frontend-bff"} == 0
+        expr: up{job=~"auth-service|llms-gateway|guardrails-service|xagent|rag|memory|tool-registry|frontend-bff"} == 0
         for: 2m
         labels:
           severity: critical

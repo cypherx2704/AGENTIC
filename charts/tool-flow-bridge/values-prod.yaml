@@ -1,0 +1,31 @@
+# tool-flow-bridge production overrides. Layer on top of values.yaml:
+#   helm template tfb . -f values.yaml -f values-prod.yaml
+
+cypherx-service:
+  environment: prod
+  replicaCount: 3
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 1Gi
+
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 65
+
+  pdb:
+    enabled: true
+    minAvailable: 2
+
+  doppler:
+    runtimeConfig: tools.tool-flow-bridge.prod
+    ddlConfig: db.tool-flow-bridge.ddl.prod
+
+  observability:
+    logLevel: INFO

@@ -60,6 +60,14 @@ class CheckRequest(BaseModel):
             "addition to `input_text`). Feeds the optional groundedness/hallucination signal."
         ),
     )
+    canary_tokens: list[str] | None = Field(
+        default=None,
+        description=(
+            "Output check only: high-entropy canary token(s) the caller embedded in its own "
+            "system prompt. Any occurrence in the model output (exact/de-spaced/hex/base64) "
+            "means the system prompt/context leaked -> block (gated by CANARY_LEAK_ENABLED)."
+        ),
+    )
 
 
 class Violation(BaseModel):

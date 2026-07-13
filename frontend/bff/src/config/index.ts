@@ -144,6 +144,9 @@ function parseUpstreams(env: Env): Record<string, string> {
     ['xagent', 'XAGENT_URL', false],
     ['rag', 'RAG_URL', false],
     ['tools', 'TOOL_REGISTRY_URL', false],
+    ['memory', 'MEMORY_URL', false],
+    ['skills', 'SKILL_REGISTRY_URL', false],
+    ['toolbuilder', 'TOOL_BUILDER_URL', false],
   ];
   const out: Record<string, string> = {};
   for (const [name, key, mandatory] of spec) {
@@ -187,7 +190,11 @@ export function loadConfig(env: Env = process.env): Config {
 
     valkeyUrl: required(env, 'VALKEY_URL'),
     sessionKeyPrefix: optional(env, 'SESSION_KEY_PREFIX', 'cypherx:bff:sess:'),
-    sessionTtlSeconds: asInt(optional(env, 'SESSION_TTL_SECONDS', '3600'), 'SESSION_TTL_SECONDS'),
+    // Sliding idle TTL of the server-side session record (refreshed on every authenticated read).
+    // Default 8h so it matches the auth-service refresh-token idle window — an active-but-briefly-idle
+    // user is not evicted before the auth side would log them out. The absolute cap (up to 7d) is
+    // enforced by the refresh token's absolute expiry, not this value.
+    sessionTtlSeconds: asInt(optional(env, 'SESSION_TTL_SECONDS', '28800'), 'SESSION_TTL_SECONDS'),
 
     sessionKek: parseKek(env),
 

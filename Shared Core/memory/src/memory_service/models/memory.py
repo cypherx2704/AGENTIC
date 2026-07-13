@@ -68,6 +68,8 @@ class MemoryRecord(_Base):
     # Temporal validity: None = currently valid; set when superseded.
     valid_until: str | None = None
     superseded_by_id: str | None = None
+    # How many times this memory has been RETURNED by a search (ACT-R frequency input).
+    access_count: int | None = None
     # Optional richer scope (only present when set on the memory).
     session_scope_id: str | None = None
     agent_scope_id: str | None = None

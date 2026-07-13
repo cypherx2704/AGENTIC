@@ -144,6 +144,26 @@ class WebhookService(
         return newId
     }
 
+    /**
+     * Re-queue every recently-FAILED delivery for [subId] as a fresh pending delivery — the backing for
+     * the "replay recent failures" action (`POST …/replay` with no `delivery_id`). Fail-soft per delivery;
+     * returns the number re-queued. 404 if the subscription is absent for this tenant.
+     */
+    fun replayRecentFailures(tenantId: UUID, subId: UUID, actor: String?): Int {
+        repo.findSubscription(tenantId, subId)
+            ?: throw ApiException.notFound("Webhook subscription not found", mapOf("sub_id" to subId.toString()))
+        val failed = repo.listDeliveries(tenantId, subId, MAX_LIST_LIMIT).filter { it.status == "failed" }
+        var replayed = 0
+        for (d in failed) {
+            runCatching { repo.replayDelivery(tenantId, d.deliveryId) }
+                .onSuccess { if (it != null) replayed++ }
+                .onFailure { log.warn("webhook replay-failure enqueue failed delivery={}: {}", d.deliveryId, it.message) }
+        }
+        if (replayed > 0) audit(tenantId, actor, "webhook:replay-failures", "webhook:$subId")
+        log.info("webhook replay-recent-failures sub={} tenant={} replayed={}", subId, tenantId, replayed)
+        return replayed
+    }
+
     // ── Enqueue (integration point for event producers) ──────────────────────────────────────
 
     /**

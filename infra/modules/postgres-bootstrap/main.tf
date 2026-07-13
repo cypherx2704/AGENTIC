@@ -24,10 +24,15 @@ locals {
     # runtime_passwords["platform-mgmt"] -> db/platform-mgmt/{runtime,ddl}_password. The SCHEMA stays
     # "platform" and the user stays plat_user. This is the only service whose Doppler name != schema name;
     # keying by the schema ("platform") would look up the non-existent db/platform/* path and fail apply.
-    "platform-mgmt" = { schema = "platform", runtime_user = "plat_user", ddl_user = "plat_ddl" }
+    "platform-mgmt"    = { schema = "platform", runtime_user = "plat_user", ddl_user = "plat_ddl" }
     # CoreProjects cypherx-a1 (Autonomous Engineering Memory) — a consuming app with its own
     # schema + roles. Doppler paths db/cypherx-a1/{runtime,ddl}_password must exist for apply.
-    "cypherx-a1"    = { schema = "cypherx_a1", runtime_user = "cxa1_user", ddl_user = "cxa1_ddl" }
+    "cypherx-a1"       = { schema = "cypherx_a1", runtime_user = "cxa1_user", ddl_user = "cxa1_ddl" }
+    # Tools/tool-flow-bridge (visual Tool Builder execution backend) — owns schema flow_tools +
+    # runtime role flow_tools_user (must be NOBYPASSRLS; least-priv here enforces that). Doppler
+    # paths db/tool-flow-bridge/{runtime,ddl}_password must exist for apply; charts/tool-flow-bridge
+    # values.yaml reads db/tool-flow-bridge/runtime_password for the pgbouncer runtime login.
+    "tool-flow-bridge" = { schema = "flow_tools", runtime_user = "flow_tools_user", ddl_user = "flow_tools_ddl" }
   }
 }
 

@@ -13,9 +13,9 @@ describe('TaskTimeline', () => {
         ]}
       />,
     );
-    expect(screen.getByText('Guardrail (input)')).toBeInTheDocument();
-    expect(screen.getByText('LLM call')).toBeInTheDocument();
-    expect(screen.getByText('Guardrail (output)')).toBeInTheDocument();
+    expect(screen.getByText('Guardrail (Input)')).toBeInTheDocument();
+    expect(screen.getByText('LLM Call')).toBeInTheDocument();
+    expect(screen.getByText('Guardrail (Output)')).toBeInTheDocument();
     expect(screen.getByText('128 tok')).toBeInTheDocument();
   });
 

@@ -34,7 +34,7 @@ from ..models.memory import (
     StoreMemoryRequest,
     UpdateMemoryRequest,
 )
-from ..services import idempotency, quota, repository, scoring
+from ..services import extraction, idempotency, quota, repository, scoring
 from ..services.scoring import weights_from_settings
 
 logger = structlog.get_logger(__name__)
@@ -126,6 +126,101 @@ async def _grade_importance_llm(request: Request, content: str, memory_type: str
     return None
 
 
+async def _extract_facts(request: Request, settings, content: str) -> list[str]:
+    """Resolve incoming content into atomic facts (B5). Fails SOFT to the raw content.
+
+    Prefers the llms-gateway seam when MEMORY_EXTRACTION_LLM_ENABLED (it is a default-off
+    skeleton this cycle), else the deterministic split. On ANY extractor error the raw
+    content is returned as one fact, so the store degrades to today's single-row behavior.
+    """
+    try:
+        if settings.memory_extraction_llm_enabled:
+            llm = await extraction.extract_facts_llm(
+                _embedder(request), content, max_facts=settings.memory_extraction_max_facts
+            )
+            if llm:
+                return llm
+        return extraction.extract_facts(content, max_facts=settings.memory_extraction_max_facts)
+    except Exception as exc:  # noqa: BLE001 — extraction must never fail the store
+        logger.warning("extraction_failed_store_raw", error=str(exc))
+        metrics.extraction_failopen_total.inc()
+        return [content]
+
+
+async def _store_extracted_facts(
+    request: Request,
+    principal: Principal,
+    *,
+    body: StoreMemoryRequest,
+    facts: list[str],
+    ptype: str,
+    pid: str,
+    idem_key: str | None,
+    started: float,
+) -> JSONResponse:
+    """B5 fan-out: store each extracted fact as its own row + focused embedding.
+
+    Design points handled: (1) 201 response is an aggregate ``{extracted, count, memories}``
+    (single-fact / disabled requests keep the flat single-record shape); (2) per-fact
+    dedup-bump — each fact deduplicates independently against the principal's neighbours;
+    (3) aggregate usage metering — ONE write event for the request, ``items_written`` = the
+    count actually inserted (deduped facts don't count); (4) idempotency replay stores +
+    replays the aggregate body verbatim. Runs AFTER the idempotency short-circuit, so a
+    replay never re-embeds.
+    """
+    settings = _settings(request)
+    repo = _repo(request)
+    valkey = getattr(request.app.state, "valkey", None)
+    threshold = await repo.get_tenant_dedup_threshold(principal.tenant_id, settings.dedup_threshold)
+
+    records: list[dict] = []
+    inserted = 0
+    total_chars = 0
+    for fact in facts:
+        vector, _source = await _embedder(request).embed_one(
+            fact, on_behalf_of=principal.agent_id, agent_jwt=_agent_jwt(request)
+        )
+        importance = body.importance
+        if importance is None:
+            importance = scoring.heuristic_importance(fact, memory_type=body.type)
+        mem = repository.new_memory(
+            tenant_id=principal.tenant_id, principal_type=ptype, principal_id=pid,
+            scope=body.scope, type=body.type, tags=body.tags, content=fact,
+            metadata=body.metadata, vector=vector, session_id=body.session_id,
+            ttl_seconds=body.ttl_seconds, importance_score=importance,
+            session_scope_id=body.session_scope_id, agent_scope_id=body.agent_scope_id,
+        )
+        result = await repo.store(
+            memory=mem, dedup_threshold=threshold, trace_id=trace.trace_id_var.get(),
+            producer_version=settings.service_version,
+            linking_enabled=settings.memory_linking_enabled,
+            linking_sim_min=settings.memory_linking_sim_min,
+            linking_max_neighbors=settings.memory_linking_max_neighbors,
+        )
+        if result.deduped:
+            metrics.dedup_bumped_total.inc()
+        else:
+            inserted += 1
+        total_chars += len(fact)
+        records.append(
+            MemoryRecord(**repository.to_wire(result.memory, deduped=result.deduped)).model_dump()
+        )
+
+    metrics.extraction_facts_total.inc(len(facts))
+    await _emit_usage(
+        request, principal, operation="write",
+        units={"items_written": float(inserted), "embedding_tokens": float(total_chars),
+               "facts_extracted": float(len(facts))},
+        duration_ms=int((time.monotonic() - started) * 1000),
+    )
+    body_dict = {"extracted": True, "count": len(records), "memories": records}
+    if idem_key:
+        await idempotency.complete(valkey, idem_key, principal, 201, body_dict)
+    metrics.requests_total.labels("store", "success").inc()
+    metrics.request_duration_seconds.labels("store").observe(time.monotonic() - started)
+    return JSONResponse(content=body_dict, status_code=201)
+
+
 # ── Store ──────────────────────────────────────────────────────────────────────────
 @router.post("/memories", status_code=201, response_model=None)
 async def store_memory(
@@ -178,6 +273,17 @@ async def store_memory(
             new_content_bytes=content_bytes,
         )
 
+    # ── B5: salient-fact extraction fan-out (flag-gated; AFTER idempotency, BEFORE embed) ─
+    # Decompose multi-fact content into atomic facts, each its own row + focused embedding.
+    # Off / single-fact => falls through to the byte-identical single-memory path below.
+    if settings.memory_extraction_enabled:
+        facts = await _extract_facts(request, settings, body.content)
+        if len(facts) > 1:
+            return await _store_extracted_facts(
+                request, principal, body=body, facts=facts, ptype=ptype, pid=pid,
+                idem_key=idem_key, started=started,
+            )
+
     # ── Embed (gateway or deterministic mock) ──────────────────────────────────────
     vector, _source = await _embedder(request).embed_one(
         body.content, on_behalf_of=principal.agent_id, agent_jwt=_agent_jwt(request)
@@ -204,6 +310,9 @@ async def store_memory(
     result = await repo.store(
         memory=mem, dedup_threshold=threshold, trace_id=trace.trace_id_var.get(),
         producer_version=settings.service_version,
+        linking_enabled=settings.memory_linking_enabled,
+        linking_sim_min=settings.memory_linking_sim_min,
+        linking_max_neighbors=settings.memory_linking_max_neighbors,
     )
     if result.deduped:
         metrics.dedup_bumped_total.inc()
@@ -269,6 +378,10 @@ async def search_memories(
         current_only=current_only,
         session_scope_id=body.session_scope_id,
         agent_scope_id=body.agent_scope_id,
+        mmr_enabled=settings.memory_mmr_enabled,
+        mmr_lambda=settings.memory_mmr_lambda,
+        linking_enabled=settings.memory_linking_enabled,
+        link_expansion_limit=settings.memory_linking_expansion_limit,
     )
     payload = SearchMemoryResponse(
         results=[MemoryRecord(**repository.to_wire(m)) for m in results],

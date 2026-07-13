@@ -144,7 +144,7 @@ docker compose -f infra/compose/docker-compose.yml up -d --build
 ## WP14 — full-stack apply order (all services)
 
 The full-stack compose (`infra/compose/docker-compose.yml`) now brings up the **whole platform**: the original four
-(auth / llms / guardrails / xagent) **plus** rag / memory / tool-registry / tool-web-search (WP09–11) and the
+(auth / llms / guardrails / xagent) **plus** rag / memory / tool-registry (WP09–11) and the
 frontend BFF + SPA (WP13). The `migrate` job applies every service's migrations **and** provisions the new runtime
 roles. Run it ONCE, against the **DIRECT** endpoint, **before** the app services.
 
@@ -194,7 +194,7 @@ docker compose --profile observability up -d    # 3) optional: collector + Tempo
 
 ```bash
 # every service /readyz (host port-forwards):
-for p in 8080 8085 8086 8083 8087 8088 8089 8091; do curl -fsS localhost:$p/readyz && echo " <- $p ok"; done
+for p in 8080 8085 8086 8083 8087 8088 8089; do curl -fsS localhost:$p/readyz && echo " <- $p ok"; done
 curl -fsS localhost:8092/livez   # BFF
 curl -fsS localhost:8000/healthz # edge entrypoint
 # topics created:

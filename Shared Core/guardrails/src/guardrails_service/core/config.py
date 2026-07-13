@@ -208,6 +208,55 @@ class Settings(BaseSettings):
     # Comma-separated Presidio entity types to request (empty => the analyzer's defaults).
     presidio_entities: str = ""
 
+    # ── Unicode input canonicalization (de-obfuscation detection view — B1) ──────
+    # A detection VIEW is built from the raw input before the block-category injection /
+    # jailbreak detectors run, so an attacker who splices zero-width spaces, Tag-block
+    # "ASCII smuggling", bidi controls, fullwidth digits, or cross-script homoglyphs into a
+    # payload can no longer slip past the regex/signature layer while the downstream LLM still
+    # reads the intended text. RAW text is left untouched for PII redaction/HMAC (the offset
+    # map to the original is preserved), so ONLY the block-action detectors read the view.
+    #
+    # Layer A (always-on, no flag): strip zero-width (U+200B–200D, U+FEFF), the Tags block
+    #   (U+E0000–E007F), and bidi controls/isolates (U+202A–202E, U+2066–2069). Deterministic,
+    #   no false-positive risk on legitimate text — a no-op on clean ASCII.
+    # Layer B (opt-in, this flag): NFKC compatibility fold (fullwidth/ligature/superscript ->
+    #   canonical ASCII/BMP). Default OFF because it can alter legitimate non-ASCII text.
+    injection_normalize: bool = False
+    # Layer C (opt-in): UTS #39 confusables skeleton fold (cross-script homoglyphs — Cyrillic/
+    #   Greek/Cherokee look-alikes -> Latin skeleton) that NFKC provably cannot do. The map is
+    #   built ONCE from a checked-in Unicode confusables data file at lifespan. Default OFF
+    #   (precision risk on legitimate non-Latin text; the CI precision floor guards it).
+    guardrails_confusables_fold: bool = False
+
+    # ── Per-request canary-token leak detector (output rule — B7; default OFF) ───
+    # When ON, ``output-canary-leak-v1`` scans model OUTPUT for the caller-supplied
+    # high-entropy canary token(s) (body field ``canary_tokens``) the caller embedded in its
+    # own system prompt; any occurrence (exact + de-spaced/hex/base64 variants) means the
+    # system prompt/context leaked -> block. Field absent OR flag off => byte-identical to
+    # today (the detector is inert exactly like ``untrusted_spans``). No LLM/network.
+    canary_leak_enabled: bool = False
+
+    # ── Native context-window PII validation -> default-path passport/name (B8; OFF) ──
+    # A deterministic, spaCy-free context enhancer: each regex passport-number / name
+    # candidate is admitted ONLY when a configurable supporting term appears within
+    # ``pii_context_window`` chars — the mechanism Presidio's context enhancer / Google DLP
+    # hotword rules use, implemented natively. Unlocks a hot-path-safe built-in passport /
+    # honorific-gated name detector that bare regex cannot do at acceptable precision. Default
+    # OFF (fail-soft) so the default path stays byte-identical; the rules are inert unless on.
+    guardrails_pii_context_validation: bool = False
+    # Proximity window (chars, either side of the candidate span) for a supporting term.
+    pii_context_window: int = 40
+    # Supporting-term lexicons (comma-separated). A passport-number candidate is admitted only
+    # with a passport term nearby; a name candidate only with an honorific/name term nearby.
+    pii_context_passport_terms: str = (
+        "passport,passport number,passport no,document number,document no,travel document,"
+        "mrz,nationality,date of issue,place of birth"
+    )
+    pii_context_name_terms: str = (
+        "mr,mrs,ms,dr,prof,mr.,mrs.,ms.,dr.,prof.,my name is,name:,full name,i am,i'm,"
+        "signed,sincerely,regards"
+    )
+
     # ── Prompt-injection defense (instruction-hierarchy + spotlighting) ──────────
     # ADDITIVE input-side detector that tags RAG/tool-provided spans (the "spotlight") and
     # raises an injection-risk score, applying STRICTER thresholds to retrieved content.

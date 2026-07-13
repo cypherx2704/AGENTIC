@@ -37,5 +37,53 @@
     {"query": "export reports CSV PDF", "relevant": ["d17", "d18"]},
     {"query": "custom roles permissions for team", "relevant": ["d19"]},
     {"query": "delete a workspace", "relevant": ["d20"]}
-  ]
+  ],
+  "multihop": {
+    "description": "MultiHop-RAG-style slice (B2 / decompose): each query's answer needs facts that live in SEPARATE documents, so a single query vector cannot co-retrieve them. mock_decompose splits each compound query on 'and' into focused sub-questions; the union of per-sub-question retrievals co-retrieves the scattered supporting chunks. NOTE (measurement gap): the mock embedder is non-semantic, so this slice demonstrates that decomposition CO-RETRIEVES the scattered facts (recall@10 == 1.0) and never regresses vs single-query; a strict retrieval LIFT over single-query needs a real embedder (the mock's lexical leg finds a chunk whenever its distinctive tokens appear in the query, and sub-question tokens are a substring of the compound query).",
+    "documents": [
+      {"id": "mh_rate", "content": "The free tier API rate limit is one hundred requests per minute per key."},
+      {"id": "mh_residency", "content": "Customer data residency can be pinned to the Frankfurt region for compliance."},
+      {"id": "mh_reset", "content": "Password reset links expire after exactly one hour for account security."},
+      {"id": "mh_2fa", "content": "Two factor authentication requires a time based authenticator app code."},
+      {"id": "mh_d1", "content": "The pro tier API rate limit is one thousand requests per minute per key."},
+      {"id": "mh_d2", "content": "Enterprise API rate limit raises requests per minute to ten thousand per key."},
+      {"id": "mh_d3", "content": "Traffic above the API rate limit returns HTTP 429 within the per minute window."},
+      {"id": "mh_d4", "content": "API keys inherit their tier rate limit and requests per minute allowance."},
+      {"id": "mh_d5", "content": "Invoices are emailed monthly to the billing contact on file."},
+      {"id": "mh_d6", "content": "The mobile app supports offline reading and syncs when connectivity returns."},
+      {"id": "mh_d7", "content": "Exported reports are available in CSV and PDF formats from the dashboard."},
+      {"id": "mh_d8", "content": "Custom roles let admins grant granular permissions to team members."}
+    ],
+    "queries": [
+      {"query": "What is the free tier API rate limit per minute and which region can customer data residency be pinned to?", "relevant": ["mh_rate", "mh_residency"]},
+      {"query": "How long do password reset links stay valid and what does two factor authentication require?", "relevant": ["mh_reset", "mh_2fa"]}
+    ]
+  },
+  "multiquery": {
+    "description": "RAG-Fusion slice (B3 / multi_query): the ORIGINAL query wording shares no vocabulary with the relevant chunks (a vocabulary-mismatch miss), so single-query retrieval leaves them out of the top-k. The hand-authored variants use the chunks' vocabulary; per-variant retrieval + app-level RRF fusion recovers them. The variants are authored (not substrings of the original) precisely so the recall lift is real under the non-semantic mock embedder (its lexical leg matches the variant vocabulary).",
+    "documents": [
+      {"id": "mq_reimburse", "content": "Reimbursement for cancelled orders is issued to the original payment method."},
+      {"id": "mq_restock", "content": "A restocking deduction applies to opened hardware before reimbursement."},
+      {"id": "mq_unsub", "content": "Unsubscribe from marketing notifications in your communication preferences."},
+      {"id": "mq_optout", "content": "Opt out of promotional broadcasts by toggling the newsletter switch."},
+      {"id": "mq_n1", "content": "Shipping is free for orders over fifty dollars within the country."},
+      {"id": "mq_n2", "content": "Two factor authentication is enabled from the account security settings."},
+      {"id": "mq_n3", "content": "Audit logs are retained for ninety days on the free plan."},
+      {"id": "mq_n4", "content": "The mobile app supports offline reading and later syncing."},
+      {"id": "mq_n5", "content": "Webhooks retry with exponential backoff for a day on failure."},
+      {"id": "mq_n6", "content": "Custom roles grant granular permissions to team members."}
+    ],
+    "queries": [
+      {
+        "query": "how do I get my money back",
+        "variants": ["reimbursement for cancelled orders", "restocking deduction before reimbursement"],
+        "relevant": ["mq_reimburse", "mq_restock"]
+      },
+      {
+        "query": "stop sending me email blasts",
+        "variants": ["unsubscribe from marketing notifications", "opt out of promotional broadcasts newsletter"],
+        "relevant": ["mq_unsub", "mq_optout"]
+      }
+    ]
+  }
 }

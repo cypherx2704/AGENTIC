@@ -29,6 +29,7 @@ from .core.auth import warm_jwks
 from .core.config import get_settings
 from .core.errors import install_exception_handlers
 from .core.logging import configure_logging
+from .core.normalization import build_confusables_map
 from .core.redaction import RedactionKeyResolver
 from .core.trace import TraceContextMiddleware
 from .core.valkey import ValkeyClient
@@ -72,6 +73,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # ── Optional Microsoft Presidio PII analyzer (flag GUARDRAILS_PII_PRESIDIO; default off).
     #    None when disabled/unavailable -> the check path runs the current regex/HMAC path. ──
     app.state.presidio_analyzer = build_presidio_analyzer(settings)
+
+    # ── Unicode confusables skeleton map (B1 Layer C) — built ONCE from the checked-in
+    #    Unicode data file. Consumed by the canonicalization detection view only when
+    #    GUARDRAILS_CONFUSABLES_FOLD is on; empty map = a no-op fold (fail-soft). ──
+    app.state.confusables_map = build_confusables_map()
 
     # ── Policy engine + DB-backed redaction key resolver (env fallback, cached) ──
     app.state.policy_engine = PolicyEngine(pool)

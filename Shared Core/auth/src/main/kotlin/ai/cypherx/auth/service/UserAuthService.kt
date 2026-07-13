@@ -15,6 +15,7 @@ import ai.cypherx.auth.repo.Tenant
 import ai.cypherx.auth.repo.TenantRepository
 import ai.cypherx.auth.repo.UserRecord
 import ai.cypherx.auth.repo.UserRepository
+import ai.cypherx.auth.repo.UserSessionRepository
 import ai.cypherx.auth.signing.JwtMintService
 import ai.cypherx.auth.web.ApiException
 import com.fasterxml.jackson.databind.ObjectMapper
@@ -30,6 +31,7 @@ import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 import java.security.SecureRandom
 import java.time.Duration
 import java.time.Instant
@@ -54,6 +56,7 @@ import java.util.regex.Pattern
 @Service
 class UserAuthService(
     private val userRepository: UserRepository,
+    private val userSessionRepository: UserSessionRepository,
     private val agentRepository: AgentRepository,
     private val agentService: AgentService,
     private val apiKeyService: ApiKeyService,
@@ -87,13 +90,19 @@ class UserAuthService(
         val keyPrefix: String,
     )
 
-    /** What the BFF stores in the session (token) + echoes to the SPA (everything but the token). */
+    /**
+     * What the BFF stores in the session (`token` + `refreshToken`) + echoes to the SPA (everything
+     * but those two secrets). `refreshToken` is the opaque `<session_id>.<secret>` the BFF replays to
+     * `POST /v1/auth/refresh` to silently re-mint `token` before it expires.
+     */
     data class LoginResult(
         val userId: UUID,
         val tenantId: UUID,
         val agentId: UUID,
         val token: String,
         val expiresIn: Long,
+        val refreshToken: String,
+        val refreshExpiresIn: Long,
         val scopes: List<String>,
     )
 
@@ -194,10 +203,83 @@ class UserAuthService(
         return issueOrchestratorSession(user)
     }
 
+    // ── 4. Refresh / logout (BFF-driven silent renewal) ──────────────────────────────────────
+
+    /**
+     * Exchange a refresh token for a fresh <=1h access JWT — the BFF calls this before the access
+     * token expires so an active session never hard-expires mid-work. Validation: the token must
+     * parse, the session must exist, not be revoked, be inside BOTH the absolute cap and the sliding
+     * idle window, its secret hash must match, and the user must still be `active`. On success the
+     * idle window slides forward and a new orchestrator access token is minted.
+     *
+     * The refresh token itself is intentionally NOT rotated (see the 0013 migration note): concurrent
+     * BFF proxy requests would rotation-race each other into a spurious logout — the very bug this
+     * feature fixes — and the secret never leaves the BFF, so per-refresh rotation buys little here.
+     */
+    fun refresh(rawRefreshToken: String?): LoginResult {
+        val raw = rawRefreshToken?.takeIf { it.isNotBlank() } ?: throw invalidRefresh()
+        val (sessionId, secret) = parseRefreshToken(raw) ?: throw invalidRefresh()
+        val session = userSessionRepository.findById(sessionId) ?: throw invalidRefresh()
+
+        val now = Instant.now()
+        if (session.revokedAt != null) throw invalidRefresh()
+        if (now.isAfter(session.absoluteExpiresAt)) throw invalidRefresh()                       // hard 7-day cap
+        if (now.isAfter(session.lastUsedAt.plusSeconds(session.idleTimeoutSeconds))) throw invalidRefresh() // idle
+        if (!constantTimeEquals(sha256Hex(secret), session.refreshTokenHash)) throw invalidRefresh()
+
+        val user = userRepository.findById(session.userId) ?: throw invalidRefresh()
+        if (user.status != "active") throw ApiException.forbidden("Account is not active")
+
+        userSessionRepository.touchLastUsed(sessionId)
+        val access = mintOrchestratorAccess(user)
+        auditOnboarding(user.tenantId, access.agentId, "auth:refresh")
+
+        val refreshExpiresIn = Duration.between(now, session.absoluteExpiresAt).seconds.coerceAtLeast(1)
+        return LoginResult(
+            userId = user.userId,
+            tenantId = user.tenantId,
+            agentId = access.agentId,
+            token = access.token,
+            expiresIn = access.expiresIn,
+            refreshToken = raw,
+            refreshExpiresIn = refreshExpiresIn,
+            scopes = access.scopes,
+        )
+    }
+
+    /** Revoke a session (logout). Idempotent and quiet — a missing/malformed/unknown token is a no-op. */
+    fun logout(rawRefreshToken: String?) {
+        val raw = rawRefreshToken?.takeIf { it.isNotBlank() } ?: return
+        val (sessionId, _) = parseRefreshToken(raw) ?: return
+        runCatching { userSessionRepository.revoke(sessionId, "logout") }
+            .onFailure { log.warn("session revoke on logout failed: {}", it.message) }
+    }
+
     // ── shared issuance ──────────────────────────────────────────────────────────────────────
 
-    /** Mint an agent JWT for the user's tenant orchestrator (the Console session identity). */
+    /** Mint an access JWT AND open a refresh session (login / Google callback). */
     private fun issueOrchestratorSession(user: UserRecord): LoginResult {
+        val access = mintOrchestratorAccess(user)
+        val refresh = createRefreshSession(user)
+        runCatching { userRepository.touchLastLogin(user.userId) }
+        auditOnboarding(user.tenantId, access.agentId, "auth:login")
+        return LoginResult(
+            userId = user.userId,
+            tenantId = user.tenantId,
+            agentId = access.agentId,
+            token = access.token,
+            expiresIn = access.expiresIn,
+            refreshToken = refresh.token,
+            refreshExpiresIn = refresh.expiresIn,
+            scopes = access.scopes,
+        )
+    }
+
+    /** The minted access token bits shared by login and refresh. */
+    private data class AccessMint(val agentId: UUID, val token: String, val expiresIn: Long, val scopes: List<String>)
+
+    /** Mint a fresh <=1h agent JWT for the user's tenant orchestrator (the Console session identity). */
+    private fun mintOrchestratorAccess(user: UserRecord): AccessMint {
         val orchestrator = agentRepository.findOrchestrator(user.tenantId)
             ?: throw ApiException("NO_ORCHESTRATOR", HttpStatus.CONFLICT, "Tenant has no orchestrator agent")
         val plan = runCatching { tenantRepository.findById(user.tenantId)?.plan }.getOrNull()
@@ -216,18 +298,30 @@ class UserAuthService(
             extraClaims = extra,
         )
         recordActiveJti(orchestrator.agentId, minted.jti, minted.expiresAt)
-        runCatching { userRepository.touchLastLogin(user.userId) }
-        auditOnboarding(user.tenantId, orchestrator.agentId, "auth:login")
-
         val expiresIn = Duration.between(Instant.now(), minted.expiresAt).seconds.coerceAtLeast(1)
-        return LoginResult(
+        return AccessMint(orchestrator.agentId, minted.token, expiresIn, orchestrator.allowedScopes)
+    }
+
+    private data class IssuedRefresh(val token: String, val expiresIn: Long)
+
+    /**
+     * Open a new refresh session: a fresh opaque secret whose SHA-256 is stored (never the raw
+     * secret), with the absolute cap and idle window from [AuthProperties]. Returns the token the BFF
+     * holds — `"<session_id>.<secret>"` — plus seconds until the absolute cap.
+     */
+    private fun createRefreshSession(user: UserRecord): IssuedRefresh {
+        val sessionId = UUID.randomUUID()
+        val secret = randomSecret()
+        val absoluteExpiresAt = Instant.now().plusSeconds(props.userRefreshAbsoluteTtlSeconds)
+        userSessionRepository.create(
+            sessionId = sessionId,
             userId = user.userId,
             tenantId = user.tenantId,
-            agentId = orchestrator.agentId,
-            token = minted.token,
-            expiresIn = expiresIn,
-            scopes = orchestrator.allowedScopes,
+            refreshTokenHash = sha256Hex(secret),
+            absoluteExpiresAt = absoluteExpiresAt,
+            idleTimeoutSeconds = props.userRefreshIdleTtlSeconds,
         )
+        return IssuedRefresh(token = "$sessionId.$secret", expiresIn = props.userRefreshAbsoluteTtlSeconds)
     }
 
     private fun provisionGoogleUser(email: String, googleSub: String, name: String?): UserRecord {
@@ -447,6 +541,33 @@ class UserAuthService(
         rng.nextBytes(bytes)
         return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
     }
+
+    /** A 256-bit opaque refresh secret (url-safe base64). Stored only as its SHA-256. */
+    private fun randomSecret(): String {
+        val bytes = ByteArray(32)
+        rng.nextBytes(bytes)
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
+    }
+
+    /** Split `"<session_id>.<secret>"` into (sessionId, secret), or null if malformed. */
+    private fun parseRefreshToken(raw: String): Pair<UUID, String>? {
+        val dot = raw.indexOf('.')
+        if (dot <= 0 || dot >= raw.length - 1) return null
+        val sessionId = runCatching { UUID.fromString(raw.substring(0, dot)) }.getOrNull() ?: return null
+        return sessionId to raw.substring(dot + 1)
+    }
+
+    private fun sha256Hex(value: String): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(value.toByteArray(StandardCharsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+
+    /** Constant-time comparison so a mismatch does not leak how many leading hash bytes matched. */
+    private fun constantTimeEquals(a: String, b: String): Boolean =
+        MessageDigest.isEqual(a.toByteArray(StandardCharsets.UTF_8), b.toByteArray(StandardCharsets.UTF_8))
+
+    private fun invalidRefresh() =
+        ApiException("INVALID_REFRESH_TOKEN", HttpStatus.UNAUTHORIZED, "Session expired or invalid; please sign in again")
 
     private fun enc(v: String): String = URLEncoder.encode(v, StandardCharsets.UTF_8)
 

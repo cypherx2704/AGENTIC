@@ -42,7 +42,7 @@ export default function RegisterPage() {
     <div className="flex min-h-screen items-center justify-center bg-bg p-4">
       <div className="w-full max-w-md">
         <div className="mb-6 flex items-center justify-center gap-2">
-          <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand text-lg font-bold text-brand-fg">
+          <span className="flex h-9 w-9 items-center justify-center rounded-md bg-brand text-lg font-bold text-brand-fg">
             C
           </span>
           <span className="text-lg font-semibold text-fg">{config.appName}</span>
@@ -51,7 +51,7 @@ export default function RegisterPage() {
         {result ? (
           <Card className="w-full max-w-md">
             <CardHeader
-              title="Account created"
+              title="Account Created"
               description="Your workspace and orchestrator agent are ready."
             />
             <CardBody>
@@ -62,11 +62,11 @@ export default function RegisterPage() {
                   is used for SDK / programmatic access.
                 </p>
                 <div className="rounded-md border border-border bg-surface p-3">
-                  <div className="text-xs text-muted">Orchestrator API key</div>
+                  <div className="text-[11px] font-semibold uppercase tracking-wider text-faint">Orchestrator API Key</div>
                   <code className="block break-all text-sm text-fg">{result.api_key}</code>
                 </div>
                 <Button size="lg" onClick={() => router.replace('/')}>
-                  Continue to console
+                  Continue to Console
                 </Button>
               </div>
             </CardBody>
@@ -74,13 +74,13 @@ export default function RegisterPage() {
         ) : (
           <Card className="w-full max-w-md">
             <CardHeader
-              title="Create your account"
+              title="Create Your Account"
               description="Sign up for a new CypherX workspace. We create your orchestrator agent automatically."
             />
             <CardBody>
               <form onSubmit={onSubmit} className="flex flex-col gap-4">
                 <Input
-                  label="Workspace / tenant name"
+                  label="Workspace / Tenant Name"
                   placeholder="Acme Inc."
                   value={tenantName}
                   onChange={(e) => setTenantName(e.target.value)}
@@ -112,13 +112,13 @@ export default function RegisterPage() {
                   disabled={!email.trim() || password.length < 8}
                   size="lg"
                 >
-                  Create account
+                  Create Account
                 </Button>
               </form>
               <p className="mt-4 text-center text-sm text-muted">
                 Already have an account?{' '}
                 <Link href="/login" className="text-brand hover:underline">
-                  Sign in
+                  Sign In
                 </Link>
               </p>
             </CardBody>

@@ -54,7 +54,7 @@ The platform is **not** a single product — it's a foundation that currently ca
 | **xAgent / ax-1** | `xAgent/ax-1` | The agent **execution runtime** — runs one agent's task through a staged pipeline | Python/FastAPI | Built, 27 test files |
 | **xAgent / ax-2** | `xAgent/ax-2` | Future A2A router + multi-agent orchestrator | Python/FastAPI (planned) | **Empty placeholder** — only a `CLAUDE.md` |
 | **Tool Registry** | `Tools/tool-registry` | Catalogue + health-tracking of MCP tool servers | Python/FastAPI | Implemented |
-| **tool-web-search** | `Tools/tool-web-search` | A concrete MCP tool (`web_search`) | Python/FastAPI | Implemented |
+| **web_search flow-tool** | `Tools/tool-flow-bridge` | The concrete `web_search` MCP tool (public server `mcp-web-search`), a Node-RED flow-tool that replaced the retired `tool-web-search` service | Node-RED + Python/FastAPI bridge | Implemented |
 | **Skill Registry** | `Skills/skill-registry` | Catalogue of declarative skill definitions | Python/FastAPI | Implemented (mirrors tool-registry) |
 | **cypherx-a1** | `CoreProjects/cypherx-a1` | A **sibling product** to xAgent — an engineering-knowledge graph + RAG copilot that ingests GitHub/Jira/Slack | Python/FastAPI | Implemented (MVP + Phase A/B) |
 | **mcp-eng-memory** | `CoreProjects/cypherx-a1/mcp-eng-memory` | Stateless MCP facade in front of cypherx-a1, for AI coding agents/IDEs | Python/FastAPI | Implemented |
@@ -82,8 +82,7 @@ The platform is **not** a single product — it's a foundation that currently ca
 | memory | `:8088` | |
 | tool-registry | `:8089` | |
 | demo | `:8090` | Opt-in, `--profile demo` |
-| tool-web-search | `:8091` | |
-| frontend-bff | `:8092` → 8088 in-container | |
+| frontend-bff | `:8092` → 8088 in-container | (`:8091` freed — `tool-web-search` removed; `web_search` is now a Node-RED flow-tool) |
 | cypherx-a1 | `:8093` | |
 | mcp-eng-memory | `:8094` | |
 | skill-registry | `:8095` | |
@@ -296,7 +295,7 @@ Two ways to authenticate as a service (not a human):
 - `POST /v1/chat/completions` (LLMs gateway) — the same unified schema the Console's agents use under the hood, streaming or not.
 - `POST /v1/tasks` (xAgent) — submit a task exactly like the Console's Task Runner does; get back a Contract-3-shaped response with `task_steps`, `tokens_used`, `cost_usd` always populated.
 - `POST /v1/kbs/{id}/documents` / `POST /v1/kbs/{id}/query` (RAG) — ingest and query knowledge bases directly.
-- `POST /mcp/v1/invoke` on any tool server (e.g. `tool-web-search`) — invoke a tool the same way xAgent's tool loop does.
+- Invoke a tool the same way xAgent's tool loop does — e.g. the public `web_search` flow-tool via the bridge wire `POST /m/mcp-web-search/mcp` (`tools/call` name `web_search`).
 
 ### 5.4 Getting notified asynchronously (webhooks, Contract 21)
 
@@ -554,7 +553,7 @@ Read end to end, cases 1–10 **are** the platform's canonical single-turn story
 
 The planning docs under `archive/Manoj/phases/` mark almost every phase as "⏳ pending," which **understates** what's actually in this repository — the code and ~450+ test files across services tell a more complete story. Being precise about the gap:
 
-**Solidly implemented and tested today:** Auth, Guardrails, LLMs Gateway, Memory, RAG, xAgent/ax-1 (including RAG/Memory/Tool-loop integration stages), Tool Registry, Skill Registry, tool-web-search, the Console frontend + BFF, cypherx-a1 + mcp-eng-memory, the `contracts/` repo itself, the base Helm chart, and the Terraform module library (as code, not as applied infrastructure).
+**Solidly implemented and tested today:** Auth, Guardrails, LLMs Gateway, Memory, RAG, xAgent/ax-1 (including RAG/Memory/Tool-loop integration stages), Tool Registry, Skill Registry, the Flow-Tool-Bridge + Node-RED (incl. the public `web_search` flow-tool that replaced the retired `tool-web-search` service), the Console frontend + BFF, cypherx-a1 + mcp-eng-memory, the `contracts/` repo itself, the base Helm chart, and the Terraform module library (as code, not as applied infrastructure).
 
 **Explicitly stubs / not built:**
 - **`platform/`** (the control plane / billing-rollup / config-management service) — literally just an unedited GitLab README. Nothing to deploy.
@@ -566,7 +565,6 @@ The planning docs under `archive/Manoj/phases/` mark almost every phase as "⏳ 
 - `frontend/CLAUDE.md` describes a tenant/agent/API-key "platform-credential" login that the real code has replaced with email/password + Google OAuth + self-serve register.
 - `cypherx-a1/openapi.yaml` doesn't list `/v1/graph/activity`, even though it's live and used by the `mcp-eng-memory` manifest.
 - `Skills/skill-registry/db/migrations/README.md` still describes 2 old migration files; 4 newer ones exist on disk.
-- `tool-web-search`'s own `REPO_ANALYSIS_2026-06-11.md` predates the shipped wire format — the real request body key is `args`, not the spec's original `input`.
 
 ---
 

@@ -10,11 +10,11 @@ import pathlib
 _MANIFEST = pathlib.Path(__file__).resolve().parents[1] / "manifest.json"
 os.environ.setdefault("MANIFEST_PATH", str(_MANIFEST))
 
-import pytest
-from fastapi.testclient import TestClient
+import pytest  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
 
-from mcp_eng_memory.core.auth import Principal, require_principal
-from mcp_eng_memory.main import create_app
+from mcp_eng_memory.core.auth import Principal, require_principal  # noqa: E402
+from mcp_eng_memory.main import create_app  # noqa: E402
 
 
 class FakeBackend:

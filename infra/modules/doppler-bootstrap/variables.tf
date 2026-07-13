@@ -49,7 +49,6 @@ variable "services" {
     "orchestrator",
     "platform-mgmt",
     "px0-bridge",
-    "tool-web-search",
     "tool-code-exec",
     "tool-http-client",
     "tool-file-ops",

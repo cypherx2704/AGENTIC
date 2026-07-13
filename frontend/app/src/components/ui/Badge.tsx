@@ -25,13 +25,43 @@ export function Badge({ tone = 'neutral', children, className }: { tone?: Tone; 
   );
 }
 
-/** Map a status string to a sensible badge tone, then render it. */
+/** Acronyms/compounds that should not be naively Title-Cased word-by-word. */
+const STATUS_OVERRIDES: Record<string, string> = {
+  ok: 'OK',
+  llm: 'LLM',
+  api: 'API',
+  kb: 'KB',
+  pii: 'PII',
+  human_in_loop: 'Human-in-Loop',
+};
+
+/** Humanize a wire status ('pending_config' → 'Pending Config', 'ok' → 'OK') for chip display. */
+export function humanizeStatus(status: string | null | undefined): string {
+  const raw = (status ?? '').trim();
+  if (!raw) return '—';
+  const key = raw.toLowerCase();
+  if (STATUS_OVERRIDES[key]) return STATUS_OVERRIDES[key];
+  return raw
+    .split(/[_\-\s]+/)
+    .filter(Boolean)
+    .map((w) => STATUS_OVERRIDES[w.toLowerCase()] ?? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(' ');
+}
+
+/** Map a status string to a sensible badge tone, then render it Title-Cased. */
 export function StatusBadge({ status }: { status: string | null | undefined }) {
   const s = (status ?? '').toLowerCase();
   let tone: Tone = 'neutral';
-  if (['completed', 'active', 'allow', 'ok', 'ready', 'healthy'].includes(s)) tone = 'success';
-  else if (['running', 'pending', 'pending_config', 'warn', 'redact', 'building', 'ingesting'].includes(s)) tone = 'warning';
-  else if (['failed', 'timeout', 'cancelled', 'block', 'revoked', 'error', 'down', 'inactive'].includes(s)) tone = 'danger';
-  else if (['queued', 'draft'].includes(s)) tone = 'info';
-  return <Badge tone={tone}>{status ?? '—'}</Badge>;
+  if (['completed', 'active', 'allow', 'ok', 'ready', 'healthy', 'passed', 'succeeded', 'done', 'granted', 'delivered'].includes(s))
+    tone = 'success';
+  else if (
+    ['running', 'pending', 'pending_config', 'warn', 'redact', 'building', 'ingesting', 'processing', 'streaming', 'paused', 'retiring', 'rotating'].includes(s)
+  )
+    tone = 'warning';
+  else if (
+    ['failed', 'timeout', 'cancelled', 'block', 'blocked', 'revoked', 'error', 'down', 'inactive', 'denied', 'expired', 'disabled', 'retired'].includes(s)
+  )
+    tone = 'danger';
+  else if (['queued', 'draft', 'test', 'ask', 'next'].includes(s)) tone = 'info';
+  return <Badge tone={tone}>{humanizeStatus(status)}</Badge>;
 }

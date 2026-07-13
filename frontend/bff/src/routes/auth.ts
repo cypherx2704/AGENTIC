@@ -49,19 +49,29 @@ export function registerAuthRoutes(app: FastifyInstance): void {
   /** Build + persist a session from an Auth user-session result; sets cookies. Returns csrf token. */
   async function openSession(reply: FastifyReply, result: UserSessionResult): Promise<string> {
     const csrfToken = generateCsrfToken();
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const hasRefresh = Boolean(result.refreshToken);
+    // The whole session lives at most this long; without a refresh token (legacy api_key login) it
+    // is still bounded by the sliding idle TTL.
+    const sessionLifetimeSeconds =
+      hasRefresh && result.refreshExpiresIn > 0 ? result.refreshExpiresIn : config.sessionTtlSeconds;
     const data: SessionData = {
       tenantId: result.tenantId,
       agentId: result.agentId,
       userId: result.userId || undefined,
       scopes: result.scopes,
       downstreamToken: result.token,
-      tokenExpiresAt: Math.floor(Date.now() / 1000) + result.expiresIn,
+      tokenExpiresAt: nowSeconds + result.expiresIn,
+      refreshToken: hasRefresh ? result.refreshToken : undefined,
+      refreshExpiresAt: hasRefresh ? nowSeconds + sessionLifetimeSeconds : undefined,
       csrfToken,
       createdAt: Date.now(),
     };
     const sid = await sessions.create(data);
-    setSessionCookie(reply, config, sid);
-    setCsrfCookie(reply, config, csrfToken);
+    // Cookie Max-Age spans the whole session lifetime, not just the <=1h access token — otherwise the
+    // browser cookie would expire ~1h in while the (silently-refreshed) session is still alive.
+    setSessionCookie(reply, config, sid, sessionLifetimeSeconds);
+    setCsrfCookie(reply, config, csrfToken, sessionLifetimeSeconds);
     return csrfToken;
   }
 
@@ -181,6 +191,9 @@ export function registerAuthRoutes(app: FastifyInstance): void {
   app.post('/bff/logout', async (req: FastifyRequest, reply: FastifyReply) => {
     await resolveSession(req, sessions, config.cookie.sessionName);
     if (req.session) {
+      // Revoke the refresh token upstream so the session can't be renewed after logout (best-effort).
+      const refreshToken = req.session.data.refreshToken;
+      if (refreshToken) await authClient.revokeRefresh(refreshToken, req.trace);
       await sessions.destroy(req.session.sid);
     }
     clearAuthCookies(reply, config);
@@ -197,7 +210,12 @@ export function registerAuthRoutes(app: FastifyInstance): void {
       });
     }
     const { data } = req.session;
-    setCsrfCookie(reply, config, data.csrfToken);
+    // Keep the CSRF cookie alive for the remaining session lifetime (not just the idle TTL), so a
+    // long-lived silently-refreshed session doesn't lose its CSRF cookie and start 403-ing mutations.
+    const csrfMaxAge = data.refreshExpiresAt
+      ? Math.max(1, data.refreshExpiresAt - Math.floor(Date.now() / 1000))
+      : config.sessionTtlSeconds;
+    setCsrfCookie(reply, config, data.csrfToken, csrfMaxAge);
     return reply.code(200).send({
       authenticated: true,
       tenant_id: data.tenantId,

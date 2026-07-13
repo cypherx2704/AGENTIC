@@ -10,6 +10,7 @@ CTE, SET LOCAL hnsw.ef_search) -> usage event (units + request_id) -> response w
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 
 import structlog
 from fastapi import APIRouter, Depends, Request
@@ -21,7 +22,9 @@ from ..db import outbox, repository
 from ..models.api import QueryHit, QueryHitSource, QueryRequest, QueryResponse
 from ..services import acl, quota
 from ..services.acl import OP_QUERY
+from ..services.fusion import reciprocal_rank_fusion
 from ..services.store import resolve_vector_store
+from ..services.store.base import ChunkHit
 
 logger = structlog.get_logger(__name__)
 
@@ -84,56 +87,44 @@ async def query_kb(
     retrieve_k = min(settings.rerank_candidate_n, settings.query_top_k_cap) if rerank_active else body.top_k
     retrieve_k = max(retrieve_k, body.top_k)
 
+    # Query-transformation opt-ins (each flag-gated AND per-query, mirroring the rerank guard).
+    # Default (flag off OR field false) ⇒ the single-query path below runs UNCHANGED. decompose
+    # takes precedence over multi_query when a caller opts into both.
+    decompose_active = settings.rag_decompose_enabled and body.decompose
+    multiquery_active = settings.rag_multiquery_enabled and body.multi_query
+
     from ..core import metrics
 
-    # ── Dense leg query embedding (skipped for sparse-only retrieval) ──────────
-    query_vector: list[float] | None = None
-    if body.search_mode != "sparse":
-        embedder = request.app.state.embedder
-        result = await embedder.embed(
-            [body.query],
-            model=kb["embedding_model_resolved"],
-            dim=kb["embedding_dim"],
-            agent_jwt=agent_jwt,
-            on_behalf_of=on_behalf_of,
+    decomposed = False
+    expanded = False
+    hits: list[ChunkHit] | None = None
+    if decompose_active and getattr(request.app.state, "decomposer", None) is not None:
+        hits, decomposed = await _retrieve_decomposed(
+            request, body, kb, kb_id, store, settings,
+            tenant_id=principal.tenant_id, retrieve_k=retrieve_k, ef_search=ef_search,
+            rerank_active=rerank_active, agent_jwt=agent_jwt, on_behalf_of=on_behalf_of,
         )
-        query_vector = result.vectors[0]
+    elif multiquery_active and getattr(request.app.state, "expander", None) is not None:
+        hits, expanded = await _retrieve_multiquery(
+            request, body, kb, kb_id, store, settings,
+            tenant_id=principal.tenant_id, retrieve_k=retrieve_k, ef_search=ef_search,
+            agent_jwt=agent_jwt, on_behalf_of=on_behalf_of,
+        )
 
-    if body.search_mode == "dense":
-        # UNCHANGED two-pass dense path (the verified default). min_score floors cosine.
-        # When reranking, the cosine floor is relaxed so the candidate pool isn't starved
-        # before the reranker (the rerank stage does the final relevance gating); the default
-        # (non-rerank) call keeps body.min_score exactly as today.
-        dense_min_score = -1.0 if rerank_active else body.min_score
-        hits = await store.search(
-            principal.tenant_id,
-            kb_id,
-            query_vector,  # type: ignore[arg-type] — always set on the dense path
-            top_k=retrieve_k,
-            min_score=dense_min_score,
-            filters=body.filters,
-            dimension=kb["embedding_dim"],
-            ef_search=ef_search,
+    if hits is None:
+        # ── Single-query retrieval (the verified DEFAULT path — byte-identical) ──────
+        # min_score floors cosine on the dense path; when reranking, the floor is relaxed so the
+        # candidate pool isn't starved before the reranker (rerank does the final gating). The
+        # hybrid/sparse fused score is a rank-fusion score (not cosine), so no floor is applied.
+        vectors = await _embed_queries(
+            request, [body.query], kb, search_mode=body.search_mode,
+            agent_jwt=agent_jwt, on_behalf_of=on_behalf_of,
         )
-    else:
-        # Hybrid / sparse: dense + lexical fused with RRF in SQL. The fused score is a rank-
-        # fusion score (not cosine), so min_score (a cosine floor) is NOT applied here.
-        candidates = min(
-            body.top_k * settings.hybrid_candidate_multiplier, settings.hybrid_candidate_cap
-        )
-        candidates = max(candidates, retrieve_k)
-        hits = await store.search_hybrid(
-            principal.tenant_id,
-            kb_id,
-            query_vector,
-            body.query,
-            top_k=retrieve_k,
-            candidates=candidates,
-            rrf_k=settings.hybrid_rrf_k,
-            filters=body.filters,
-            dimension=kb["embedding_dim"],
-            ef_search=ef_search,
-            mode=body.search_mode,
+        hits = await _search_once(
+            store, principal.tenant_id, kb_id, settings,
+            query_text=body.query, query_vector=vectors[0], retrieve_k=retrieve_k, body=body,
+            dimension=kb["embedding_dim"], ef_search=ef_search,
+            dense_min_score=(-1.0 if rerank_active else body.min_score),
         )
     metrics.query_search_mode_total.labels(body.search_mode).inc()
 
@@ -150,7 +141,10 @@ async def query_kb(
     duration_ms = int((time.monotonic() - started) * 1000)
 
     # Usage metering: units + request_id ONLY (Contract-14 single-owner rule).
-    await _emit_usage(request, principal, kb_id, body, len(hits), reranked=reranked)
+    await _emit_usage(
+        request, principal, kb_id, body, len(hits),
+        reranked=reranked, decomposed=decomposed, expanded=expanded,
+    )
 
     metrics.query_total.labels("ok").inc()
     metrics.query_duration_seconds.observe(duration_ms / 1000)
@@ -205,6 +199,164 @@ async def _maybe_rerank(
     return reordered[:top_k], True
 
 
+async def _embed_queries(
+    request: Request,
+    texts: list[str],
+    kb: dict,
+    *,
+    search_mode: str,
+    agent_jwt: str | None,
+    on_behalf_of: str | None,
+) -> list[list[float] | None]:
+    """Embed a batch of query strings (dense leg). Sparse-only retrieval needs no vectors, so
+    it returns ``[None] * len(texts)`` (the lexical leg carries the query text). Used by the
+    single-query, decompose (per sub-question), and multi-query (per variant) paths alike."""
+    if search_mode == "sparse":
+        return [None] * len(texts)
+    result = await request.app.state.embedder.embed(
+        texts,
+        model=kb["embedding_model_resolved"],
+        dim=kb["embedding_dim"],
+        agent_jwt=agent_jwt,
+        on_behalf_of=on_behalf_of,
+    )
+    return list(result.vectors)
+
+
+async def _search_once(
+    store,  # noqa: ANN001 — IVectorStore
+    tenant_id: str,
+    kb_id: str,
+    settings,  # noqa: ANN001 — Settings
+    *,
+    query_text: str,
+    query_vector: list[float] | None,
+    retrieve_k: int,
+    body: QueryRequest,
+    dimension: int,
+    ef_search: int,
+    dense_min_score: float,
+) -> list[ChunkHit]:
+    """One retrieval for ``(query_text, query_vector)`` honouring ``body.search_mode``.
+
+    This is the single retrieval primitive the default path, decompose, and multi-query all
+    share, so their per-query retrieval is byte-identical to today's dense/hybrid/sparse legs.
+    The dense two-pass CTE keeps its cosine floor; hybrid/sparse fuse in SQL (no cosine floor).
+    """
+    if body.search_mode == "dense":
+        return await store.search(
+            tenant_id, kb_id, query_vector,
+            top_k=retrieve_k, min_score=dense_min_score, filters=body.filters,
+            dimension=dimension, ef_search=ef_search,
+        )
+    candidates = min(body.top_k * settings.hybrid_candidate_multiplier, settings.hybrid_candidate_cap)
+    candidates = max(candidates, retrieve_k)
+    return await store.search_hybrid(
+        tenant_id, kb_id, query_vector, query_text,
+        top_k=retrieve_k, candidates=candidates, rrf_k=settings.hybrid_rrf_k,
+        filters=body.filters, dimension=dimension, ef_search=ef_search, mode=body.search_mode,
+    )
+
+
+async def _retrieve_decomposed(
+    request: Request,
+    body: QueryRequest,
+    kb: dict,
+    kb_id: str,
+    store,  # noqa: ANN001 — IVectorStore
+    settings,  # noqa: ANN001 — Settings
+    *,
+    tenant_id: str,
+    retrieve_k: int,
+    ef_search: int,
+    rerank_active: bool,
+    agent_jwt: str | None,
+    on_behalf_of: str | None,
+) -> tuple[list[ChunkHit], bool]:
+    """Multi-hop retrieval (B2): decompose → retrieve per sub-question → union+dedup by chunk_id.
+
+    Returns ``(merged_pool, decomposed)`` where ``decomposed`` is True only when the query
+    actually split into >1 sub-question (a non-decomposable query or a gateway failure degrades
+    to single-query retrieval, so the result equals today's path). The merged pool is capped at
+    ``retrieve_k`` and handed to the shared rerank/trim stage by the caller. Facts scattered
+    across separate chunks are each retrieved by their own focused sub-question, then unioned —
+    keeping the best (max) per-chunk score across sub-questions for deterministic ordering."""
+    from ..core import metrics
+
+    sub_questions, source = await request.app.state.decomposer.decompose(
+        body.query, model=settings.decompose_model, agent_jwt=agent_jwt, on_behalf_of=on_behalf_of,
+    )
+    metrics.query_decompose_total.labels(source).inc()
+
+    vectors = await _embed_queries(
+        request, sub_questions, kb, search_mode=body.search_mode,
+        agent_jwt=agent_jwt, on_behalf_of=on_behalf_of,
+    )
+    dense_min_score = -1.0 if rerank_active else body.min_score
+    merged: dict[str, ChunkHit] = {}
+    for text, vector in zip(sub_questions, vectors, strict=True):
+        for hit in await _search_once(
+            store, tenant_id, kb_id, settings,
+            query_text=text, query_vector=vector, retrieve_k=retrieve_k, body=body,
+            dimension=kb["embedding_dim"], ef_search=ef_search, dense_min_score=dense_min_score,
+        ):
+            prev = merged.get(hit.chunk_id)
+            if prev is None or hit.score > prev.score:
+                merged[hit.chunk_id] = hit
+    pool = sorted(merged.values(), key=lambda h: (h.score, h.chunk_id), reverse=True)[:retrieve_k]
+    return pool, len(sub_questions) > 1
+
+
+async def _retrieve_multiquery(
+    request: Request,
+    body: QueryRequest,
+    kb: dict,
+    kb_id: str,
+    store,  # noqa: ANN001 — IVectorStore
+    settings,  # noqa: ANN001 — Settings
+    *,
+    tenant_id: str,
+    retrieve_k: int,
+    ef_search: int,
+    agent_jwt: str | None,
+    on_behalf_of: str | None,
+) -> tuple[list[ChunkHit], bool]:
+    """Multi-query expansion / RAG-Fusion (B3): expand → retrieve per variant → fuse with RRF.
+
+    Returns ``(fused_pool, expanded)``. Each variant's ranked list is fused with the app-level
+    Reciprocal Rank Fusion (``services/fusion.py``, k=``hybrid_rrf_k``) — a recall lever for
+    vocabulary mismatch. The returned hits carry the fused RRF score (a rank-fusion score, not a
+    cosine), matching the hybrid path's score semantics. A gateway failure degrades to the
+    original single query (``expanded=False``). The pool is handed to the shared rerank/trim
+    stage — pair with rerank to restore top-k precision (the full RAG-Fusion recipe)."""
+    from ..core import metrics
+
+    variants, source = await request.app.state.expander.expand(
+        body.query, n=settings.multiquery_num_variants, model=settings.multiquery_model,
+        agent_jwt=agent_jwt, on_behalf_of=on_behalf_of,
+    )
+    metrics.query_multiquery_total.labels(source).inc()
+
+    vectors = await _embed_queries(
+        request, variants, kb, search_mode=body.search_mode,
+        agent_jwt=agent_jwt, on_behalf_of=on_behalf_of,
+    )
+    ranked_lists: list[list[str]] = []
+    pool: dict[str, ChunkHit] = {}
+    for text, vector in zip(variants, vectors, strict=True):
+        hits_i = await _search_once(
+            store, tenant_id, kb_id, settings,
+            query_text=text, query_vector=vector, retrieve_k=retrieve_k, body=body,
+            dimension=kb["embedding_dim"], ef_search=ef_search, dense_min_score=-1.0,
+        )
+        ranked_lists.append([h.chunk_id for h in hits_i])
+        for hit in hits_i:
+            pool.setdefault(hit.chunk_id, hit)
+    fused = reciprocal_rank_fusion(ranked_lists, k=settings.hybrid_rrf_k)
+    hits = [replace(pool[cid], score=score) for cid, score in fused[:retrieve_k] if cid in pool]
+    return hits, len(variants) > 1
+
+
 async def _emit_usage(
     request: Request,
     principal: Principal,
@@ -213,6 +365,8 @@ async def _emit_usage(
     returned: int,
     *,
     reranked: bool = False,
+    decomposed: bool = False,
+    expanded: bool = False,
 ) -> None:
     pool = getattr(request.app.state, "db_pool", None)
     settings = request.app.state.settings
@@ -230,6 +384,8 @@ async def _emit_usage(
                 "top_k": body.top_k,
                 "search_mode": body.search_mode,
                 "reranked": reranked,
+                "decomposed": decomposed,
+                "expanded": expanded,
             },
             agent_id=principal.agent_id,
             api_key_id=principal.api_key_id,

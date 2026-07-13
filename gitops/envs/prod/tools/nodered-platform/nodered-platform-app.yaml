@@ -1,0 +1,26 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nodered-platform-prod
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  # The SINGLETON platform (public) Node-RED runtime hosting PUBLIC (promoted) tools. See the dev
+  # app for details. Deployment + PVC + Service + egress-ALLOW NetworkPolicy + Doppler-synced
+  # nodered-platform-secrets (admin/invoke/credential + platform PROVIDER KEYS).
+  source:
+    repoURL: https://github.com/cypherx-ai/cypherx-charts.git
+    targetRevision: main
+    path: charts/nodered-platform/manifests
+    directory:
+      recurse: false
+      exclude: '*.example.yaml'
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cypherx-tools
+  # PROD SAFETY GATE: no syncPolicy.automated — a human approves the sync in ArgoCD.
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true

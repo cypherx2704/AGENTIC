@@ -29,18 +29,32 @@ function baseOpts(config: Config, maxAgeSeconds?: number): BaseCookieOpts {
   return opts;
 }
 
-/** Set the opaque session-id cookie (httpOnly — the browser can never read it). */
-export function setSessionCookie(reply: FastifyReply, config: Config, sid: string): void {
+/**
+ * Set the opaque session-id cookie (httpOnly — the browser can never read it). [maxAgeSeconds]
+ * defaults to the sliding idle TTL, but at login the caller passes the full session lifetime (the
+ * refresh window) so the browser cookie does not evaporate ~1h in while the session is still alive.
+ */
+export function setSessionCookie(
+  reply: FastifyReply,
+  config: Config,
+  sid: string,
+  maxAgeSeconds: number = config.sessionTtlSeconds,
+): void {
   reply.setCookie(config.cookie.sessionName, sid, {
-    ...baseOpts(config, config.sessionTtlSeconds),
+    ...baseOpts(config, maxAgeSeconds),
     httpOnly: true,
   });
 }
 
 /** Set the CSRF cookie (NOT httpOnly so the SPA can echo it in the header). */
-export function setCsrfCookie(reply: FastifyReply, config: Config, token: string): void {
+export function setCsrfCookie(
+  reply: FastifyReply,
+  config: Config,
+  token: string,
+  maxAgeSeconds: number = config.sessionTtlSeconds,
+): void {
   reply.setCookie(config.cookie.csrfName, token, {
-    ...baseOpts(config, config.sessionTtlSeconds),
+    ...baseOpts(config, maxAgeSeconds),
     httpOnly: false,
   });
 }

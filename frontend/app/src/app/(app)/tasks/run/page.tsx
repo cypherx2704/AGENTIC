@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { PageHeader } from '@/components/AppShell';
+import { Page, PageBody, PageHeader } from '@/components/AppShell';
+import { Pipeline } from '@/components/Pipeline';
 import { TaskTimeline } from '@/components/TaskTimeline';
 import {
   Badge,
@@ -10,14 +11,20 @@ import {
   Card,
   CardBody,
   CardHeader,
+  CopyButton,
   ErrorBanner,
   Input,
+  Select,
   Stat,
   StatusBadge,
+  Switch,
   Textarea,
+  useToast,
 } from '@/components/ui';
 import { BffError, streamUrl } from '@/lib/bff-client';
-import { getTask, submitTask } from '@/lib/services';
+import { cancelTask, getTask, submitTask } from '@/lib/services';
+import { useAgentList } from '@/lib/useAgentList';
+import { CANONICAL_STAGES, stepsToStages } from '@/lib/pipeline';
 import type { TaskResponse, TaskStep } from '@/lib/types';
 import { formatCost, formatNumber } from '@/lib/utils';
 
@@ -30,6 +37,9 @@ interface BlockedInfo {
 export default function TaskRunnerPage() {
   const [agentId, setAgentId] = useState('');
   const [message, setMessage] = useState('');
+  const [sessionId, setSessionId] = useState('');
+  const [timeoutSec, setTimeoutSec] = useState('');
+  const [testRun, setTestRun] = useState(true);
   const [useStream, setUseStream] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
@@ -37,7 +47,10 @@ export default function TaskRunnerPage() {
   const [task, setTask] = useState<TaskResponse | null>(null);
   const [liveSteps, setLiveSteps] = useState<TaskStep[]>([]);
   const [streaming, setStreaming] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const esRef = useRef<EventSource | null>(null);
+  const toast = useToast();
+  const { agents, loading: agentsLoading } = useAgentList();
 
   const closeStream = useCallback(() => {
     esRef.current?.close();
@@ -122,11 +135,13 @@ export default function TaskRunnerPage() {
     closeStream();
 
     try {
-      // metadata.test=true marks this as an operator test run (reserved metadata key).
       const resp = await submitTask({
         agent_id: agentId.trim(),
         input: { message },
-        metadata: { test: true },
+        // metadata.test marks this as an operator test run (reserved metadata key).
+        metadata: { test: testRun },
+        session_id: sessionId.trim() || undefined,
+        timeout_seconds: timeoutSec.trim() ? Number(timeoutSec) : undefined,
       });
       setTask(resp);
       // If async/streaming and still running, attach the SSE stream for the live timeline.
@@ -156,23 +171,58 @@ export default function TaskRunnerPage() {
   }
 
   const steps = task?.task_steps?.length ? task.task_steps : liveSteps;
+  const stages = stepsToStages(steps);
+  const canCancel = !!task && (task.status === 'running' || task.status === 'pending');
+
+  // Fire-and-observe: DELETE the task, then let the live SSE/finalize path surface the cancelled state.
+  async function onCancel() {
+    if (!task) return;
+    setCancelling(true);
+    try {
+      await cancelTask(task.task_id);
+      toast.success('Task cancelled.');
+    } catch (err) {
+      if (err instanceof BffError && err.status === 409) {
+        toast.info('Task already finished.');
+      } else {
+        toast.error(err instanceof Error ? err.message : 'Could not cancel this task.');
+      }
+    } finally {
+      setCancelling(false);
+    }
+  }
 
   return (
-    <div>
-      <PageHeader title="Task runner" description="Submit a task and watch the live step timeline with real cost + tokens." />
+    <Page>
+      <PageHeader title="Task Runner" description="Submit a task and watch the live execution pipeline with real cost + tokens." />
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+      <PageBody>
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         <Card>
-          <CardHeader title="Submit a task" />
+          <CardHeader title="Submit a Task" />
           <CardBody>
             <form onSubmit={run} className="flex flex-col gap-4">
-              <Input
-                label="Agent ID"
-                placeholder="The active agent to run against"
+              <Select
+                label="Agent"
                 value={agentId}
                 onChange={(e) => setAgentId(e.target.value)}
                 required
-              />
+                disabled={agentsLoading || agents.length === 0}
+                hint={
+                  agentsLoading
+                    ? 'Loading agents…'
+                    : agents.length === 0
+                      ? 'No active agents available for this tenant.'
+                      : 'The agent to run this task against.'
+                }
+              >
+                <option value="">Select an agent…</option>
+                {agents.map((a) => (
+                  <option key={a.agent_id} value={a.agent_id}>
+                    {a.name}
+                  </option>
+                ))}
+              </Select>
               <Textarea
                 label="Message"
                 placeholder="Ask the agent something… (try a prompt-injection to see the 422 block)"
@@ -180,15 +230,36 @@ export default function TaskRunnerPage() {
                 onChange={(e) => setMessage(e.target.value)}
                 required
               />
-              <label className="flex items-center gap-2 text-sm text-fg">
-                <input type="checkbox" checked={useStream} onChange={(e) => setUseStream(e.target.checked)} />
-                Stream the timeline live (SSE)
-              </label>
+
+              <div className="grid grid-cols-2 gap-3">
+                <Input
+                  label="Session ID"
+                  placeholder="optional"
+                  value={sessionId}
+                  onChange={(e) => setSessionId(e.target.value)}
+                  hint="Ties the task to a memory session."
+                />
+                <Input
+                  label="Timeout (s)"
+                  type="number"
+                  min={1}
+                  placeholder="default"
+                  value={timeoutSec}
+                  onChange={(e) => setTimeoutSec(e.target.value)}
+                  hint="Optional per-task deadline."
+                />
+              </div>
+
+              <div className="flex flex-col gap-3 rounded-md border border-border bg-surface-2 px-3.5 py-3">
+                <Switch checked={useStream} onChange={setUseStream} label="Stream Live (SSE)" hint="Watch each stage arrive in real time." />
+                <Switch checked={testRun} onChange={setTestRun} label="Mark as Test Run" hint="Tags the task metadata.test = true." />
+              </div>
+
               <div className="flex items-center gap-2">
-                <Button type="submit" loading={busy} disabled={!agentId.trim() || !message.trim()}>
-                  Run task
+                <Button type="submit" size="md" loading={busy} disabled={!agentId.trim() || !message.trim()}>
+                  Run Task
                 </Button>
-                <Badge>metadata.test = true</Badge>
+                {testRun && <Badge>metadata.test = true</Badge>}
               </div>
               {error ? <ErrorBanner error={error} /> : null}
             </form>
@@ -198,15 +269,30 @@ export default function TaskRunnerPage() {
         <Card>
           <CardHeader
             title="Result"
-            description={task ? <span className="font-mono text-xs">{task.task_id}</span> : undefined}
-            actions={streaming ? <Badge tone="warning">streaming…</Badge> : task ? <StatusBadge status={task.status} /> : null}
+            description={task ? <CopyButton value={task.task_id} label="Copy Task ID" /> : undefined}
+            actions={
+              <div className="flex items-center gap-2">
+                {canCancel && (
+                  <Button variant="secondary" size="sm" loading={cancelling} onClick={() => void onCancel()}>
+                    Cancel Task
+                  </Button>
+                )}
+                {streaming ? <Badge tone="warning">Streaming…</Badge> : task ? <StatusBadge status={task.status} /> : null}
+              </div>
+            }
           />
           <CardBody>
+            {task || streaming ? (
+              <div className="mb-4 rounded-md border border-border bg-surface px-2 py-3">
+                <Pipeline stages={stages.length ? stages : CANONICAL_STAGES} className="px-1" />
+              </div>
+            ) : null}
+
             {blocked ? (
               <div className="mb-4 rounded-md border border-warning/50 bg-warning/10 px-4 py-3" role="alert">
                 <div className="flex items-center gap-2">
                   <Badge tone="warning">{blocked.code}</Badge>
-                  <span className="text-sm font-semibold text-fg">Blocked by a guardrail (HTTP 422)</span>
+                  <span className="text-sm font-semibold text-fg">Blocked by a Guardrail (HTTP 422)</span>
                 </div>
                 <p className="mt-1 text-sm text-fg/90">{blocked.message}</p>
                 {blocked.traceId && <p className="mt-1 font-mono text-xs text-muted">trace: {blocked.traceId}</p>}
@@ -223,31 +309,32 @@ export default function TaskRunnerPage() {
 
             {task?.output?.message ? (
               <div className="mb-4 rounded-md border border-border bg-surface-2 px-4 py-3">
-                <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted">Answer</p>
+                <p className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-faint">Answer</p>
                 <p className="whitespace-pre-wrap text-sm text-fg">{task.output.message}</p>
               </div>
             ) : null}
 
             {steps.length > 0 || streaming ? (
               <div>
-                <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">Timeline</p>
+                <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-faint">Timeline</p>
                 <TaskTimeline steps={steps} />
               </div>
             ) : !task && !blocked ? (
-              <p className="py-8 text-center text-sm text-muted">Submit a task to see its timeline here.</p>
+              <p className="py-8 text-center text-sm text-muted">Submit a task to see its pipeline here.</p>
             ) : null}
 
             {task && (
               <div className="mt-4 text-right">
-                <Link href={`/tasks/${task.task_id}`} className="text-sm text-brand hover:underline">
-                  Open full task detail →
+                <Link href={`/tasks/${task.task_id}`} className="text-[13px] font-medium text-brand hover:underline">
+                  Open Full Task Detail
                 </Link>
               </div>
             )}
           </CardBody>
         </Card>
       </div>
-    </div>
+      </PageBody>
+    </Page>
   );
 }
 

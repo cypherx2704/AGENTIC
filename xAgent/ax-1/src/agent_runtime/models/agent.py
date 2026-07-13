@@ -93,6 +93,10 @@ class AgentRuntime(BaseModel):
     rag_min_score: float = 0.7
     token_budget_per_task: int = 10000
 
+    # Orchestrator hierarchy (denormalised from auth.agents at runtime-registration time, migration
+    # 0006). immutable_llm=true locks llm_model against a later PUT (enforced in api/agents.py).
+    immutable_llm: bool = False
+
     capabilities: list[dict[str, Any]] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 

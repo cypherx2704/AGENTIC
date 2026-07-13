@@ -1,0 +1,27 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nodered-tenant-staging
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  # Per-tenant Node-RED prerequisites for the Flow-Tool-Bridge KubernetesProvisioner. See the dev
+  # app for details. Namespace + provisioner RBAC + default-deny + Doppler-synced shared secrets.
+  source:
+    repoURL: https://github.com/cypherx-ai/cypherx-charts.git
+    targetRevision: main
+    path: charts/nodered-tenant/manifests
+    directory:
+      recurse: false
+      exclude: '*.example.yaml'
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cypherx-tools
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

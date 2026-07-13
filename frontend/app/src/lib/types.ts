@@ -284,8 +284,15 @@ export interface KnowledgeBase {
   kb_id: string;
   tenant_id?: string;
   name: string;
+  description?: string | null;
   status: string;
   embedding_model?: string;
+  embedding_model_alias?: string;
+  embedding_model_resolved?: string;
+  embedding_dim?: number;
+  chunking_strategy?: string;
+  chunk_size?: number;
+  chunk_overlap?: number;
   document_count?: number;
   chunk_count?: number;
   created_at?: string;
@@ -296,6 +303,554 @@ export interface KnowledgeBase {
 export interface KbListResponse {
   data?: KnowledgeBase[];
   knowledge_bases?: KnowledgeBase[];
+  [k: string]: unknown;
+}
+
+/** Full KB record (RAG `KbResponse`) — returned by create / get / (list rows). */
+export interface KbDetail {
+  kb_id: string;
+  tenant_id: string;
+  name: string;
+  description: string | null;
+  chunking_strategy: string;
+  chunk_size: number;
+  chunk_overlap: number;
+  embedding_model_alias: string;
+  embedding_model_resolved: string;
+  embedding_dim: number;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** KB rollup counts (RAG `GET /v1/kbs/{id}/status`). */
+export interface KbStatus {
+  kb_id: string;
+  document_count: number;
+  chunk_count: number;
+  pending_docs: number;
+  failed_docs: number;
+  last_updated_at: string | null;
+}
+
+/** A document in a KB (RAG `DocumentResponse`). status ∈ pending|processing|completed|failed. */
+export interface RagDocument {
+  doc_id: string;
+  kb_id: string;
+  name: string;
+  source_type: string;
+  source_uri: string | null;
+  status: string;
+  attempts: number;
+  error_msg: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export interface RagDocumentListResponse {
+  documents: RagDocument[];
+  next_offset: number | null;
+}
+
+/** Presigned-upload grant (RAG `UploadUrlResponse`). */
+export interface RagUploadUrl {
+  upload_url: string;
+  doc_id: string;
+  fields: Record<string, string>;
+  expires_in: number;
+}
+
+/** A single retrieval hit (RAG `QueryHit`). */
+export interface RagQueryHit {
+  chunk_id: string;
+  doc_id: string;
+  content: string;
+  score: number;
+  metadata: Record<string, unknown>;
+  source: { name: string; uri?: string | null };
+}
+
+export interface RagQueryResponse {
+  results: RagQueryHit[];
+  query_id: string;
+  duration_ms: number;
+}
+
+export type RagSearchMode = 'dense' | 'hybrid' | 'sparse';
+export type RagPrincipalType = 'agent' | 'api_key' | 'user' | 'role' | 'tenant';
+export type RagPermission = 'read' | 'query' | 'ingest' | 'write' | 'admin';
+
+/** A KB ACL grant (RAG `AclRow` / `AclResponse`). */
+export interface RagAcl {
+  principal_type: RagPrincipalType;
+  principal_id: string;
+  permissions: RagPermission[];
+  expires_at?: string | null;
+  kb_id?: string;
+  created_by?: string;
+  created_at?: string;
+}
+
+// ── Memory service (principal-scoped agent memory) ───────────────────────────────────
+/** Cross-principal visibility of a memory. `principal_only` (default) is private. */
+export type MemoryVisibility = 'principal_only' | 'tenant_shared';
+
+/** A stored memory (Memory `MemoryRecord`). Search adds `similarity`/`composite_score`. */
+export interface MemoryRecord {
+  id: string;
+  principal_type: string;
+  principal_id: string;
+  scope: MemoryVisibility;
+  type: string;
+  tags: string[];
+  content: string;
+  metadata: Record<string, unknown>;
+  session_id: string | null;
+  score: number;
+  created_at: string;
+  last_accessed_at: string;
+  expires_at?: string | null;
+  importance_score?: number | null;
+  last_retrieved_at?: string | null;
+  valid_until?: string | null;
+  superseded_by_id?: string | null;
+  access_count?: number | null;
+  session_scope_id?: string | null;
+  agent_scope_id?: string | null;
+  similarity?: number | null;
+  composite_score?: number | null;
+  deduped?: boolean | null;
+}
+
+export interface MemorySearchResponse {
+  results: MemoryRecord[];
+  count: number;
+}
+
+/** A memory session (Memory `SessionRecord`). */
+export interface MemorySession {
+  session_id: string;
+  principal_type: string;
+  principal_id: string;
+  title: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface GdprWipeResult {
+  principal_type: string;
+  principal_id: string;
+  deleted_count: number;
+  wipe_log_id: string;
+}
+
+// ── Tools & Skills registries (MCP servers) ──────────────────────────────────────────
+/** Per-agent access mode for a tool/skill capability. */
+export type AccessMode = 'none' | 'ask' | 'automated';
+
+/**
+ * A resolved registry entry (tool or skill) from discovery — the backend `build_*_view`
+ * shape. Typed permissively (manifest/health/capabilities vary) with the common fields the
+ * catalog + detail views render; the index signature admits anything else the view carries.
+ */
+export interface RegistryEntry {
+  tool_id?: string;
+  skill_id?: string;
+  name: string;
+  owner?: string; // 'platform' | 'tenant'
+  is_platform?: boolean;
+  /** Marketplace visibility section this server belongs to (registry adds it; `public` == platform). */
+  visibility?: ToolVisibility | string;
+  version?: string;
+  resolved_version?: string;
+  latest_version?: string;
+  description?: string | null;
+  manifest?: Record<string, unknown> | null;
+  capabilities?: Array<Record<string, unknown>>;
+  required_scopes?: string[];
+  invoke_url?: string;
+  health?: Record<string, unknown> | string | null;
+  restricted?: boolean;
+  [k: string]: unknown;
+}
+export type ToolView = RegistryEntry;
+export type SkillView = RegistryEntry;
+
+/** Effective access resolution for an agent + tool/skill (GET .../access). */
+export interface AccessResolution {
+  tool?: string;
+  skill?: string;
+  agent_id: string;
+  capability?: string | null;
+  access_mode: AccessMode;
+  restricted: boolean;
+}
+
+// ── Tool Builder (flow-tool-bridge) ────────────────────────────────────────────────────
+export type FlowToolParamType = 'string' | 'integer' | 'number' | 'boolean';
+
+/** One input/output parameter defined in the Publish dialog form (-> JSON Schema). */
+export interface FlowToolParam {
+  name: string;
+  type: FlowToolParamType;
+  required?: boolean;
+  description?: string;
+}
+
+/** A published flow-tool as returned by the bridge list/detail (no secrets/internal hosts). */
+export interface FlowTool {
+  slug: string;
+  server_name: string;
+  tool_name: string;
+  display_name: string;
+  description: string;
+  version: string;
+  access_mode: AccessMode;
+  status: 'active' | 'retired';
+  node_red_flow_id?: string | null;
+  input_schema?: Record<string, unknown>;
+  output_schema?: Record<string, unknown> | null;
+  updated_at?: string | null;
+}
+
+/** Body for POST /v1/flow-tools (publish). */
+export interface PublishFlowToolRequest {
+  node_red_flow_id: string;
+  tool: {
+    title: string;
+    snake_name?: string;
+    description: string;
+    access_mode?: AccessMode;
+    input_params?: FlowToolParam[];
+    output_params?: FlowToolParam[];
+  };
+}
+
+export interface PublishFlowToolResult {
+  slug: string;
+  server_name: string;
+  tool_name: string;
+  version: string;
+  invoke_url: string;
+  access_mode: AccessMode;
+  is_update: boolean;
+}
+
+/** Response of POST /v1/editor-sessions. */
+export interface EditorSession {
+  ready: boolean;
+  runtime_status: string;
+  editor_url: string;
+  expires_at: string;
+}
+
+/** A Node-RED flow tab, for the Publish dialog's workflow picker. */
+export interface NoderedFlow {
+  id: string;
+  label: string;
+}
+
+// ── Tool + MCP workflow (flow-tool-bridge control plane: /v1/tools + /v1/mcps) ─────────
+// The "atomic tool + aggregating MCP" model (spec Phase 2/4). An MCP is a named collection
+// of tools registered to the registry as ONE server; a tool can belong to MANY MCPs. These
+// types cover the WHOLE feature (Marketplace 4A + Tool Builder 4B + Agent picker 4C) so the
+// later phases only touch their own page files. Shapes mirror flow-bridge `_tool_view` /
+// `_mcp_view` and the `tools_mcps.py` request bodies exactly.
+
+/** Tenant-level visibility label shared by tools, MCPs, and the registry `?visibility=` filter. */
+export type ToolVisibility = 'private' | 'protected' | 'public';
+
+/** Visibility a tenant may self-declare on publish. `public` is reached ONLY via promote. */
+export type TenantVisibility = 'private' | 'protected';
+
+/** Lifecycle status of an atomic tool or an MCP collection. */
+export type ToolLifecycleStatus = 'active' | 'retired';
+
+/** One MCP membership as it appears on an atomic tool (flow-bridge tool view `mcps[]`). */
+export interface ToolMcpMembership {
+  mcp_id: string;
+  slug: string;
+  server_name: string;
+  status?: ToolLifecycleStatus | string;
+}
+
+/**
+ * An atomic flow-tool + its MCP memberships — flow-bridge `GET /v1/tools` item (`_tool_view`).
+ * Named `BridgeTool` to avoid clashing with the legacy single-server {@link FlowTool}.
+ */
+export interface BridgeTool {
+  tool_id: string;
+  snake_name: string; // the MCP tool name (snake_case)
+  display_name: string;
+  description: string;
+  version: string;
+  visibility: ToolVisibility | null;
+  access_mode: AccessMode | null;
+  status: ToolLifecycleStatus | string;
+  node_red_flow_id?: string | null;
+  input_schema?: Record<string, unknown>;
+  output_schema?: Record<string, unknown> | null;
+  /** The MCP(s) this tool belongs to (empty is possible mid-migration; UI shows "standalone"). */
+  mcps: ToolMcpMembership[];
+  updated_at?: string | null;
+}
+
+/** A member tool as it appears inside an MCP view (flow-bridge `_mcp_view` `tools[]`). */
+export interface McpMemberTool {
+  tool_id: string;
+  snake_name: string;
+  display_name: string;
+  /**
+   * The member tool's DEFAULT access mode (from `flow_tools.tools.access_mode`). Seeds the agent
+   * picker's allowed-vs-greyed state when the whole MCP is added: `automated` members are allowed,
+   * `ask`/`none` (restricted) members come in greyed. Optional for back-compat with older bridges.
+   */
+  access_mode?: AccessMode | null;
+}
+
+/** An MCP collection (aggregating server) + its member tools — flow-bridge `_mcp_view`. */
+export interface Mcp {
+  mcp_id: string;
+  slug: string;
+  server_name: string; // == slug; the registry server name
+  display_name: string;
+  description: string;
+  visibility: ToolVisibility;
+  status: ToolLifecycleStatus | string;
+  version: string;
+  tools: McpMemberTool[];
+  updated_at?: string | null;
+  // Present ONLY on the promote response (POST /v1/mcps/{id}/promote):
+  registry_status?: string;
+  runtime_rehomed?: boolean;
+}
+
+/** Body for `POST /v1/tools` — create an atomic tool from a Node-RED flow (auto-singleton MCP). */
+export interface CreateBridgeToolRequest {
+  node_red_flow_id: string;
+  title: string;
+  description: string;
+  snake_name?: string;
+  input_params?: FlowToolParam[];
+  output_params?: FlowToolParam[];
+  access_mode?: AccessMode;
+  /** `private` | `protected` only — `public` is reached solely via promote (registry 400s it here). */
+  visibility?: TenantVisibility;
+  /** Join these existing MCP(s); omit/empty ⇒ auto-create a singleton MCP (`tool-<slug>`). */
+  mcp_ids?: string[];
+}
+
+/** Result of `POST /v1/tools` (create; flow-bridge returns the tool + its memberships). */
+export interface CreateBridgeToolResult {
+  tool_id: string;
+  snake_name: string;
+  display_name: string;
+  description: string;
+  version: string;
+  visibility: ToolVisibility;
+  access_mode: AccessMode;
+  status: ToolLifecycleStatus | string;
+  is_update: boolean;
+  mcp_slug: string | null;
+  server_name: string | null;
+  mcps: Array<{ mcp_id: string; slug: string; server_name: string }>;
+}
+
+/** Body for `POST /v1/mcps` — create an MCP collection (every `tool_ids` is ownership-validated). */
+export interface CreateMcpRequest {
+  display_name: string;
+  description: string;
+  visibility?: TenantVisibility;
+  tool_ids?: string[];
+  /** Optional explicit slug; otherwise derived from `display_name` + tenant suffix. */
+  slug?: string;
+}
+
+/**
+ * Body for `PUT /v1/mcps/{id}` — update metadata/membership (all fields optional). When `tool_ids`
+ * is present it REPLACES the membership set; omit it to leave membership untouched. The MCP version
+ * stays STABLE (the registry picks up the regenerated manifest via its ETag poll).
+ */
+export interface UpdateMcpRequest {
+  display_name?: string;
+  description?: string;
+  visibility?: TenantVisibility;
+  tool_ids?: string[];
+}
+
+/** Result of `DELETE /v1/mcps/{id}` (unpublish/retire the MCP + its exclusively-owned tools). */
+export interface UnpublishMcpResult {
+  mcp_id: string;
+  slug: string;
+  status: ToolLifecycleStatus | string;
+  /** Tool ids that were retired because this MCP was their only home. */
+  retired_tools: string[];
+}
+
+// ── Guardrails: custom rules + check + simulation ────────────────────────────────────
+export type RuleDirection = 'input' | 'output' | 'both';
+export type RuleSeverity = 'info' | 'low' | 'medium' | 'high' | 'critical';
+export type RuleAction = 'allow' | 'warn' | 'redact' | 'block';
+export type RuleFailMode = 'closed' | 'open';
+export type CustomRuleType = 'regex' | 'classifier-threshold';
+
+/** A tenant-authored custom rule (guardrails `CustomRule`; stable `id` = root_rule_id). */
+export interface CustomRule {
+  id: string;
+  rule_id: string;
+  tenant_id: string;
+  version: number;
+  name: string;
+  type: string;
+  direction: string;
+  category: string;
+  severity: string;
+  default_action: string;
+  default_fail_mode: string;
+  timeout_ms: number;
+  status: string;
+  pattern?: string | null;
+  classifier_category?: string | null;
+  threshold?: number | null;
+}
+
+/** Body of create/update custom rule (guardrails `CustomRuleCreate`). */
+export interface CustomRuleInput {
+  name: string;
+  type: CustomRuleType;
+  direction?: RuleDirection;
+  category: string;
+  severity?: RuleSeverity;
+  default_action?: RuleAction;
+  default_fail_mode?: RuleFailMode;
+  timeout_ms?: number;
+  pattern?: string | null;
+  classifier_category?: string | null;
+  threshold?: number | null;
+}
+
+export type CheckDecision = 'allow' | 'warn' | 'redact' | 'block';
+
+/** A violation surfaced by a check (matched text is always a redaction token / truncation). */
+export interface CheckViolation {
+  rule_id?: string;
+  rule_name?: string;
+  category?: string;
+  severity?: string;
+  action?: string;
+  matched?: string;
+  [k: string]: unknown;
+}
+
+/** Result of `POST /v1/check/{input,output}` — the guardrails test playground. */
+export interface CheckResult {
+  decision: CheckDecision;
+  processed_text?: string | null;
+  violations: CheckViolation[];
+  check_id?: string;
+  duration_ms?: number;
+  trace_id?: string;
+  confidence?: number;
+  metadata?: Record<string, unknown> | null;
+}
+
+/** Result of a policy simulation (decision + per-rule evaluation trace; nothing persisted). */
+export interface SimulationResult {
+  decision: CheckDecision;
+  evaluation_trace?: Array<Record<string, unknown>>;
+  processed_text?: string | null;
+  violations?: CheckViolation[];
+  [k: string]: unknown;
+}
+
+// ── Auth: credential control (key rotate / agent deactivate cascade) ──────────────────
+/** Response of `POST /v1/agents/{id}/keys/{keyId}/rotate` — the new secret is shown ONCE. */
+export interface RotateKeyResponse {
+  key_id: string;
+  api_key: string;
+  key_prefix: string;
+  scopes: string[];
+  expires_at: string | null;
+  created_at: string;
+  previous_key_id: string;
+  previous_key_expires_at: string;
+}
+
+/** Result of deactivating an agent (cascade revokes its keys + tokens). */
+export interface DeactivateAgentResult {
+  agent: Agent;
+  keys_revoked: number;
+  tokens_revoked: number;
+}
+
+// ── Auth admin: webhooks ─────────────────────────────────────────────────────────────
+/** A webhook subscription (auth `/v1/webhooks`). `secret` is present ONLY on create/rotate. */
+export interface Webhook {
+  id: string;
+  url: string;
+  event_types: string[];
+  status?: string; // active | paused | disabled
+  secret?: string; // shown once on create / rotate-secret
+  created_at?: string;
+  updated_at?: string;
+  last_delivery_at?: string | null;
+  failure_count?: number;
+  [k: string]: unknown;
+}
+
+/** A single webhook delivery attempt (auth `/v1/webhooks/{id}/deliveries`). */
+export interface WebhookDelivery {
+  id?: string;
+  delivery_id?: string;
+  event_type?: string;
+  status?: string; // delivered | failed | pending
+  response_status?: number | null;
+  attempts?: number;
+  created_at?: string;
+  delivered_at?: string | null;
+  [k: string]: unknown;
+}
+
+// ── Auth admin: tenant settings (self, via /v1/tenants/me) ───────────────────────────
+/** The caller's tenant (auth `GET/PATCH /v1/tenants/me`). Render `name` — never `tenant_id`. */
+export interface TenantView {
+  tenant_id: string;
+  name: string;
+  status: string;
+  plan: string;
+  source?: string;
+  source_metadata?: Record<string, unknown>;
+  region?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  suspended_at?: string | null;
+  pending_deletion_at?: string | null;
+  deleted_at?: string | null;
+  [k: string]: unknown;
+}
+
+// ── Auth admin: platform admin (scope-gated on platform:admin) ────────────────────────
+/** A signing key (auth `/v1/admin/signing-keys`). */
+export interface SigningKeyView {
+  kid?: string;
+  key_id?: string;
+  status?: string; // active | next | retiring | retired
+  algorithm?: string;
+  created_at?: string;
+  not_after?: string | null;
+  [k: string]: unknown;
+}
+
+/** A service client (auth `/v1/admin/service-clients`). `secret` present only on create/rotate. */
+export interface ServiceClientView {
+  id?: string;
+  client_id?: string;
+  name?: string;
+  service_name?: string;
+  scopes?: string[];
+  status?: string;
+  secret?: string; // shown once
+  created_at?: string;
   [k: string]: unknown;
 }
 

@@ -1,0 +1,1609 @@
+{
+  "_blast": {
+    "full_depth/UserBase": [
+      "app/routers/users.py:router:GET:/{user_id}",
+      "app/routers/users.py:router:POST:/"
+    ],
+    "full_depth/UserCreate": [
+      "app/routers/users.py:router:POST:/"
+    ]
+  },
+  "dto_seed0": {
+    "config": [],
+    "endpoints": [
+      {
+        "auth": {
+          "dependencies": [
+            "auth"
+          ],
+          "required": true,
+          "schemes": []
+        },
+        "body": "app/schemas.py:UserCreate",
+        "confidence": "inferred",
+        "handler": "create_user",
+        "handler_file": "app/routers/users.py",
+        "handler_line": 6,
+        "id": "app/routers/users.py:router:POST:/",
+        "method": "POST",
+        "middleware_chain": [
+          "A"
+        ],
+        "params": [],
+        "partial": false,
+        "resolved_path": "/api/users/",
+        "response": null,
+        "source": "static",
+        "tags": [
+          "a"
+        ],
+        "verification_status": "unverified"
+      }
+    ],
+    "schemas": [
+      {
+        "fields": [
+          {
+            "default": null,
+            "name": "id",
+            "required": true,
+            "type": "int"
+          }
+        ],
+        "file": "app/schemas.py",
+        "id": "app/schemas.py:UserBase",
+        "name": "UserBase"
+      },
+      {
+        "fields": [
+          {
+            "default": null,
+            "name": "email",
+            "required": true,
+            "type": "str"
+          }
+        ],
+        "file": "app/schemas.py",
+        "id": "app/schemas.py:UserCreate",
+        "name": "UserCreate"
+      },
+      {
+        "fields": [
+          {
+            "default": null,
+            "name": "name",
+            "required": true,
+            "type": "str"
+          }
+        ],
+        "file": "app/schemas.py",
+        "id": "app/schemas.py:UserOut",
+        "name": "UserOut"
+      }
+    ],
+    "trust": {
+      "by_confidence": {
+        "inferred": 1
+      },
+      "endpoints": 1,
+      "partial": 0
+    }
+  },
+  "dto_seed1": {
+    "config": [],
+    "endpoints": [
+      {
+        "auth": {
+          "dependencies": [
+            "auth"
+          ],
+          "required": true,
+          "schemes": []
+        },
+        "body": null,
+        "confidence": "inferred",
+        "handler": "get_user",
+        "handler_file": "app/routers/users.py",
+        "handler_line": 6,
+        "id": "app/routers/users.py:router:GET:/{user_id}",
+        "method": "GET",
+        "middleware_chain": [],
+        "params": [
+          {
+            "location": "path",
+            "name": "user_id",
+            "required": true,
+            "type": "int"
+          }
+        ],
+        "partial": false,
+        "resolved_path": "/api/users/{user_id}",
+        "response": "app/schemas.py:UserCreate",
+        "source": "static",
+        "tags": [
+          "x",
+          "y"
+        ],
+        "verification_status": "unverified"
+      },
+      {
+        "auth": {
+          "dependencies": [
+            "auth"
+          ],
+          "required": true,
+          "schemes": []
+        },
+        "body": "app/schemas.py:UserCreate",
+        "confidence": "inferred",
+        "handler": "create_user",
+        "handler_file": "app/routers/users.py",
+        "handler_line": 9,
+        "id": "app/routers/users.py:router:POST:/",
+        "method": "POST",
+        "middleware_chain": [],
+        "params": [],
+        "partial": false,
+        "resolved_path": "/api/users/",
+        "response": "app/schemas.py:UserOut",
+        "source": "static",
+        "tags": [
+          "x",
+          "y"
+        ],
+        "verification_status": "unverified"
+      }
+    ],
+    "schemas": [
+      {
+        "fields": [
+          {
+            "default": null,
+            "name": "id",
+            "required": true,
+            "type": "int"
+          }
+        ],
+        "file": "app/schemas.py",
+        "id": "app/schemas.py:UserBase",
+        "name": "UserBase"
+      },
+      {
+        "fields": [
+          {
+            "default": null,
+            "name": "email1",
+            "required": true,
+            "type": "str"
+          }
+        ],
+        "file": "app/schemas.py",
+        "id": "app/schemas.py:UserCreate",
+        "name": "UserCreate"
+      },
+      {
+        "fields": [
+          {
+            "default": null,
+            "name": "f2",
+            "required": true,
+            "type": "int"
+          }
+        ],
+        "file": "app/schemas.py",
+        "id": "app/schemas.py:UserOut",
+        "name": "UserOut"
+      }
+    ],
+    "trust": {
+      "by_confidence": {
+        "inferred": 2
+      },
+      "endpoints": 2,
+      "partial": 0
+    }
+  },
+  "dto_seed10": {
+    "config": [],
+    "endpoints": [
+      {
+        "auth": {
+          "dependencies": [
+            "auth"
+          ],
+          "required": true,
+          "schemes": []
+        },
+        "body": null,
+        "confidence": "inferred",
+        "handler": "h2",
+        "handler_file": "app/routers/users.py",
+        "handler_line": 9,
+        "id": "app/routers/users.py:router:GET:/r2",
+        "method": "GET",
+        "middleware_chain": [
+          "B",
+          "A"
+        ],
+        "params": [],
+        "partial": false,
+        "resolved_path": "/api/users/r2",
+        "response": null,
+        "source": "static",
+        "tags": [
+          "x",
+          "y"
+        ],
+        "verification_status": "unverified"
+      },
+      {
+        "auth": {
+          "dependencies": [
+            "auth"
+          ],
+          "required": true,
+          "schemes": []
+        },
+        "body": "app/schemas.py:UserCreate",
+        "confidence": "inferred",
+        "handler": "create_user",
+        "handler_file": "app/routers/users.py",
+        "handler_line": 6,
+        "id": "app/routers/users.py:router:POST:/",
+        "method": "POST",
+        "middleware_chain": [
+          "B",
+          "A"
+        ],
+        "params": [],
+        "partial": false,
+        "resolved_path": "/api/users/",
+        "response": "app/schemas.py:UserOut",
+        "source": "static",
+        "tags": [
+          "x",
+          "y"
+        ],
+        "verification_status": "unverified"
+      }
+    ],
+    "schemas": [
+      {
+        "fields": [
+          {
+            "default": null,
+            "name": "id",
+            "required": true,
+            "type": "int"
+          },
+          {
+            "default": null,
+            "name": "f1",
+            "required": true,
+            "type": "int"
+          }
+        ],
+        "file": "app/schemas.py",
+        "id": "app/schemas.py:UserBase",
+        "name": "UserBase"
+      },
+      {
+        "fields": [
+          {
+            "default": null,
+            "name": "email",
+            "required": true,
+            "type": "str"
+          }
+        ],
+        "file": "app/schemas.py",
+        "id": "app/schemas.py:UserCreate",
+        "name": "UserCreate"
+      },
+      {
+        "fields": [
+          {
+            "default": null,
+            "name": "name",
+            "required": true,
+            "type": "str"
+          }
+        ],
+        "file": "app/schemas.py",
+        "id": "app/schemas.py:UserOut",
+        "name": "UserOut"
+      }
+    ],
+    "trust": {
+      "by_confidence": {
+        "inferred": 2
+      },
+      "endpoints": 2,
+      "partial": 0
+    }
+  },
+  "dto_seed11": {
+    "config": [],
+    "endpoints": [
+      {
+        "auth": {
+          "dependencies": [
+            "auth"
+          ],
+          "required": true,
+          "schemes": []
+        },
+        "body": null,
+        "confidence": "inferred",
+        "handler": "get_user",
+        "handler_file": "app/routers/users.py",
+        "handler_line": 6,
+        "id": "app/routers/users.py:router:GET:/{user_id}",
+        "method": "GET",
+        "middleware_chain": [
+          "A"
+        ],
+        "params": [
+          {
+            "location": "path",
+            "name": "user_id",
+            "required": true,
+            "type": "int"
+          }
+        ],
+        "partial": true,
+        "resolved_path": "/api/users/{user_id}",
+        "response": null,
+        "source": "static",
+        "tags": [
+          "x",
+          "y"
+        ],
+        "verification_status": "unverified"
+      }
+    ],
+    "schemas": [
+      {
+        "fields": [
+          {
+            "default": null,
+            "name": "email",
+            "required": true,
+            "type": "str"
+          }
+        ],
+        "file": "app/schemas.py",
+        "id": "app/schemas.py:UserCreate",
+        "name": "UserCreate"
+      }
+    ],
+    "trust": {
+      "by_confidence": {
+        "inferred": 1
+      },
+      "endpoints": 1,
+      "partial": 1
+    }
+  },
+  "dto_seed2": {
+    "config": [],
+    "endpoints": [
+      {
+        "auth": {
+          "dependencies": [
+            "auth"
+          ],
+          "required": true,
+          "schemes": []
+        },
+        "body": "app/schemas.py:UserCreate",
+        "confidence": "inferred",
+        "handler": "create_user",
+        "handler_file": "app/routers/users.py",
+        "handler_line": 6,
+        "id": "app/routers/users.py:router:POST:/",
+        "method": "POST",
+        "middleware_chain": [
+          "A",
+          "B"
+        ],
+        "params": [],
+        "partial": false,
+        "resolved_path": "/",
+        "response": "app/schemas.py:UserOut",
+        "source": "static",
+        "tags": [],
+        "verification_status": "unverified"
+      }
+    ],
+    "schemas": [
+      {
+        "fields": [
+          {
+            "default": null,
+            "name": "id",
+            "required": true,
+            "type": "int"
+          },
+          {
+            "default": null,
+            "name": "f1",
+            "required": true,
+            "type": "int"
+          }
+        ],
+        "file": "app/schemas.py",
+        "id": "app/schemas.py:UserBase",
+        "name": "UserBase"
+      },
+      {
+        "fields": [
+          {
+            "default": null,
+            "name": "email2",
+            "required": true,
+            "type": "str"
+          }
+        ],
+        "file": "app/schemas.py",
+        "id": "app/schemas.py:UserCreate",
+        "name": "UserCreate"
+      },
+      {
+        "fields": [
+          {
+            "default": null,
+            "name": "name",
+            "required": true,
+            "type": "str"
+          }
+        ],
+        "file": "app/schemas.py",
+        "id": "app/schemas.py:UserOut",
+        "name": "UserOut"
+      }
+    ],
+    "trust": {
+      "by_confidence": {
+        "inferred": 1
+      },
+      "endpoints": 1,
+      "partial": 0
+    }
+  },
+  "dto_seed3": {
+    "config": [],
+    "endpoints": [
+      {
+        "auth": {
+          "dependencies": [
+            "auth"
+          ],
+          "required": true,
+          "schemes": []
+        },
+        "body": null,
+        "confidence": "inferred",
+        "handler": "h1",
+        "handler_file": "app/routers/users.py",
+        "handler_line": 12,
+        "id": "app/routers/users.py:router:GET:/r1",
+        "method": "GET",
+        "middleware_chain": [
+          "B",
+          "A"
+        ],
+        "params": [],
+        "partial": false,
+        "resolved_path": "/r1",
+        "response": "app/schemas.py:UserOut",
+        "source": "static",
+        "tags": [
+          "x",
+          "y"
+        ],
+        "verification_status": "unverified"
+      },
+      {
+        "auth": {
+          "dependencies": [
+            "auth"
+          ],
+          "required": true,
+          "schemes": []
+        },
+        "body": null,
+        "confidence": "static-certain",
+        "handler": "h2",
+        "handler_file": "app/routers/users.py",
+        "handler_line": 15,
+        "id": "app/routers/users.py:router:GET:/r2",
+        "method": "GET",
+        "middleware_chain": [
+          "B",
+          "A"
+        ],
+        "params": [],
+        "partial": false,
+        "resolved_path": "/r2",
+        "response": null,
+        "source": "static",
+        "tags": [
+          "x",
+          "y"
+        ],
+        "verification_status": "unverified"
+      },
+      {
+        "auth": {
+          "dependencies": [
+            "auth"
+          ],
+          "required": true,
+          "schemes": []
+        },
+        "body": null,
+        "confidence": "inferred",
+        "handler": "get_user",
+        "handler_file": "app/routers/users.py",
+        "handler_line": 6,
+        "id": "app/routers/users.py:router:GET:/{user_id}",
+        "method": "GET",
+        "middleware_chain": [
+          "B",
+          "A"
+        ],
+        "params": [
+          {
+            "location": "path",
+            "name": "user_id",
+            "required": true,
+            "type": "int"
+          }
+        ],
+        "partial": false,
+        "resolved_path": "/{user_id}",
+        "response": "app/schemas.py:UserOut",
+        "source": "static",
+        "tags": [
+          "x",
+          "y"
+        ],
+        "verification_status": "unverified"
+      },
+      {
+        "auth": {
+          "dependencies": [
+            "auth"
+          ],
+          "required": true,
+          "schemes": []
+        },
+        "body": "app/schemas.py:UserCreate",
+        "confidence": "inferred",
+        "handler": "create_user",
+        "handler_file": "app/routers/users.py",
+        "handler_line": 9,
+        "id": "app/routers/users.py:router:POST:/",
+        "method": "POST",
+        "middleware_chain": [
+          "B",
+          "A"
+        ],
+        "params": [],
+        "partial": false,
+        "resolved_path": "/",
+        "response": "app/schemas.py:UserOut",
+        "source": "static",
+        "tags": [
+          "a",
+          "b",
+          "x",
+          "y"
+        ],
+        "verification_status": "unverified"
+      }
+    ],
+    "schemas": [
+      {
+        "fields": [
+          {
+            "default": null,
+            "name": "id",
+            "required": true,
+            "type": "int"
+          }
+        ],
+        "file": "app/schemas.py",
+        "id": "app/schemas.py:UserBase",
+        "name": "UserBase"
+      },
+      {
+        "fields": [
+          {
+            "default": null,
+            "name": "email",
+            "required": true,
+            "type": "str"
+          }
+        ],
+        "file": "app/schemas.py",
+        "id": "app/schemas.py:UserCreate",
+        "name": "UserCreate"
+      },
+      {
+        "fields": [
+          {
+            "default": null,
+            "name": "name",
+            "required": true,
+            "type": "str"
+          }
+        ],
+        "file": "app/schemas.py",
+        "id": "app/schemas.py:UserOut",
+        "name": "UserOut"
+      }
+    ],
+    "trust": {
+      "by_confidence": {
+        "inferred": 3,
+        "static-certain": 1
+      },
+      "endpoints": 4,
+      "partial": 0
+    }
+  },
+  "dto_seed4": {
+    "config": [],
+    "endpoints": [
+      {
+        "auth": {
+          "dependencies": [
+            "auth"
+          ],
+          "required": true,
+          "schemes": []
+        },
+        "body": null,
+        "confidence": "inferred",
+        "handler": "h1",
+        "handler_file": "app/routers/users.py",
+        "handler_line": 12,
+        "id": "app/routers/users.py:router:GET:/r1",
+        "method": "GET",
+        "middleware_chain": [
+          "A",
+          "B"
+        ],
+        "params": [],
+        "partial": false,
+        "resolved_path": "/api/users/r1",
+        "response": null,
+        "source": "static",
+        "tags": [
+          "a",
+          "b",
+          "users"
+        ],
+        "verification_status": "unverified"
+      },
+      {
+        "auth": {
+          "dependencies": [
+            "auth"
+          ],
+          "required": true,
+          "schemes": []
+        },
+        "body": null,
+        "confidence": "inferred",
+        "handler": "get_user",
+        "handler_file": "app/routers/users.py",
+        "handler_line": 6,
+        "id": "app/routers/users.py:router:GET:/{user_id}",
+        "method": "GET",
+        "middleware_chain": [
+          "A",
+          "B"
+        ],
+        "params": [
+          {
+            "location": "path",
+            "name": "user_id",
+            "required": true,
+            "type": "int"
+          }
+        ],
+        "partial": false,
+        "resolved_path": "/api/users/{user_id}",
+        "response": "app/schemas.py:UserOut",
+        "source": "static",
+        "tags": [
+          "users"
+        ],
+        "verification_status": "unverified"
+      },
+      {
+        "auth": {
+          "dependencies": [
+            "auth"
+          ],
+          "required": true,
+          "schemes": []
+        },
+        "body": "app/schemas.py:UserCreate",
+        "confidence": "inferred",
+        "handler": "create_user",
+        "handler_file": "app/routers/users.py",
+        "handler_line": 9,
+        "id": "app/routers/users.py:router:POST:/",
+        "method": "POST",
+        "middleware_chain": [
+          "A",
+          "B"
+        ],
+        "params": [],
+        "partial": false,
+        "resolved_path": "/api/users/",
+        "response": "app/schemas.py:UserOut",
+        "source": "static",
+        "tags": [
+          "users"
+        ],
+        "verification_status": "unverified"
+      }
+    ],
+    "schemas": [
+      {
+        "fields": [
+          {
+            "default": null,
+            "name": "id3",
+            "required": true,
+            "type": "int"
+          },
+          {
+            "default": null,
+            "name": "f4",
+            "required": true,
+            "type": "int"
+          }
+        ],
+        "file": "app/schemas.py",
+        "id": "app/schemas.py:UserBase",
+        "name": "UserBase"
+      },
+      {
+        "fields": [
+          {
+            "default": null,
+            "name": "email",
+            "required": true,
+            "type": "str"
+          }
+        ],
+        "file": "app/schemas.py",
+        "id": "app/schemas.py:UserCreate",
+        "name": "UserCreate"
+      },
+      {
+        "fields": [
+          {
+            "default": null,
+            "name": "name2",
+            "required": true,
+            "type": "str"
+          }
+        ],
+        "file": "app/schemas.py",
+        "id": "app/schemas.py:UserOut",
+        "name": "UserOut"
+      }
+    ],
+    "trust": {
+      "by_confidence": {
+        "inferred": 3
+      },
+      "endpoints": 3,
+      "partial": 0
+    }
+  },
+  "dto_seed5": {
+    "config": [],
+    "endpoints": [
+      {
+        "auth": {
+          "dependencies": [
+            "auth"
+          ],
+          "required": true,
+          "schemes": []
+        },
+        "body": null,
+        "confidence": "inferred",
+        "handler": "h3",
+        "handler_file": "app/routers/users.py",
+        "handler_line": 5,
+        "id": "app/routers/users.py:router:GET:/r3",
+        "method": "GET",
+        "middleware_chain": [],
+        "params": [],
+        "partial": false,
+        "resolved_path": "/api/users/r3",
+        "response": null,
+        "source": "static",
+        "tags": [
+          "users"
+        ],
+        "verification_status": "unverified"
+      }
+    ],
+    "schemas": [
+      {
+        "fields": [
+          {
+            "default": null,
+            "name": "id",
+            "required": true,
+            "type": "int"
+          },
+          {
+            "default": null,
+            "name": "f1",
+            "required": true,
+            "type": "int"
+          }
+        ],
+        "file": "app/schemas.py",
+        "id": "app/schemas.py:UserBase",
+        "name": "UserBase"
+      },
+      {
+        "fields": [
+          {
+            "default": null,
+            "name": "email2",
+            "required": true,
+            "type": "str"
+          }
+        ],
+        "file": "app/schemas.py",
+        "id": "app/schemas.py:UserCreate",
+        "name": "UserCreate"
+      },
+      {
+        "fields": [
+          {
+            "default": null,
+            "name": "name",
+            "required": true,
+            "type": "str"
+          }
+        ],
+        "file": "app/schemas.py",
+        "id": "app/schemas.py:UserOut",
+        "name": "UserOut"
+      }
+    ],
+    "trust": {
+      "by_confidence": {
+        "inferred": 1
+      },
+      "endpoints": 1,
+      "partial": 0
+    }
+  },
+  "dto_seed6": {
+    "config": [],
+    "endpoints": [
+      {
+        "auth": {
+          "dependencies": [
+            "auth"
+          ],
+          "required": true,
+          "schemes": []
+        },
+        "body": "app/schemas.py:UserCreate",
+        "confidence": "inferred",
+        "handler": "create_user",
+        "handler_file": "app/routers/users.py",
+        "handler_line": 6,
+        "id": "app/routers/users.py:router:POST:/",
+        "method": "POST",
+        "middleware_chain": [],
+        "params": [],
+        "partial": true,
+        "resolved_path": "/u/",
+        "response": null,
+        "source": "static",
+        "tags": [
+          "a",
+          "b",
+          "users"
+        ],
+        "verification_status": "unverified"
+      }
+    ],
+    "schemas": [
+      {
+        "fields": [
+          {
+            "default": null,
+            "name": "id",
+            "required": true,
+            "type": "int"
+          },
+          {
+            "default": null,
+            "name": "f1",
+            "required": true,
+            "type": "int"
+          }
+        ],
+        "file": "app/schemas.py",
+        "id": "app/schemas.py:UserBase",
+        "name": "UserBase"
+      },
+      {
+        "fields": [
+          {
+            "default": null,
+            "name": "email",
+            "required": true,
+            "type": "str"
+          },
+          {
+            "default": null,
+            "name": "f2",
+            "required": true,
+            "type": "int"
+          }
+        ],
+        "file": "app/schemas.py",
+        "id": "app/schemas.py:UserCreate",
+        "name": "UserCreate"
+      }
+    ],
+    "trust": {
+      "by_confidence": {
+        "inferred": 1
+      },
+      "endpoints": 1,
+      "partial": 1
+    }
+  },
+  "dto_seed7": {
+    "config": [],
+    "endpoints": [
+      {
+        "auth": {
+          "dependencies": [
+            "auth"
+          ],
+          "required": true,
+          "schemes": []
+        },
+        "body": null,
+        "confidence": "inferred",
+        "handler": "h2",
+        "handler_file": "app/routers/users.py",
+        "handler_line": 12,
+        "id": "app/routers/users.py:router:GET:/r2",
+        "method": "GET",
+        "middleware_chain": [
+          "A"
+        ],
+        "params": [],
+        "partial": false,
+        "resolved_path": "/api/users/r2",
+        "response": "app/schemas.py:UserOut",
+        "source": "static",
+        "tags": [],
+        "verification_status": "unverified"
+      },
+      {
+        "auth": {
+          "dependencies": [
+            "auth"
+          ],
+          "required": true,
+          "schemes": []
+        },
+        "body": null,
+        "confidence": "inferred",
+        "handler": "get_user",
+        "handler_file": "app/routers/users.py",
+        "handler_line": 6,
+        "id": "app/routers/users.py:router:GET:/{user_id}",
+        "method": "GET",
+        "middleware_chain": [
+          "A"
+        ],
+        "params": [
+          {
+            "location": "path",
+            "name": "user_id",
+            "required": true,
+            "type": "int"
+          }
+        ],
+        "partial": false,
+        "resolved_path": "/api/users/{user_id}",
+        "response": "app/schemas.py:UserOut",
+        "source": "static",
+        "tags": [
+          "a"
+        ],
+        "verification_status": "unverified"
+      },
+      {
+        "auth": {
+          "dependencies": [
+            "auth"
+          ],
+          "required": true,
+          "schemes": []
+        },
+        "body": "app/schemas.py:UserCreate",
+        "confidence": "inferred",
+        "handler": "create_user",
+        "handler_file": "app/routers/users.py",
+        "handler_line": 9,
+        "id": "app/routers/users.py:router:POST:/",
+        "method": "POST",
+        "middleware_chain": [
+          "A"
+        ],
+        "params": [],
+        "partial": false,
+        "resolved_path": "/api/users/",
+        "response": "app/schemas.py:UserOut",
+        "source": "static",
+        "tags": [
+          "a"
+        ],
+        "verification_status": "unverified"
+      }
+    ],
+    "schemas": [
+      {
+        "fields": [
+          {
+            "default": null,
+            "name": "id",
+            "required": true,
+            "type": "int"
+          },
+          {
+            "default": null,
+            "name": "f1",
+            "required": true,
+            "type": "int"
+          }
+        ],
+        "file": "app/schemas.py",
+        "id": "app/schemas.py:UserBase",
+        "name": "UserBase"
+      },
+      {
+        "fields": [
+          {
+            "default": null,
+            "name": "email",
+            "required": true,
+            "type": "str"
+          }
+        ],
+        "file": "app/schemas.py",
+        "id": "app/schemas.py:UserCreate",
+        "name": "UserCreate"
+      },
+      {
+        "fields": [
+          {
+            "default": null,
+            "name": "name",
+            "required": true,
+            "type": "str"
+          }
+        ],
+        "file": "app/schemas.py",
+        "id": "app/schemas.py:UserOut",
+        "name": "UserOut"
+      }
+    ],
+    "trust": {
+      "by_confidence": {
+        "inferred": 3
+      },
+      "endpoints": 3,
+      "partial": 0
+    }
+  },
+  "dto_seed8": {
+    "config": [],
+    "endpoints": [
+      {
+        "auth": {
+          "dependencies": [
+            "auth"
+          ],
+          "required": true,
+          "schemes": []
+        },
+        "body": null,
+        "confidence": "inferred",
+        "handler": "h1",
+        "handler_file": "app/routers/users.py",
+        "handler_line": 12,
+        "id": "app/routers/users.py:router:GET:/r1",
+        "method": "GET",
+        "middleware_chain": [],
+        "params": [],
+        "partial": false,
+        "resolved_path": "/api/users/r1",
+        "response": null,
+        "source": "static",
+        "tags": [
+          "a"
+        ],
+        "verification_status": "unverified"
+      },
+      {
+        "auth": {
+          "dependencies": [
+            "auth"
+          ],
+          "required": true,
+          "schemes": []
+        },
+        "body": null,
+        "confidence": "inferred",
+        "handler": "get_user",
+        "handler_file": "app/routers/users.py",
+        "handler_line": 6,
+        "id": "app/routers/users.py:router:GET:/{user_id}",
+        "method": "GET",
+        "middleware_chain": [],
+        "params": [
+          {
+            "location": "path",
+            "name": "user_id",
+            "required": true,
+            "type": "int"
+          }
+        ],
+        "partial": false,
+        "resolved_path": "/api/users/{user_id}",
+        "response": "app/schemas.py:UserOut",
+        "source": "static",
+        "tags": [
+          "a",
+          "b"
+        ],
+        "verification_status": "unverified"
+      },
+      {
+        "auth": {
+          "dependencies": [
+            "auth"
+          ],
+          "required": true,
+          "schemes": []
+        },
+        "body": "app/schemas.py:UserCreate",
+        "confidence": "inferred",
+        "handler": "create_user",
+        "handler_file": "app/routers/users.py",
+        "handler_line": 9,
+        "id": "app/routers/users.py:router:POST:/",
+        "method": "POST",
+        "middleware_chain": [],
+        "params": [],
+        "partial": false,
+        "resolved_path": "/api/users/",
+        "response": "app/schemas.py:UserOut",
+        "source": "static",
+        "tags": [],
+        "verification_status": "unverified"
+      }
+    ],
+    "schemas": [
+      {
+        "fields": [
+          {
+            "default": null,
+            "name": "f2",
+            "required": true,
+            "type": "int"
+          }
+        ],
+        "file": "app/schemas.py",
+        "id": "app/schemas.py:UserBase",
+        "name": "UserBase"
+      },
+      {
+        "fields": [
+          {
+            "default": null,
+            "name": "email",
+            "required": true,
+            "type": "str"
+          }
+        ],
+        "file": "app/schemas.py",
+        "id": "app/schemas.py:UserCreate",
+        "name": "UserCreate"
+      },
+      {
+        "fields": [
+          {
+            "default": null,
+            "name": "name",
+            "required": true,
+            "type": "str"
+          }
+        ],
+        "file": "app/schemas.py",
+        "id": "app/schemas.py:UserOut",
+        "name": "UserOut"
+      }
+    ],
+    "trust": {
+      "by_confidence": {
+        "inferred": 3
+      },
+      "endpoints": 3,
+      "partial": 0
+    }
+  },
+  "dto_seed9": {
+    "config": [],
+    "endpoints": [
+      {
+        "auth": {
+          "dependencies": [
+            "auth"
+          ],
+          "required": true,
+          "schemes": []
+        },
+        "body": "app/schemas.py:UserCreate",
+        "confidence": "inferred",
+        "handler": "create_user",
+        "handler_file": "app/routers/users.py",
+        "handler_line": 6,
+        "id": "app/routers/users.py:router:POST:/",
+        "method": "POST",
+        "middleware_chain": [],
+        "params": [],
+        "partial": false,
+        "resolved_path": "/api/users/",
+        "response": "app/schemas.py:UserOut",
+        "source": "static",
+        "tags": [
+          "a",
+          "b"
+        ],
+        "verification_status": "unverified"
+      }
+    ],
+    "schemas": [
+      {
+        "fields": [
+          {
+            "default": null,
+            "name": "email",
+            "required": true,
+            "type": "str"
+          }
+        ],
+        "file": "app/schemas.py",
+        "id": "app/schemas.py:UserCreate",
+        "name": "UserCreate"
+      },
+      {
+        "fields": [
+          {
+            "default": null,
+            "name": "name",
+            "required": true,
+            "type": "str"
+          }
+        ],
+        "file": "app/schemas.py",
+        "id": "app/schemas.py:UserOut",
+        "name": "UserOut"
+      }
+    ],
+    "trust": {
+      "by_confidence": {
+        "inferred": 1
+      },
+      "endpoints": 1,
+      "partial": 0
+    }
+  },
+  "flask_project": {
+    "config": [],
+    "endpoints": [
+      {
+        "auth": {
+          "dependencies": [],
+          "required": false,
+          "schemes": []
+        },
+        "body": null,
+        "confidence": "inferred",
+        "handler": "item",
+        "handler_file": "app/views.py",
+        "handler_line": 4,
+        "id": "app/views.py:bp:DELETE:/items/{item_id}",
+        "method": "DELETE",
+        "middleware_chain": [],
+        "params": [
+          {
+            "location": "path",
+            "name": "item_id",
+            "required": true,
+            "type": null
+          }
+        ],
+        "partial": false,
+        "resolved_path": "/api/items/{item_id}",
+        "response": null,
+        "source": "static",
+        "tags": [],
+        "verification_status": "unverified"
+      },
+      {
+        "auth": {
+          "dependencies": [],
+          "required": false,
+          "schemes": []
+        },
+        "body": null,
+        "confidence": "inferred",
+        "handler": "download",
+        "handler_file": "app/views.py",
+        "handler_line": 6,
+        "id": "app/views.py:bp:GET:/files/{name:path}",
+        "method": "GET",
+        "middleware_chain": [],
+        "params": [
+          {
+            "location": "path",
+            "name": "name",
+            "required": true,
+            "type": null
+          }
+        ],
+        "partial": false,
+        "resolved_path": "/api/files/{name:path}",
+        "response": null,
+        "source": "static",
+        "tags": [],
+        "verification_status": "unverified"
+      },
+      {
+        "auth": {
+          "dependencies": [],
+          "required": false,
+          "schemes": []
+        },
+        "body": null,
+        "confidence": "inferred",
+        "handler": "item",
+        "handler_file": "app/views.py",
+        "handler_line": 4,
+        "id": "app/views.py:bp:GET:/items/{item_id}",
+        "method": "GET",
+        "middleware_chain": [],
+        "params": [
+          {
+            "location": "path",
+            "name": "item_id",
+            "required": true,
+            "type": null
+          }
+        ],
+        "partial": false,
+        "resolved_path": "/api/items/{item_id}",
+        "response": null,
+        "source": "static",
+        "tags": [],
+        "verification_status": "unverified"
+      }
+    ],
+    "schemas": [],
+    "trust": {
+      "by_confidence": {
+        "inferred": 3
+      },
+      "endpoints": 3,
+      "partial": 0
+    }
+  },
+  "full_depth": {
+    "config": [],
+    "endpoints": [
+      {
+        "auth": {
+          "dependencies": [],
+          "required": false,
+          "schemes": []
+        },
+        "body": null,
+        "confidence": "inferred",
+        "handler": "get_user",
+        "handler_file": "app/routers/users.py",
+        "handler_line": 6,
+        "id": "app/routers/users.py:router:GET:/{user_id}",
+        "method": "GET",
+        "middleware_chain": [
+          "CORSMiddleware"
+        ],
+        "params": [
+          {
+            "location": "path",
+            "name": "user_id",
+            "required": true,
+            "type": "int"
+          }
+        ],
+        "partial": false,
+        "resolved_path": "/api/users/{user_id}",
+        "response": "app/schemas.py:UserOut",
+        "source": "static",
+        "tags": [
+          "users"
+        ],
+        "verification_status": "unverified"
+      },
+      {
+        "auth": {
+          "dependencies": [
+            "oauth2"
+          ],
+          "required": true,
+          "schemes": [
+            "oauth2"
+          ]
+        },
+        "body": "app/schemas.py:UserCreate",
+        "confidence": "inferred",
+        "handler": "create_user",
+        "handler_file": "app/routers/users.py",
+        "handler_line": 8,
+        "id": "app/routers/users.py:router:POST:/",
+        "method": "POST",
+        "middleware_chain": [
+          "CORSMiddleware"
+        ],
+        "params": [],
+        "partial": false,
+        "resolved_path": "/api/users/",
+        "response": "app/schemas.py:UserOut",
+        "source": "static",
+        "tags": [
+          "users"
+        ],
+        "verification_status": "unverified"
+      }
+    ],
+    "schemas": [
+      {
+        "fields": [
+          {
+            "default": null,
+            "name": "id",
+            "required": true,
+            "type": "int"
+          }
+        ],
+        "file": "app/schemas.py",
+        "id": "app/schemas.py:UserBase",
+        "name": "UserBase"
+      },
+      {
+        "fields": [
+          {
+            "default": null,
+            "name": "email",
+            "required": true,
+            "type": "str"
+          }
+        ],
+        "file": "app/schemas.py",
+        "id": "app/schemas.py:UserCreate",
+        "name": "UserCreate"
+      },
+      {
+        "fields": [
+          {
+            "default": null,
+            "name": "name",
+            "required": true,
+            "type": "str"
+          }
+        ],
+        "file": "app/schemas.py",
+        "id": "app/schemas.py:UserOut",
+        "name": "UserOut"
+      }
+    ],
+    "trust": {
+      "by_confidence": {
+        "inferred": 2
+      },
+      "endpoints": 2,
+      "partial": 0
+    }
+  },
+  "simple": {
+    "config": [],
+    "endpoints": [
+      {
+        "auth": {
+          "dependencies": [],
+          "required": false,
+          "schemes": []
+        },
+        "body": null,
+        "confidence": "inferred",
+        "handler": "get_user",
+        "handler_file": "app/routers/users.py",
+        "handler_line": 4,
+        "id": "app/routers/users.py:router:GET:/{user_id}",
+        "method": "GET",
+        "middleware_chain": [],
+        "params": [
+          {
+            "location": "path",
+            "name": "user_id",
+            "required": true,
+            "type": "int"
+          }
+        ],
+        "partial": false,
+        "resolved_path": "/api/users/{user_id}",
+        "response": null,
+        "source": "static",
+        "tags": [],
+        "verification_status": "unverified"
+      },
+      {
+        "auth": {
+          "dependencies": [],
+          "required": false,
+          "schemes": []
+        },
+        "body": null,
+        "confidence": "inferred",
+        "handler": "create_user",
+        "handler_file": "app/routers/users.py",
+        "handler_line": 6,
+        "id": "app/routers/users.py:router:POST:/",
+        "method": "POST",
+        "middleware_chain": [],
+        "params": [],
+        "partial": false,
+        "resolved_path": "/api/users/",
+        "response": null,
+        "source": "static",
+        "tags": [],
+        "verification_status": "unverified"
+      }
+    ],
+    "schemas": [],
+    "trust": {
+      "by_confidence": {
+        "inferred": 2
+      },
+      "endpoints": 2,
+      "partial": 0
+    }
+  }
+}

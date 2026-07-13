@@ -13,9 +13,13 @@ os.environ.setdefault("DATABASE_URL", "postgresql://llms_user:localdev@localhost
 from llms_gateway.core.config import Settings  # noqa: E402
 from llms_gateway.models.unified import (  # noqa: E402
     ChatCompletionRequest,
+    ChatCompletionResponse,
+    Choice,
     FunctionDefinition,
     Message,
+    ResponseMessage,
     Tool,
+    Usage,
 )
 from llms_gateway.services import tool_emulation  # noqa: E402
 from llms_gateway.services.providers.mock import MockProvider  # noqa: E402
@@ -149,3 +153,42 @@ async def test_run_emulated_chat_final_answer_after_tool_result() -> None:
     assert resp.choices[0].finish_reason == "stop"
     assert not resp.choices[0].message.tool_calls
     assert json.loads  # sanity import use
+
+
+# ── protocol-leak hardening: a flaky model must never leak the raw tool-call protocol ──
+def _resp(content: str) -> ChatCompletionResponse:
+    return ChatCompletionResponse(
+        model="llama-3.1-8b-instruct",
+        choices=[Choice(index=0, message=ResponseMessage(content=content), finish_reason="stop")],
+        usage=Usage(prompt_tokens=1, completion_tokens=1, total_tokens=2, cost_usd=0.0),
+    )
+
+
+def test_parse_valid_allowed_call_is_accepted() -> None:
+    out = tool_emulation.parse_emulated_response(
+        _resp('{"tool_call": {"name": "web_search", "arguments": {"query": "hi"}}}'), ["web_search"]
+    )
+    assert out.choices[0].finish_reason == "tool_calls"
+    assert out.choices[0].message.tool_calls[0].function.name == "web_search"
+
+
+def test_parse_malformed_protocol_is_stripped_not_leaked() -> None:
+    # Truncated JSON (missing a closing brace) — the real 8B failure. Must NOT surface verbatim.
+    leaked = '{"tool_call": {"name": "web_search", "arguments": {"query": "hi"}}'
+    out = tool_emulation.parse_emulated_response(_resp(leaked), ["web_search"])
+    assert not out.choices[0].message.tool_calls
+    assert '"tool_call"' not in (out.choices[0].message.content or "")
+
+
+def test_parse_disallowed_tool_name_is_stripped() -> None:
+    out = tool_emulation.parse_emulated_response(
+        _resp('{"tool_call": {"name": "not_a_real_tool", "arguments": {}}}'), ["web_search"]
+    )
+    assert not out.choices[0].message.tool_calls
+    assert '"tool_call"' not in (out.choices[0].message.content or "")
+
+
+def test_parse_plain_answer_is_untouched() -> None:
+    out = tool_emulation.parse_emulated_response(_resp("Paris is sunny, 22C."), ["web_search"])
+    assert out.choices[0].message.content == "Paris is sunny, 22C."
+    assert not out.choices[0].message.tool_calls

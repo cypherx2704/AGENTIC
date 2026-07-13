@@ -91,12 +91,20 @@ class FakeValkey:
 
 
 class SpyEmbeddingClient(EmbeddingClient):
-    """Deterministic embedder that COUNTS calls (asserts no double-embed on replay)."""
+    """Deterministic embedder that COUNTS real (uncached) embeds.
 
-    def __init__(self, settings: Settings) -> None:
-        super().__init__(settings)
+    Counts at the ``_embed_uncached`` seam — BELOW the B2 content-hash cache — so
+    ``embed_calls`` reflects gateway/mock consultations only: it stays flat on an
+    idempotency replay (short-circuits before embedding) AND on a cache hit (served from
+    Valkey). Accepts the Contract-12 forwarding kwargs the production client passes.
+    """
+
+    def __init__(self, settings: Settings, *, valkey: object | None = None) -> None:
+        super().__init__(settings, valkey=valkey)
         self.embed_calls = 0
 
-    async def embed_many(self, texts: list[str]):  # type: ignore[override]
+    async def _embed_uncached(  # type: ignore[override]
+        self, texts: list[str], *, on_behalf_of: str | None = None, agent_jwt: str | None = None
+    ):
         self.embed_calls += 1
-        return await super().embed_many(texts)
+        return await super()._embed_uncached(texts, on_behalf_of=on_behalf_of, agent_jwt=agent_jwt)

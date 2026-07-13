@@ -1,0 +1,65 @@
+[project]
+name = "tool-flow-bridge"
+version = "0.1.0"
+description = "CypherX Tools — Flow-Tool-Bridge. Turns visually-built Node-RED workflows into Contract-4 MCP tools: a publish control plane (analyze flow -> generate manifest -> register in the Tool Registry -> govern access) plus a per-workflow MCP runtime that routes agent invocations to the tenant's Node-RED HTTP-In endpoint."
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "httpx>=0.27",
+    "pyjwt[crypto]>=2.9",
+    "psycopg[binary,pool]>=3.2",
+    "structlog>=24.4",
+    "prometheus-client>=0.21",
+    "redis>=5",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.7",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "asgi-lifespan>=2.1",
+    "respx>=0.21",
+]
+
+# PEP 621 extra mirroring the `dev` group so the platform reusable CI
+# (`pip install -e ".[test]"` + `pytest -q`) can install the test toolchain without uv.
+[project.optional-dependencies]
+test = [
+    "ruff>=0.7",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "asgi-lifespan>=2.1",
+    "respx>=0.21",
+]
+
+# One-shot operator CLI: publish + promote the PUBLIC web_search flow-tool.
+# Also runnable as `python -m tool_flow_bridge.services.bootstrap`.
+[project.scripts]
+tool-flow-bridge-bootstrap-web-search = "tool_flow_bridge.services.bootstrap:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tool_flow_bridge"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "C4", "SIM"]
+# B008: FastAPI Depends() in defaults is idiomatic.
+# ASYNC109: a thin httpx wrapper legitimately forwards a `timeout` arg to httpx.
+ignore = ["B008", "ASYNC109"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src"]

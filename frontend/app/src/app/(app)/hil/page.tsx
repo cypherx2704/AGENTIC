@@ -1,7 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { PageHeader } from '@/components/AppShell';
+import { Page, PageBody, PageHeader } from '@/components/AppShell';
+import { AgentName } from '@/components/AgentNames';
 import {
   Badge,
   Button,
@@ -26,18 +27,31 @@ import {
 import { formatTime } from '@/lib/utils';
 
 const MODES = ['automated', 'human_in_loop', 'partial'] as const;
+const MODE_LABEL: Record<string, string> = {
+  automated: 'Automated',
+  human_in_loop: 'Human-in-Loop',
+  partial: 'Partial',
+};
 const TRIGGERS = ['tool_execution', 'sub_agent_creation', 'llm_restriction', 'skill_execution'];
+const TRIGGER_LABEL: Record<string, string> = {
+  tool_execution: 'Tool Execution',
+  sub_agent_creation: 'Sub-agent Creation',
+  llm_restriction: 'LLM Restriction',
+  skill_execution: 'Skill Execution',
+};
 
 export default function HilPage() {
   return (
-    <div className="flex flex-col gap-6">
+    <Page>
       <PageHeader
-        title="Human-in-the-loop approvals"
+        title="Human-in-the-Loop Approvals"
         description="Review and resolve pending agent-action approvals, and set the orchestrator's HIL mode."
       />
-      <HilConfigCard />
-      <ApprovalsCard />
-    </div>
+      <PageBody fill className="gap-3">
+        <HilConfigCard />
+        <ApprovalsCard />
+      </PageBody>
+    </Page>
   );
 }
 
@@ -74,10 +88,10 @@ function HilConfigCard() {
   }
 
   return (
-    <Card>
+    <Card className="shrink-0">
       <CardHeader
-        title="Orchestrator HIL mode"
-        description="automated = never pause · human_in_loop = always ask · partial = ask only on selected triggers"
+        title="Orchestrator HIL Mode"
+        description="Automated = never pause · Human-in-Loop = always ask · Partial = ask only on selected triggers."
       />
       <CardBody>
         {error ? (
@@ -90,14 +104,14 @@ function HilConfigCard() {
               {MODES.map((m) => (
                 <Button
                   key={m}
-                  size="sm"
+                  size="md"
                   variant={effectiveMode === m ? 'primary' : 'secondary'}
                   onClick={() => {
                     setMode(m);
                     if (!triggers.length) setTriggers(data?.ask_on_triggers ?? []);
                   }}
                 >
-                  {m}
+                  {MODE_LABEL[m] ?? m}
                 </Button>
               ))}
             </div>
@@ -108,11 +122,11 @@ function HilConfigCard() {
                   {TRIGGERS.map((t) => (
                     <Button
                       key={t}
-                      size="sm"
+                      size="md"
                       variant={effectiveTriggers.includes(t) ? 'primary' : 'secondary'}
                       onClick={() => toggleTrigger(t)}
                     >
-                      {t}
+                      {TRIGGER_LABEL[t] ?? t}
                     </Button>
                   ))}
                 </div>
@@ -120,7 +134,7 @@ function HilConfigCard() {
             )}
             <div>
               <Button onClick={save} loading={saving}>
-                Save HIL mode
+                Save HIL Mode
               </Button>
             </div>
           </div>
@@ -162,13 +176,14 @@ function ApprovalsCard() {
         </span>
       ),
     },
-    { key: 'agent', header: 'Agent', render: (r) => <span className="font-mono text-xs">{r.agent_id.slice(0, 8)}…</span> },
+    { key: 'agent', header: 'Agent', render: (r) => <AgentName agentId={r.agent_id} /> },
     { key: 'requested', header: 'Requested', render: (r) => <span className="text-xs text-muted">{formatTime(r.requested_at)}</span> },
     {
       key: 'actions',
       header: '',
+      className: 'text-right',
       render: (r) => (
-        <div className="flex gap-2">
+        <div className="flex justify-end gap-2">
           <Button size="sm" loading={busy === r.request_id} onClick={() => resolve(r, 'grant')}>
             Grant
           </Button>
@@ -181,17 +196,17 @@ function ApprovalsCard() {
   ];
 
   return (
-    <Card>
+    <Card className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <CardHeader
-        title="Pending approvals"
+        title="Pending Approvals"
         description="Agents waiting on a human decision before performing an ask-mode action."
         actions={
-          <Button size="sm" variant="secondary" onClick={reload}>
+          <Button size="md" variant="secondary" onClick={reload}>
             Refresh
           </Button>
         }
       />
-      <CardBody className="px-0 py-0">
+      <CardBody className="min-h-0 flex-1 overflow-y-auto p-0">
         {error ? (
           <div className="p-4">
             <ErrorBanner error={error} title="Could not load approvals" />

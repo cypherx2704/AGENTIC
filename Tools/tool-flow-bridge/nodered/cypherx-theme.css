@@ -1,0 +1,183 @@
+/*
+ * CypherX brand-alignment overlay for the embedded Node-RED editor — LIGHT + DARK.
+ *
+ * Loaded via editorTheme.page.css (baked at /config/cypherx-theme.css). It follows the CypherX
+ * console's own light/dark toggle: the Tool Builder page stamps `data-cx-theme="light|dark"` on
+ * this document's <html> (same-origin iframe) and enables/disables the pre-built `github-dark`
+ * stylesheet to match. This file then tints each mode to the exact CypherX tokens (globals.css).
+ *
+ *   DARK  → github-dark stays active; we re-tint its grounds + accent to CypherX dark tokens.
+ *   LIGHT → github-dark is disabled (stock Node-RED light shows); we re-tint to CypherX light.
+ *
+ * Node-RED exposes its palette as `--red-ui-*` CSS custom properties; redefining them with
+ * !important wins over both the stock defaults and github-dark regardless of load order.
+ *
+ * CypherX tokens (hex resolved from the RGB triples in frontend/app/src/app/globals.css):
+ *   DARK : bg #0E1013 · surface #16181C · surface-2 #1B1E23 · border #292D34 · border-2 #363B44
+ *          fg #E4E7EB · fg-strong #F3F5F7 · muted #8A9099 · brand #4C8DF0 · brand-fg #0B0E12
+ *   LIGHT: bg #F6F8FA · surface #FFFFFF · border #D8DEE4 · border-2 #C4CCD4
+ *          fg #1F2328 · fg-strong #0B0E12 · muted #656D76 · brand #0969DA · brand-fg #FFFFFF
+ */
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   DARK — default (no attribute yet) and explicit dark. Tints github-dark to CypherX.
+   ══════════════════════════════════════════════════════════════════════════════ */
+:root:not([data-cx-theme]),
+:root[data-cx-theme="dark"] {
+  /* Grounds / surfaces */
+  --red-ui-primary-background: #16181C !important;
+  --red-ui-secondary-background: #0E1013 !important;
+  --red-ui-tertiary-background: #1B1E23 !important;
+  --red-ui-view-background: #0E1013 !important;
+  --red-ui-view-grid-color: #1B1E23 !important;
+  --red-ui-header-background: #0E1013 !important;
+  --red-ui-header-menu-background: #16181C !important;
+  --red-ui-palette-header-background: #16181C !important;
+  --red-ui-palette-content-background: #0E1013 !important;
+  --red-ui-menuBackground: #16181C !important;
+  --red-ui-menuHoverBackground: #1B1E23 !important;
+  --red-ui-tab-background-inactive: #0E1013 !important;
+  --red-ui-node-config-background: #16181C !important;
+  --red-ui-shadow: rgba(0, 0, 0, 0.45) !important;
+
+  /* Borders */
+  --red-ui-primary-border-color: #292D34 !important;
+  --red-ui-secondary-border-color: #363B44 !important;
+  --red-ui-tertiary-border-color: #292D34 !important;
+  --red-ui-node-border: #363B44 !important;
+
+  /* Text */
+  --red-ui-primary-text-color: #E4E7EB !important;
+  --red-ui-secondary-text-color: #8A9099 !important;
+  --red-ui-tertiary-text-color: #636971 !important;
+  --red-ui-header-text-color: #F3F5F7 !important;
+  --red-ui-header-menu-color: #E4E7EB !important;
+
+  /* Accent — the single CypherX blue */
+  --red-ui-text-color-link: #4C8DF0 !important;
+  --red-ui-link-color: #4C8DF0 !important;
+  --red-ui-node-selected-color: #4C8DF0 !important;
+  --red-ui-port-selected-color: #4C8DF0 !important;
+  --red-ui-workspace-button-color-selected: #4C8DF0 !important;
+  --red-ui-workspace-button-color-focus: #4C8DF0 !important;
+
+  /* Form controls */
+  --red-ui-form-background: #0E1013 !important;
+  --red-ui-form-text-color: #E4E7EB !important;
+  --red-ui-form-input-background: #16181C !important;
+  --red-ui-form-input-border-color: #363B44 !important;
+  --red-ui-form-input-focus-color: rgba(76, 141, 240, 0.22) !important;
+  --red-ui-form-placeholder-color: #636971 !important;
+
+  /* Semantic */
+  --red-ui-text-color-error: #E5544E !important;
+  --red-ui-text-color-warning: #D6A02A !important;
+  --red-ui-text-color-success: #3FB84F !important;
+
+  /* Deploy / primary button (brand fill, brand-fg text) */
+  --red-ui-deploy-button-color: #0B0E12 !important;
+  --red-ui-deploy-button-background: #4C8DF0 !important;
+  --red-ui-deploy-button-background-hover: #3F7FE0 !important;
+  --red-ui-deploy-button-background-active: #3F7FE0 !important;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   LIGHT — github-dark is disabled by the bridge; stock light shows, tinted to CypherX.
+   ══════════════════════════════════════════════════════════════════════════════ */
+:root[data-cx-theme="light"] {
+  /* Grounds / surfaces */
+  --red-ui-primary-background: #FFFFFF !important;
+  --red-ui-secondary-background: #F6F8FA !important;
+  --red-ui-tertiary-background: #F6F8FA !important;
+  --red-ui-view-background: #FFFFFF !important;
+  --red-ui-view-grid-color: #EAEEF2 !important;
+  --red-ui-header-background: #FFFFFF !important;
+  --red-ui-header-menu-background: #FFFFFF !important;
+  --red-ui-palette-header-background: #F6F8FA !important;
+  --red-ui-palette-content-background: #FFFFFF !important;
+  --red-ui-menuBackground: #FFFFFF !important;
+  --red-ui-menuHoverBackground: #F6F8FA !important;
+  --red-ui-tab-background-inactive: #F6F8FA !important;
+  --red-ui-node-config-background: #FFFFFF !important;
+  --red-ui-shadow: rgba(31, 35, 40, 0.12) !important;
+
+  /* Borders */
+  --red-ui-primary-border-color: #D8DEE4 !important;
+  --red-ui-secondary-border-color: #C4CCD4 !important;
+  --red-ui-tertiary-border-color: #D8DEE4 !important;
+  --red-ui-node-border: #C4CCD4 !important;
+
+  /* Text */
+  --red-ui-primary-text-color: #1F2328 !important;
+  --red-ui-secondary-text-color: #656D76 !important;
+  --red-ui-tertiary-text-color: #8B949E !important;
+  --red-ui-header-text-color: #0B0E12 !important;
+  --red-ui-header-menu-color: #1F2328 !important;
+
+  /* Accent — CypherX light blue (stock Node-RED accent is red; override it) */
+  --red-ui-text-color-link: #0969DA !important;
+  --red-ui-link-color: #0969DA !important;
+  --red-ui-node-selected-color: #0969DA !important;
+  --red-ui-port-selected-color: #0969DA !important;
+  --red-ui-workspace-button-color-selected: #0969DA !important;
+  --red-ui-workspace-button-color-focus: #0969DA !important;
+
+  /* Form controls */
+  --red-ui-form-background: #FFFFFF !important;
+  --red-ui-form-text-color: #1F2328 !important;
+  --red-ui-form-input-background: #FFFFFF !important;
+  --red-ui-form-input-border-color: #C4CCD4 !important;
+  --red-ui-form-input-focus-color: rgba(9, 105, 218, 0.22) !important;
+  --red-ui-form-placeholder-color: #8B949E !important;
+
+  /* Semantic */
+  --red-ui-text-color-error: #CF222E !important;
+  --red-ui-text-color-warning: #9A6700 !important;
+  --red-ui-text-color-success: #1A7F37 !important;
+
+  /* Deploy / primary button (brand fill, white text) */
+  --red-ui-deploy-button-color: #FFFFFF !important;
+  --red-ui-deploy-button-background: #0969DA !important;
+  --red-ui-deploy-button-background-hover: #0860C9 !important;
+  --red-ui-deploy-button-background-active: #0860C9 !important;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   Mode-agnostic: fonts match the console (graceful fallback if faces aren't installed).
+   ══════════════════════════════════════════════════════════════════════════════ */
+body,
+.red-ui-editor,
+.red-ui-editor input,
+.red-ui-editor button,
+.red-ui-editor select,
+.red-ui-editor textarea {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif !important;
+}
+
+.red-ui-text-editor,
+.red-ui-editor .monaco-editor,
+.red-ui-typedInput-value-label,
+pre,
+code {
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
+}
+
+/* Header hairline in both modes (stock has no bottom border in light). */
+:root[data-cx-theme="light"] #red-ui-header {
+  border-bottom: 1px solid #D8DEE4 !important;
+}
+:root:not([data-cx-theme]) #red-ui-header,
+:root[data-cx-theme="dark"] #red-ui-header {
+  border-bottom: 1px solid #292D34 !important;
+}
+
+.red-ui-deploy-button {
+  border-radius: 6px !important;
+}
+
+::selection {
+  background: rgba(76, 141, 240, 0.22) !important;
+}
+:root[data-cx-theme="light"] ::selection {
+  background: rgba(9, 105, 218, 0.20) !important;
+}

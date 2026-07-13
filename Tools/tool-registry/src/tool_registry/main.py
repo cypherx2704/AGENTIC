@@ -2,9 +2,9 @@
 
 Installs the trace middleware and Contract 2 exception handlers, mounts the health +
 tools routers, and manages the lifespan: open the DB pool, wire the lazy Valkey
-client (soft dependency) + a shared httpx client for manifest polling, seed the
-platform tools, warm JWKS, and run the 30s manifest-health background sweep —
-closing all on shutdown. Configures structlog at import time.
+client (soft dependency) + a shared httpx client for manifest polling, warm JWKS,
+and run the 30s manifest-health background sweep — closing all on shutdown.
+Configures structlog at import time.
 """
 
 from __future__ import annotations
@@ -33,7 +33,6 @@ from .core.logging import configure_logging
 from .core.trace import TraceContextMiddleware
 from .db import pool as db_pool
 from .db.valkey import ValkeyClient
-from .services import seed
 from .services.health_runner import health_poll_loop
 
 logger = structlog.get_logger(__name__)
@@ -59,13 +58,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # ── Shared HTTP client for manifest polling ─────────────────────────────────
     http_client = httpx.AsyncClient(timeout=settings.health_poll_timeout_seconds)
     app.state.http_client = http_client
-
-    # ── Platform seed (idempotent, fail-soft) ───────────────────────────────────
-    if settings.seed_platform_tools:
-        try:
-            await asyncio.wait_for(seed.seed_platform_tools(pool, settings), timeout=4.0)
-        except Exception as exc:  # noqa: BLE001 — boot must not block on DB
-            logger.warning("seed_skipped", error=str(exc))
 
     # ── JWKS warm (best-effort) ─────────────────────────────────────────────────
     warm_jwks(settings)

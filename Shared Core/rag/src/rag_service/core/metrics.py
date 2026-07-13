@@ -34,6 +34,18 @@ query_rerank_total = Counter(
     labelnames=("source",),  # llms | mock | fallback_base
 )
 
+query_decompose_total = Counter(
+    "rag_query_decompose_total",
+    "KB queries that ran the optional multi-hop decomposition stage, by source.",
+    labelnames=("source",),  # llms | mock | fallback_single
+)
+
+query_multiquery_total = Counter(
+    "rag_query_multiquery_total",
+    "KB queries that ran the optional multi-query expansion (RAG-Fusion) stage, by source.",
+    labelnames=("source",),  # llms | mock | fallback_single
+)
+
 # ── Ingest ─────────────────────────────────────────────────────────────────────
 ingest_total = Counter(
     "rag_ingest_total",

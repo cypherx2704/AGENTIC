@@ -280,12 +280,24 @@ export async function verifyTenant(token: string, signal?: AbortSignal): Promise
 
 // ── Service proxy helper ──────────────────────────────────────────────────────────────
 
+/** The logical platform services the SPA can reach through the BFF proxy. */
+export type ProxyService =
+  | 'auth'
+  | 'llms'
+  | 'guardrails'
+  | 'xagent'
+  | 'rag'
+  | 'tools'
+  | 'memory'
+  | 'skills'
+  | 'toolbuilder';
+
 /**
  * Call a platform service through the BFF proxy: `/bff/api/<service>/<rest>`.
- * `service` is one of auth | llms | guardrails | xagent | rag.
+ * `service` is one of auth | llms | guardrails | xagent | rag | tools | memory | skills.
  */
 export function api<T = unknown>(
-  service: 'auth' | 'llms' | 'guardrails' | 'xagent' | 'rag' | 'tools',
+  service: ProxyService,
   path: string,
   opts: RequestOptions = {},
 ): Promise<T> {

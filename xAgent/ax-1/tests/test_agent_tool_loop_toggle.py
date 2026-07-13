@@ -138,8 +138,8 @@ class _FakeMcp:
     results: dict[str, Any]
     calls: list[dict[str, Any]] = field(default_factory=list)
 
-    async def invoke(self, invoke_url: str, tool: str, args: dict[str, Any], *, task_id: str,
-                     tool_call_id: str, agent_jwt: str, on_behalf_of: str | None = None) -> McpResult:
+    async def invoke_mcp(self, mcp_url: str, tool: str, args: dict[str, Any], *, task_id: str,
+                         tool_call_id: str, agent_jwt: str, on_behalf_of: str | None = None) -> McpResult:
         self.calls.append({"tool": tool, "tool_call_id": tool_call_id})
         return self.results.get(tool) or McpResult(tool=tool, result={"ok": True})
 
@@ -166,7 +166,14 @@ def _completion(*, content: str | None = None, tool_calls: list[ToolCall] | None
 
 
 def _tool(name: str) -> ToolResolution:
-    return ToolResolution(name=name, version="1.0.0", manifest={"description": name}, invoke_url="http://tool")
+    return ToolResolution(
+        name=name, version="1.0.0", invoke_url="http://tool",
+        manifest={
+            "description": name,
+            "tools": [{"name": name, "input_schema": {"type": "object"}}],
+            "mcp": {"transport": "streamable-http", "endpoint": "/mcp"},
+        },
+    )
 
 
 def _agent(*, allowed_tools: list[str], tool_loop_enabled: bool = True) -> AgentRuntime:

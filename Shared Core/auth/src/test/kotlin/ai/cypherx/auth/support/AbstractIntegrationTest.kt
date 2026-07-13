@@ -114,6 +114,8 @@ abstract class AbstractIntegrationTest {
             runSqlFile(sj, "20260611_0006__onboarding.sql")
             runSqlFile(sj, "20260611_0007__webhooks.sql")
             runSqlFile(sj, "20260611_0008__audit_pipeline.sql")
+            runSqlFile(sj, "20260623_0010__init.sql")            // auth.users + orchestrator columns
+            runSqlFile(sj, "20260712_0013__user_sessions.sql")   // refresh-token sessions
             sj.execute("ALTER ROLE $appUser NOSUPERUSER NOBYPASSRLS LOGIN")
         }
 

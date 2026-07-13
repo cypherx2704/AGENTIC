@@ -1,0 +1,50 @@
+{
+  "name": "bkg-vscode",
+  "displayName": "Backend Knowledge Graph",
+  "description": "Live backend endpoint map (routes, DTOs, confidence) from the bkg CLI. Thin client over the headless engine.",
+  "version": "0.0.1",
+  "publisher": "cypherx",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/cypherx-ai/backend-knowledge-graph" },
+  "engines": { "vscode": "^1.80.0" },
+  "categories": ["Other"],
+  "activationEvents": ["onView:bkgEndpoints", "workspaceContains:**/*.py"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [{ "id": "bkg", "title": "Backend Graph", "icon": "media/icon.svg" }]
+    },
+    "views": {
+      "bkg": [{ "id": "bkgEndpoints", "name": "Endpoints" }]
+    },
+    "commands": [
+      { "command": "bkg.refresh", "title": "bkg: Refresh Endpoints", "icon": "$(refresh)" },
+      { "command": "bkg.openHandler", "title": "bkg: Open Handler" }
+    ],
+    "menus": {
+      "view/title": [{ "command": "bkg.refresh", "when": "view == bkgEndpoints", "group": "navigation" }]
+    },
+    "configuration": {
+      "title": "bkg",
+      "properties": {
+        "bkg.command": {
+          "type": "string",
+          "default": "bkg",
+          "description": "The bkg CLI executable (on PATH, or an absolute path)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "typecheck": "tsc --noEmit -p ./",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.80.0",
+    "typescript": "^5.4.0"
+  }
+}

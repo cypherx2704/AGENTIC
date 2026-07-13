@@ -20,7 +20,7 @@ The ECR stack loops this module over the Component 5 repository list:
 ```
 cypherx/auth-service        cypherx/orchestrator
 cypherx/llms-gateway        cypherx/platform-management
-cypherx/guardrails-service  cypherx/tool-web-search
+cypherx/guardrails-service  cypherx/tool-flow-bridge
 cypherx/memory-service      cypherx/tool-code-exec
 cypherx/rag-service         cypherx/tool-http-client
 cypherx/xagent              cypherx/tool-file-ops

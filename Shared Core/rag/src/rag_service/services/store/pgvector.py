@@ -134,8 +134,8 @@ class PgVectorAdapter:
         filters_json = json.dumps(filters) if filters else None
 
         async def _txn(conn: AsyncConnection) -> list[ChunkHit]:
-            # Per-query HNSW recall/latency knob (transaction-local).
-            # ef_search is a server-clamped int; SET LOCAL forbids bind params, so interpolate the int literal.
+            # Per-query HNSW recall/latency knob (transaction-local). ef_search is a
+            # server-clamped int; SET LOCAL forbids bind params, so interpolate the int literal.
             await conn.execute(f"SET LOCAL hnsw.ef_search = {int(ef_search)}")
             cur = conn.cursor(row_factory=dict_row)
             # Two-pass CTE: candidate ORDER BY stays index-friendly; score floor post-fetch.
@@ -243,7 +243,8 @@ class PgVectorAdapter:
                 )
             """
             if use_dense:
-                # ef_search is a server-clamped int; SET LOCAL forbids bind params, so interpolate the int literal.
+                # ef_search is a server-clamped int; SET LOCAL forbids bind params, so
+                # interpolate the int literal.
                 await conn.execute(f"SET LOCAL hnsw.ef_search = {int(ef_search)}")
                 params["vec"] = vec
                 # Dense leg: index-friendly ORDER BY embedding <=> vec; rank candidates.

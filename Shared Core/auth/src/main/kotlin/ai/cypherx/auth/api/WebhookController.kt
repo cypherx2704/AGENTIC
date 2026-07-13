@@ -87,18 +87,27 @@ class WebhookController(
         return subscriptionView(webhookService.resume(caller.tenantId, parseUuid(id, "id"), caller.subject))
     }
 
-    /** POST /v1/webhooks/{id}/replay — re-queue a past delivery. Body: { delivery_id }. */
+    /**
+     * POST /v1/webhooks/{id}/replay — re-queue deliveries. With `{ delivery_id }` replays that single
+     * delivery; with an EMPTY/absent body it replays all recently-failed deliveries for the subscription.
+     */
     @PostMapping("/{id}/replay")
     fun replay(
         @PathVariable id: String,
         @RequestBody(required = false) body: ReplayRequest?,
     ): ResponseEntity<Map<String, Any?>> {
         val caller = callerContext.requireAnyScope(SCOPE_TENANT_ADMIN, SCOPE_PLATFORM_ADMIN)
+        val subId = parseUuid(id, "id")
         val deliveryId = body?.deliveryId
-            ?: throw ApiException.validation("Missing required field: delivery_id", mapOf("field" to "delivery_id"))
+        if (deliveryId.isNullOrBlank()) {
+            val replayed = webhookService.replayRecentFailures(caller.tenantId, subId, caller.subject)
+            return ResponseEntity.status(HttpStatus.ACCEPTED).body(
+                mapOf("replayed" to replayed, "status" to "pending"),
+            )
+        }
         val newId = webhookService.replay(
             caller.tenantId,
-            parseUuid(id, "id"),
+            subId,
             parseUuid(deliveryId, "delivery_id"),
             caller.subject,
         )
