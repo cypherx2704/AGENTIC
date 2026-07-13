@@ -1,0 +1,32 @@
+# RBAC for the Flow-Tool-Bridge to provision per-tenant Node-RED objects in cypherx-tools.
+# The bridge uses its pod ServiceAccount token (in-cluster K8sClient) to create/replace the
+# Deployment + PVC + Service + NetworkPolicy for each tenant. Scoped to this namespace only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: tool-flow-bridge-provisioner
+  namespace: cypherx-tools
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "create", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["services", "persistentvolumeclaims"]
+    verbs: ["get", "list", "create", "update", "patch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: tool-flow-bridge-provisioner
+  namespace: cypherx-tools
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: tool-flow-bridge-provisioner
+subjects:
+  - kind: ServiceAccount
+    name: tool-flow-bridge          # the base-chart runtime SA
+    namespace: cypherx-tools        # adjust if the bridge runs in a different namespace

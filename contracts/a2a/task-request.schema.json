@@ -85,6 +85,16 @@
       "type": "object",
       "description": "Free-form metadata. Unknown OPTIONAL keys are tolerated here.",
       "additionalProperties": true
+    },
+    "workflow_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Phase-10 orchestration (optional): the workflow run (workflows/run.schema.json) this task belongs to. Absent for standalone tasks. Additive/non-breaking; enforced in Phase 10."
+    },
+    "parent_task_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Phase-10 orchestration (optional): the parent task that spawned this one (subtask lineage). Absent for root/standalone tasks. Additive/non-breaking; enforced in Phase 10."
     }
   },
   "required": [
@@ -97,6 +107,6 @@
     "mode",
     "input"
   ],
-  "$comment": "additionalProperties:true is intentional and required for forward-compatibility — this is an A2A wire envelope that later phases (Phase 10) extend (e.g. workflow_id, parent_task_id, protocol_version). Receivers MUST tolerate unknown top-level fields; field-level validation still applies to known fields. Matches sibling task-response and delegation schemas.",
+  "$comment": "additionalProperties:true is intentional and required for forward-compatibility — this is an A2A wire envelope that later phases (Phase 10) extend. The Phase-10 orchestration hooks workflow_id + parent_task_id are now explicitly defined as OPTIONAL fields (additive/non-breaking; enforced in Phase 10); protocol_version remains reserved for future addition. Receivers MUST tolerate unknown top-level fields; field-level validation still applies to known fields. Matches sibling task-response and delegation schemas, and workflows/dag+run schemas.",
   "additionalProperties": true
 }

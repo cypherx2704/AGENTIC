@@ -47,6 +47,24 @@ class ErrorCode:
     CONFLICT = "CONFLICT"
     GUARDRAIL_VIOLATION = "GUARDRAIL_VIOLATION"
     BUDGET_EXCEEDED = "BUDGET_EXCEEDED"
+    # Orchestration (0008) — the decomposed workflow graph is not a valid DAG (a dependency
+    # cycle, or an edge referencing an unknown node). A planning/client error (422): the run
+    # fails with error_code=INVALID_DAG and no sub-agent nodes are spawned.
+    INVALID_DAG = "INVALID_DAG"
+    # Orchestration — a DAG node names NO agent at all and there is no default to fall back to.
+    # An operator/config gap, not a client error.
+    UNASSIGNED_NODE = "UNASSIGNED_NODE"
+    # Orchestration — the planner named an agent that DOES NOT EXIST in the roster (a hallucinated
+    # or mistyped target). Deliberately distinct from UNASSIGNED_NODE: the planner *did* make a
+    # routing decision, it just named something real-looking that is not there. The run fails and
+    # says which name was bogus. It is NEVER silently re-pointed at some other agent — substituting
+    # a target the planner did not choose is the backend overriding the routing decision.
+    UNKNOWN_AGENT = "UNKNOWN_AGENT"
+    # Orchestration — the PLANNER could not produce a usable plan: its output named a target that
+    # is not in the roster, was cyclic / over-cap, or was unparseable, and the one permitted repair
+    # attempt also failed (or the user declined it). The run fails outright rather than the backend
+    # substituting an agent the planner did not choose — routing is the planner's decision alone.
+    ORCHESTRATION_FAILED = "ORCHESTRATION_FAILED"
     RATE_LIMIT_EXCEEDED = "RATE_LIMIT_EXCEEDED"
     SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"
     INTERNAL_ERROR = "INTERNAL_ERROR"
@@ -68,6 +86,10 @@ _DEFAULT_STATUS: dict[str, int] = {
     ErrorCode.CONFLICT: 409,
     ErrorCode.GUARDRAIL_VIOLATION: 422,
     ErrorCode.BUDGET_EXCEEDED: 402,
+    ErrorCode.INVALID_DAG: 422,
+    ErrorCode.UNASSIGNED_NODE: 503,
+    ErrorCode.UNKNOWN_AGENT: 422,
+    ErrorCode.ORCHESTRATION_FAILED: 422,
     ErrorCode.RATE_LIMIT_EXCEEDED: 429,
     ErrorCode.SERVICE_UNAVAILABLE: 503,
     ErrorCode.INTERNAL_ERROR: 500,

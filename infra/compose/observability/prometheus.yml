@@ -60,12 +60,6 @@ scrape_configs:
       - targets: ["tool-registry:8080"]
         labels: { service: tool-registry }
 
-  - job_name: tool-web-search
-    metrics_path: /metrics
-    static_configs:
-      - targets: ["tool-web-search:8080"]
-        labels: { service: tool-web-search }
-
   # ── BFF (Node/Fastify; /metrics on :8088) ─────────────────────────────────────────────────────────────────────
   - job_name: frontend-bff
     metrics_path: /metrics

@@ -52,7 +52,7 @@ from ..models.agent import (
     is_valid_status_transition,
 )
 from ..services import agent_config_cache
-from ..services.auth_client import AuthClient
+from ..services.auth_client import AuthAgent, AuthClient
 
 logger = structlog.get_logger(__name__)
 
@@ -95,12 +95,15 @@ def _auth_client(request: Request) -> AuthClient:
     return client
 
 
-async def _cross_validate_agent(request: Request, principal: Principal, agent_id: str) -> None:
-    """Confirm the target agent exists in Auth AND belongs to the caller's tenant.
+async def _cross_validate_agent(request: Request, principal: Principal, agent_id: str) -> AuthAgent:
+    """Confirm the target agent exists in Auth AND belongs to the caller's tenant; return it.
 
     404 NOT_FOUND when Auth has no such agent; 403 FORBIDDEN on a tenant mismatch (the
     caller is authenticated, so a mismatch is a genuine cross-tenant attempt — we do not
     leak that the agent exists elsewhere beyond the FORBIDDEN). Enforced on writes only.
+    The returned :class:`AuthAgent` carries the hierarchy facts (agent_type /
+    parent_orchestrator_id / immutable_llm) the registration path denormalises into
+    ``xagent.agents`` — the roster + immutable-LLM guard depend on them being populated.
     """
     auth_client = _auth_client(request)
     auth_agent = await auth_client.get_agent(
@@ -113,6 +116,7 @@ async def _cross_validate_agent(request: Request, principal: Principal, agent_id
             ErrorCode.FORBIDDEN,
             "Agent belongs to a different tenant than the caller.",
         )
+    return auth_agent
 
 
 # ── GET /v1/agents/{agent_id}/runtime ──────────────────────────────────────────────
@@ -155,14 +159,21 @@ async def put_runtime(
     agent_id = parse_uuid_path(agent_id, param="Agent")
     pool = _require_pool(request)
 
-    # Writes cross-validate the target against Auth identity (existence + tenant).
-    await _cross_validate_agent(request, principal, agent_id)
+    # Writes cross-validate the target against Auth identity (existence + tenant), and capture the
+    # hierarchy facts to denormalise into the xagent.agents mirror (roster + immutable-LLM depend on it).
+    auth_agent = await _cross_validate_agent(request, principal, agent_id)
 
     existing = await agents_repo.get_agent(pool, principal.tenant_id, agent_id)
 
     if existing is None:
-        # CREATE path: insert the row as supplied (status + version come from the body).
-        created = await agents_repo.insert_agent_runtime(pool, principal.tenant_id, agent_id, body)
+        # CREATE path: insert the row as supplied (status + version come from the body), stamping the
+        # agent_type / parent_orchestrator_id / immutable_llm from Auth so the mirror is complete.
+        created = await agents_repo.insert_agent_runtime(
+            pool, principal.tenant_id, agent_id, body,
+            agent_type=auth_agent.agent_type,
+            parent_orchestrator_id=auth_agent.parent_orchestrator_id,
+            immutable_llm=auth_agent.immutable_llm,
+        )
         await _invalidate_cache(request, agent_id)
         logger.info(
             "agent_runtime_created",
@@ -171,6 +182,20 @@ async def put_runtime(
             runtime_version=created.runtime_version,
         )
         return JSONResponse(content=_runtime_to_dict(created), status_code=201)
+
+    # immutable_llm guard (B6): a locked sub-agent's model may not be changed by a later PUT. Guard on
+    # the AUTHORITATIVE Auth value (just fetched), not the possibly-stale xagent mirror, so a row whose
+    # mirror predates the sync fix is still protected. A config-only edit (same llm_model) still passes.
+    if auth_agent.immutable_llm and body.llm_model != existing.llm_model:
+        raise ApiError(
+            ErrorCode.CONFLICT,
+            "This agent's llm_model is immutable and cannot be changed.",
+            details={
+                "reason": "IMMUTABLE_LLM",
+                "current": existing.llm_model,
+                "requested": body.llm_model,
+            },
+        )
 
     # UPDATE path: validate the status transition, then bump the version + write.
     if not is_valid_status_transition(existing.status, body.status):
@@ -192,6 +217,11 @@ async def put_runtime(
         body,
         runtime_version=new_version,
         status=body.status,
+        # Re-stamp the hierarchy mirror from Auth so a row that predates the sync fix self-heals on
+        # any re-PUT (agent_type/parent were NULL/default before; Auth is the source of truth).
+        agent_type=auth_agent.agent_type,
+        parent_orchestrator_id=auth_agent.parent_orchestrator_id,
+        immutable_llm=auth_agent.immutable_llm,
     )
     if updated is None:
         # The row vanished between the read and the write (RLS / concurrent delete).
@@ -231,13 +261,16 @@ async def register_runtime(
     agent_id = parse_uuid_path(agent_id, param="Agent")
     pool = _require_pool(request)
 
-    await _cross_validate_agent(request, principal, agent_id)
+    auth_agent = await _cross_validate_agent(request, principal, agent_id)
 
     runtime: AgentRuntime = await agents_repo.upsert_agent_runtime(
         pool,
         principal.tenant_id,
         agent_id,
         body,
+        agent_type=auth_agent.agent_type,
+        parent_orchestrator_id=auth_agent.parent_orchestrator_id,
+        immutable_llm=auth_agent.immutable_llm,
     )
     # Bust the cache so a first-create is immediately visible to LOAD (a no-op on a
     # duplicate POST, which returned the unchanged existing row).

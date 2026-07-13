@@ -431,7 +431,7 @@ For reference, the neighbours in the host port map:
 
 The graph tools proxy cypherx-a1's read-only, cited `/v1/graph/*` endpoints (e.g. `POST /v1/graph/who-owns`, `/v1/graph/what-breaks`, `/v1/graph/experts`, `/v1/graph/why-built`); the two LLM tools proxy the cited copilot flow. The same backing logic serves both the public REST API and MCP agents.
 
-**Registration is a deliberate, separate step — not a compose dependency.** The tool-registry seeds only its own platform tools (`SEED_PLATFORM_TOOLS=true` seeds `tool-web-search`). To register `mcp-eng-memory`, an operator (or a one-shot job) `POST`s the manifest to the registry:
+**Registration is a deliberate, separate step — not a compose dependency.** The tool-registry no longer seeds any platform tool at startup — every tool (platform or tenant) is registered through the API by its owner (e.g. the public `web_search` flow-tool is bootstrapped by tool-flow-bridge). To register `mcp-eng-memory`, an operator (or a one-shot job) `POST`s the manifest to the registry:
 
 ```bash
 # Mint/obtain an admin/agent JWT with tool:register, then:

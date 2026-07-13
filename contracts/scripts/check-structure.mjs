@@ -32,6 +32,8 @@ const EXPECTED = [
   "a2a/task-response.schema.json",
   "a2a/delegation.schema.json",
   "a2a/task-types.md",
+  "workflows/dag.schema.json",
+  "workflows/run.schema.json",
   "mcp/manifest.schema.json",
   "kafka/event-envelope.schema.json",
   "kafka/topics.md",

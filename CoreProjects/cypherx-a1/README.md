@@ -41,9 +41,9 @@ curl -XPOST localhost:8093/v1/copilot/ask -H "Authorization: Bearer $JWT" \
   -d '{"question":"Who owns acme/payments and what breaks if I change auth-service?"}'
 # 4) Or query directly (also what the MCP server proxies)
 curl -XPOST localhost:8093/v1/graph/what-breaks -H "Authorization: Bearer $JWT" -d '{"target":"auth-service"}'
-# 5) MCP invoke
-curl -XPOST localhost:8094/mcp/v1/invoke -H "Authorization: Bearer $JWT" \
-  -d '{"tool":"who_owns","args":{"target":"acme/payments"}}'
+# 5) MCP invoke (real MCP: JSON-RPC 2.0 tools/call)
+curl -XPOST localhost:8094/mcp -H "Authorization: Bearer $JWT" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"who_owns","arguments":{"target":"acme/payments"}}}'
 curl localhost:8094/manifest
 ```
 
@@ -56,7 +56,7 @@ curl localhost:8094/manifest
 | `POST /v1/extract` | Run the LLM knowledge-extraction pass | `cypherxa1:ingest` |
 | `POST /webhooks/{kind}?tenant=<uuid>` | App-owned webhook receiver (signature-verified) | — |
 | `GET /livez` \| `/readyz` \| `/metrics` | Contract-7 health | — |
-| `POST /mcp/v1/invoke` \| `GET /manifest` (port 8094) | MCP tool surface | `tool:invoke` + `tool:mcp-eng-memory:invoke` |
+| `POST /mcp` (JSON-RPC 2.0) \| `GET /manifest` (port 8094) | MCP tool surface | `tool:invoke` + `tool:mcp-eng-memory:invoke` |
 
 ## Develop
 ```bash

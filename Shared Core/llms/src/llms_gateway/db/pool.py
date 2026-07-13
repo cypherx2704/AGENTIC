@@ -76,11 +76,50 @@ async def fetch_pricing(
 async def fetch_aliases(
     pool: AsyncConnectionPool,
 ) -> list[tuple[str | None, str, str, str]]:
-    """Return all model aliases as (tenant_id, alias, model_id, provider)."""
+    """Return the PLATFORM model aliases as (tenant_id, alias, model_id, provider).
+
+    This runs on a bare (no ``app.tenant_id``) connection, so RLS
+    (``p_model_aliases_read``) admits ONLY the platform rows (``tenant_id IS NULL``).
+    Tenant-owned aliases are deliberately NOT returned here — a global preload cannot
+    see them without bypassing RLS, and caching every tenant's aliases in one process
+    map is neither scalable nor isolation-safe. Tenant aliases are resolved on demand,
+    inside the caller's own tenant context, via :func:`fetch_tenant_alias`.
+    """
     sql = "SELECT tenant_id::text, alias, model_id, provider FROM llms.model_aliases"
     async with pool.connection(timeout=2.0) as conn:
         cur = await conn.cursor(row_factory=tuple_row).execute(sql)
         return await cur.fetchall()
+
+
+async def fetch_tenant_alias(
+    pool: AsyncConnectionPool,
+    tenant_id: str,
+    alias: str,
+) -> tuple[str, str] | None:
+    """Resolve one alias for a specific tenant, honouring RLS.
+
+    Runs inside ``in_tenant`` so ``app.tenant_id`` is set and the RLS read policy admits
+    the tenant's own ``model_aliases`` row (a tenant alias SHADOWS a platform one of the
+    same name — we filter to ``tenant_id = <this tenant>`` so we return the tenant-owned
+    row specifically, not the platform default). Returns ``(provider, model_id)`` or
+    ``None`` when the tenant has no alias by that name.
+    """
+
+    async def _q(conn: AsyncConnection) -> tuple[str, str] | None:
+        cur = await conn.cursor(row_factory=tuple_row).execute(
+            """
+            SELECT provider, model_id
+              FROM llms.model_aliases
+             WHERE alias = %s
+               AND tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid
+             LIMIT 1
+            """,
+            (alias,),
+        )
+        row = await cur.fetchone()
+        return (row[0], row[1]) if row else None
+
+    return await in_tenant(pool, tenant_id, _q)
 
 
 async def fetch_pricing_max_updated_at(pool: AsyncConnectionPool) -> Any | None:

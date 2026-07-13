@@ -23,8 +23,17 @@ const NO_STORE_PREFIXES = ['/bff/login', '/bff/logout', '/bff/me', '/bff/onboard
 
 export function registerSecurityHeaders(app: FastifyInstance, config: Config): void {
   app.addHook('onSend', async (req: FastifyRequest, reply: FastifyReply, payload: unknown) => {
-    reply.header('Content-Security-Policy', config.securityHeaders.csp);
-    reply.header('X-Frame-Options', 'DENY');
+    // The embedded Node-RED editor is served under /bff/nodered/* and is loaded in an
+    // <iframe> by the same-origin SPA. The tight SPA CSP (frame-ancestors 'none') + the
+    // blanket X-Frame-Options: DENY would block that framing and break Node-RED's own
+    // inline editor assets — so for this prefix ONLY we relax framing to same-origin. All
+    // other cross-origin framing stays denied; the editor is still same-origin-only.
+    const isNodered = req.url.startsWith('/bff/nodered');
+    reply.header(
+      'Content-Security-Policy',
+      isNodered ? "frame-ancestors 'self'" : config.securityHeaders.csp,
+    );
+    reply.header('X-Frame-Options', isNodered ? 'SAMEORIGIN' : 'DENY');
     reply.header('X-Content-Type-Options', 'nosniff');
     reply.header('Referrer-Policy', config.securityHeaders.referrerPolicy);
     reply.header('Cross-Origin-Opener-Policy', 'same-origin');

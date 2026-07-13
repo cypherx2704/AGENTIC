@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Button, ErrorBanner, Input, Modal, Select, useToast } from '@/components/ui';
+import { Button, ErrorBanner, Input, Modal, Select, Switch, useToast } from '@/components/ui';
 import { createPolicy, editPolicy } from '@/lib/services';
 import type { Policy, PolicyRule } from '@/lib/types';
 import { ACTION_OVERRIDES, RULE_CATALOG } from './rules-catalog';
@@ -10,6 +10,10 @@ interface EditableRule {
   rule_id: string;
   enabled: boolean;
   action_override: string;
+}
+
+function titleCase(s: string): string {
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
 }
 
 function buildInitialRules(policy: Policy | null): EditableRule[] {
@@ -49,6 +53,7 @@ export function PolicyEditor({
   const [error, setError] = useState<unknown>(null);
 
   const isEdit = policy !== null;
+  const enabledCount = rules.filter((r) => r.enabled).length;
 
   function setRule(idx: number, patch: Partial<EditableRule>) {
     setRules((rs) => rs.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
@@ -86,7 +91,7 @@ export function PolicyEditor({
       open={open}
       onClose={onClose}
       size="lg"
-      title={isEdit ? 'Edit policy' : 'New policy'}
+      title={isEdit ? 'Edit Policy' : 'New Policy'}
       description="Toggle the rules and choose an optional per-rule action override."
       footer={
         <>
@@ -94,37 +99,39 @@ export function PolicyEditor({
             Cancel
           </Button>
           <Button form="policy-form" type="submit" loading={busy} disabled={!name.trim()}>
-            {isEdit ? 'Save changes' : 'Create policy'}
+            {isEdit ? 'Save Changes' : 'Create Policy'}
           </Button>
         </>
       }
     >
       <form id="policy-form" onSubmit={submit} className="flex flex-col gap-4">
-        <Input label="Policy name" value={name} onChange={(e) => setName(e.target.value)} required autoFocus />
+        <Input label="Policy Name" value={name} onChange={(e) => setName(e.target.value)} required autoFocus />
         <div className="grid grid-cols-2 gap-3">
-          <Select label="Stream mode" value={streamMode} onChange={(e) => setStreamMode(e.target.value)}>
-            <option value="buffer">buffer</option>
-            <option value="passthrough">passthrough</option>
+          <Select label="Stream Mode" value={streamMode} onChange={(e) => setStreamMode(e.target.value)}>
+            <option value="buffer">Buffer</option>
+            <option value="passthrough">Passthrough</option>
           </Select>
-          <Select label="Fail mode override" value={failMode} onChange={(e) => setFailMode(e.target.value)}>
-            <option value="">(policy default)</option>
-            <option value="closed">closed</option>
-            <option value="open">open</option>
+          <Select label="Fail Mode Override" value={failMode} onChange={(e) => setFailMode(e.target.value)}>
+            <option value="">Policy Default</option>
+            <option value="closed">Closed</option>
+            <option value="open">Open</option>
           </Select>
         </div>
 
         <div>
-          <p className="mb-2 text-sm font-medium text-fg">Rules</p>
+          <div className="mb-2 flex items-center justify-between">
+            <p className="text-sm font-medium text-fg">Rules</p>
+            <span className="text-xs text-muted">{enabledCount} enabled</span>
+          </div>
           <div className="max-h-72 overflow-y-auto rounded-md border border-border">
             {rules.map((r, i) => {
               const meta = RULE_CATALOG.find((c) => c.rule_id === r.rule_id);
               return (
-                <div key={r.rule_id} className="flex items-center gap-3 border-b border-border/60 px-3 py-2 last:border-0">
-                  <input
-                    type="checkbox"
+                <div key={r.rule_id} className="flex items-center gap-3 border-b border-border px-3 py-2.5 last:border-0">
+                  <Switch
                     checked={r.enabled}
-                    onChange={(e) => setRule(i, { enabled: e.target.checked })}
-                    aria-label={`Enable ${r.rule_id}`}
+                    onChange={(v) => setRule(i, { enabled: v })}
+                    ariaLabel={`Enable ${r.rule_id}`}
                   />
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm text-fg">{meta?.label ?? r.rule_id}</p>
@@ -142,7 +149,7 @@ export function PolicyEditor({
                   >
                     {ACTION_OVERRIDES.map((a) => (
                       <option key={a} value={a}>
-                        {a || 'default'}
+                        {a ? titleCase(a) : 'Default'}
                       </option>
                     ))}
                   </select>

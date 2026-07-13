@@ -89,7 +89,7 @@ async def classify(
     # 'safety-default' platform alias -> the cypherx stub classifier. The client may
     # omit `model` (not a contract field); the default alias is used then.
     requested_model = getattr(body, "model", None) or settings.classifier_default_model
-    resolution = model_router.resolve(requested_model, principal.tenant_id)
+    resolution = await model_router.resolve(requested_model, principal.tenant_id)
 
     valkey = getattr(request.app.state, "valkey", None)
     pool = getattr(request.app.state, "db_pool", None)

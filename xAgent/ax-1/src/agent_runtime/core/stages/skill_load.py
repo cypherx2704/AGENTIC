@@ -66,7 +66,9 @@ class SkillLoadStage(Stage):
                     name, pinned, agent_jwt=ctx.inbound_agent_jwt, on_behalf_of=ctx.principal.agent_id
                 )
             except ApiError as exc:
-                logger.warning("skill_resolve_failed", task_id=ctx.task.task_id, skill=entry, error=exc.message)
+                logger.warning(
+                    "skill_resolve_failed", task_id=ctx.task.task_id, skill=entry, error=exc.message
+                )
                 continue
             # Version-pin enforcement (mirror the tool loop): a pinned entry must match exactly.
             if pinned is not None and res.version and res.version != pinned:

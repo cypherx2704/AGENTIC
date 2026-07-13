@@ -9,7 +9,10 @@ config error masquerade as a retryable one.
 After:
   * a 4xx surfaces the upstream Contract-2 ``code`` (+ message) on the ApiError, which the
     LLM stage records on the task result (``error_code = MODEL_UNSUPPORTED``);
-  * a 5xx (and 408/429) still maps to SERVICE_UNAVAILABLE (genuine availability).
+  * **429** surfaces as ``RATE_LIMIT_EXCEEDED`` (NOT SERVICE_UNAVAILABLE), preserving the
+    gateway's message + a passed-through ``Retry-After`` — a rate-limit is not an outage;
+  * **402** surfaces as ``BUDGET_EXCEEDED`` (insufficient provider credit);
+  * a 5xx (and 408) still maps to SERVICE_UNAVAILABLE (genuine availability).
 
 Layer 1 tests ``LlmsClient.chat`` over respx. Layer 2 drives the REAL ``LlmStage`` with a
 fake LLMs client that raises the surfaced ApiError, asserting the task fails with the
@@ -142,15 +145,68 @@ async def test_gateway_500_still_maps_to_service_unavailable() -> None:
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_gateway_429_throttle_maps_to_service_unavailable() -> None:
+async def test_gateway_429_surfaces_rate_limit_not_service_unavailable() -> None:
     router = respx.mock
     _mock_service_token(router)
     s = get_settings()
     router.post(f"{s.llms_gateway_url.rstrip('/')}/v1/chat/completions").mock(
-        return_value=httpx.Response(429, json={"error": {"code": "RATE_LIMIT_EXCEEDED"}})
+        return_value=httpx.Response(
+            429,
+            headers={"Retry-After": "12"},
+            json={"error": {"code": "RATE_LIMIT_EXCEEDED", "message": "provider rate-limited (free tier)"}},
+        )
     )
     exc = await _call_chat_with_gateway_response(httpx.Response(429))
-    assert exc.code == ErrorCode.SERVICE_UNAVAILABLE  # retryable availability/throttle
+    # A rate-limit is NOT an outage — surface the accurate code + message, not SERVICE_UNAVAILABLE.
+    assert exc.code == ErrorCode.RATE_LIMIT_EXCEEDED
+    assert exc.status_code == 429
+    assert "rate-limited" in exc.message
+    assert exc.headers == {"Retry-After": "12"}  # passed through for client retry logic
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_gateway_429_without_envelope_defaults_to_rate_limit() -> None:
+    router = respx.mock
+    _mock_service_token(router)
+    s = get_settings()
+    router.post(f"{s.llms_gateway_url.rstrip('/')}/v1/chat/completions").mock(
+        return_value=httpx.Response(429, text="Too Many Requests")  # no Contract-2 envelope
+    )
+    exc = await _call_chat_with_gateway_response(httpx.Response(429))
+    assert exc.code == ErrorCode.RATE_LIMIT_EXCEEDED
+    assert exc.status_code == 429
+    assert exc.headers is None  # no Retry-After header on this response
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_gateway_402_surfaces_budget_exceeded() -> None:
+    router = respx.mock
+    _mock_service_token(router)
+    s = get_settings()
+    router.post(f"{s.llms_gateway_url.rstrip('/')}/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            402, json={"error": {"code": "BUDGET_EXCEEDED", "message": "insufficient credit"}}
+        )
+    )
+    exc = await _call_chat_with_gateway_response(httpx.Response(402))
+    assert exc.code == ErrorCode.BUDGET_EXCEEDED
+    assert exc.status_code == 402
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_gateway_408_still_maps_to_service_unavailable() -> None:
+    router = respx.mock
+    _mock_service_token(router)
+    s = get_settings()
+    router.post(f"{s.llms_gateway_url.rstrip('/')}/v1/chat/completions").mock(
+        return_value=httpx.Response(408, json={"error": {"code": "SERVICE_UNAVAILABLE"}})
+    )
+    exc = await _call_chat_with_gateway_response(httpx.Response(408))
+    assert exc.code == ErrorCode.SERVICE_UNAVAILABLE  # upstream timeout is a genuine availability problem
+    assert exc.status_code == 503
 
 
 # ── Layer 2: the LLM stage records the surfaced code on the task (not SERVICE_UNAVAILABLE) ──

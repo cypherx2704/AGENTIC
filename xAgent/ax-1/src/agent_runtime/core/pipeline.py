@@ -207,7 +207,7 @@ STAGE_REGISTRY: list[StageSpec] = [
     StageSpec("SKILL_LOAD", enabled=False),  # 📋 Phase 8
     StageSpec("PROMPT_BUILD", enabled=True),
     StageSpec("LLM", enabled=True),
-    StageSpec("TOOL_LOOP", enabled=False),  # 📋 Phase 7
+    StageSpec("TOOL_LOOP", enabled=True),  # Phase 7 — on by default; self-skips for toolless agents
     StageSpec("POST_GUARDRAIL", enabled=True),
     StageSpec("MEMORY_WRITE", enabled=False),  # 📋 Phase 6
 ]

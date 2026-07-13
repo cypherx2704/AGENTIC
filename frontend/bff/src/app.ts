@@ -15,6 +15,7 @@
  */
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import cookie from '@fastify/cookie';
+import websocket from '@fastify/websocket';
 import type { Config } from './config/index.js';
 import type { BffContext, FetchLike } from './context.js';
 import { SessionCrypto } from './session/crypto.js';
@@ -30,6 +31,7 @@ import { registerAuthRoutes } from './routes/auth.js';
 import { registerOnboardingRoutes } from './routes/onboarding.js';
 import { registerHealthRoutes, type ReadinessProbe } from './routes/health.js';
 import { registerProxy } from './proxy/index.js';
+import { registerNoderedProxy } from './routes/nodered.js';
 import { resolveSession } from './routes/sessionHook.js';
 
 export interface BuildAppDeps {
@@ -66,6 +68,10 @@ export async function buildApp(deps: BuildAppDeps): Promise<FastifyInstance> {
 
   // 1. Cookies.
   await app.register(cookie, {});
+
+  // WebSocket support (registered before routes) — powers the embedded Node-RED editor's
+  // live "comms" channel so the drag-and-drop canvas gets real-time runtime updates.
+  await app.register(websocket, { options: { maxPayload: 8 * 1024 * 1024 } });
 
   // Capture raw body for the proxy (so we can forward bodies for arbitrary content
   // types) while still parsing JSON for our own routes. We add a permissive parser
@@ -113,6 +119,13 @@ export async function buildApp(deps: BuildAppDeps): Promise<FastifyInstance> {
   app.addHook('preHandler', async (req: FastifyRequest, reply: FastifyReply) => {
     const method = req.method.toUpperCase();
     if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return;
+    // The embedded Node-RED editor (iframe under /bff/nodered/*) cannot carry our CSRF
+    // token; SameSite=lax cookies + the required session (enforced in the proxy route) are
+    // the CSRF controls there, so skip the double-submit guard for that prefix only.
+    if (req.url.startsWith('/bff/nodered')) {
+      await resolveSession(req, sessions, config.cookie.sessionName);
+      return;
+    }
     // Resolve session so CSRF can validate the bound token (idempotent; proxy re-uses it).
     await resolveSession(req, sessions, config.cookie.sessionName);
     await csrfGuard(req, reply);
@@ -124,6 +137,7 @@ export async function buildApp(deps: BuildAppDeps): Promise<FastifyInstance> {
   // does NOT collide with the /bff/api/* proxy wildcard; signup/resend are CSRF-exempt (no session yet).
   registerOnboardingRoutes(app);
   registerProxy(app);
+  registerNoderedProxy(app);
   registerHealthRoutes(app, readiness);
 
   // Uniform JSON 404 + error envelope.

@@ -94,7 +94,9 @@ def install_exception_handlers(app: FastAPI) -> None:
     async def _http(_r: Request, exc: StarletteHTTPException) -> JSONResponse:
         code = {401: ErrorCode.UNAUTHORIZED, 403: ErrorCode.FORBIDDEN, 404: ErrorCode.NOT_FOUND,
                 429: ErrorCode.RATE_LIMIT_EXCEEDED, 503: ErrorCode.SERVICE_UNAVAILABLE}.get(
-            exc.status_code, ErrorCode.INTERNAL_ERROR if exc.status_code >= 500 else ErrorCode.VALIDATION_ERROR)
+            exc.status_code,
+            ErrorCode.INTERNAL_ERROR if exc.status_code >= 500 else ErrorCode.VALIDATION_ERROR,
+        )
         return render(code, str(exc.detail), exc.status_code)
 
     @app.exception_handler(Exception)

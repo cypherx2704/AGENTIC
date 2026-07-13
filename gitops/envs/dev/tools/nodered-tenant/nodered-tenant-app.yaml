@@ -1,0 +1,31 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nodered-tenant-dev
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  # Per-tenant Node-RED PREREQUISITES the Flow-Tool-Bridge's KubernetesProvisioner needs before
+  # it can create tenant runtimes at request time: the cypherx-tools namespace, the provisioner
+  # Role/RoleBinding (create/replace Deployments/PVCs/Services/NetworkPolicies), the namespace
+  # default-deny NetworkPolicy, and the Doppler-synced nodered-shared-secrets. Without this app,
+  # the bridge's in-cluster apply() 403s and tenant pods have no admin/invoke/credential secret.
+  source:
+    repoURL: https://github.com/cypherx-ai/cypherx-charts.git
+    targetRevision: main
+    path: charts/nodered-tenant/manifests
+    directory:
+      recurse: false
+      # Skip the reference template; the real secret is nodered-shared-secrets.dopplersecret.yaml.
+      exclude: '*.example.yaml'
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cypherx-tools
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

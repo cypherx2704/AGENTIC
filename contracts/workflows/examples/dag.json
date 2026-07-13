@@ -1,0 +1,80 @@
+{
+  "$schemaRef": "../dag.schema.json",
+  "valid": [
+    {
+      "workflow_id": "b1e7c2a4-3d5f-4a6b-8c9d-0e1f2a3b4c5d",
+      "schema_version": "1.0.0",
+      "tenant_id": "550e8400-e29b-41d4-a716-446655440000",
+      "name": "rag-briefing-with-review",
+      "goal": "Write a briefing on retrieval-augmented generation and review it.",
+      "decomposition": "llm",
+      "nodes": [
+        {
+          "node_id": "research",
+          "node_type": "agent",
+          "ref": "research",
+          "preset": "researcher",
+          "timeout_seconds": 300,
+          "retry": { "max": 1, "backoff_seconds": 2 },
+          "on_error": "skip"
+        },
+        {
+          "node_id": "write",
+          "node_type": "agent",
+          "ref": "generate",
+          "preset": "writer",
+          "input_bindings": { "context": "{{research.output}}" }
+        },
+        {
+          "node_id": "review",
+          "node_type": "agent",
+          "ref": "code-review",
+          "assigned_agent_id": "9f8b5d2e-1c3a-4f6b-8a7e-2d4c6e8f0a1b",
+          "input_bindings": { "draft": "{{write.output}}" }
+        }
+      ],
+      "edges": [
+        { "from_node": "research", "to_node": "write" },
+        { "from_node": "write", "to_node": "review" }
+      ],
+      "constraints": { "max_depth": 5, "max_fanout": 5, "max_cost_usd": 2.5, "max_tokens": 200000 },
+      "hil_gates": [
+        { "node_id": "review", "operation_type": "sub_agent_creation", "approval_resource": "workflow:b1e7c2a4-3d5f-4a6b-8c9d-0e1f2a3b4c5d" }
+      ]
+    },
+    {
+      "workflow_id": "0a1b2c3d-4e5f-4061-8273-849506afb1c2",
+      "schema_version": "1.0.0",
+      "tenant_id": "550e8400-e29b-41d4-a716-446655440000",
+      "name": "solo",
+      "decomposition": "template",
+      "nodes": [
+        { "node_id": "solo", "node_type": "task", "ref": "chat" }
+      ]
+    }
+  ],
+  "invalid": [
+    {
+      "workflow_id": "b1e7c2a4-3d5f-4a6b-8c9d-0e1f2a3b4c5d",
+      "schema_version": "1.0.0",
+      "tenant_id": "550e8400-e29b-41d4-a716-446655440000",
+      "nodes": [
+        { "node_id": "bad", "node_type": "supervisor", "ref": "research" }
+      ]
+    },
+    {
+      "workflow_id": "b1e7c2a4-3d5f-4a6b-8c9d-0e1f2a3b4c5d",
+      "schema_version": "1.0.0",
+      "tenant_id": "550e8400-e29b-41d4-a716-446655440000",
+      "nodes": [
+        { "node_type": "agent", "ref": "research" }
+      ]
+    },
+    {
+      "workflow_id": "b1e7c2a4-3d5f-4a6b-8c9d-0e1f2a3b4c5d",
+      "schema_version": "1.0.0",
+      "tenant_id": "550e8400-e29b-41d4-a716-446655440000",
+      "nodes": []
+    }
+  ]
+}

@@ -63,6 +63,12 @@ class AgentController(
         val version: String,
         val status: String,
         val allowedScopes: List<String>,
+        // Orchestrator hierarchy — serialized (global snake_case: agent_type / parent_orchestrator_id /
+        // immutable_llm) so the xAgent runtime can denormalise them into xagent.agents at registration
+        // (the orchestration roster + immutable-LLM guard depend on these being present).
+        val agentType: String,
+        val parentOrchestratorId: UUID?,
+        val immutableLlm: Boolean,
         val capabilities: JsonNode,
         val metadata: JsonNode,
         val createdBy: UUID,
@@ -225,6 +231,9 @@ class AgentController(
         version = version,
         status = status,
         allowedScopes = allowedScopes,
+        agentType = agentType,
+        parentOrchestratorId = parentOrchestratorId,
+        immutableLlm = immutableLlm,
         capabilities = parseJsonOrEmpty(capabilities, "[]"),
         metadata = parseJsonOrEmpty(metadata, "{}"),
         createdBy = createdBy,

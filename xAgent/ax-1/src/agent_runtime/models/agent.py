@@ -71,6 +71,13 @@ class AgentRuntime(BaseModel):
     runtime_version: str = "1.0.0"
     status: AgentStatus = "active"
 
+    # Routing description (migration 0009) — "when to use this agent", addressed to the
+    # ORCHESTRATOR'S PLANNER, not to the agent. Distinct from system_prompt on purpose: the
+    # system prompt instructs the agent ("Be terse"), the description advertises it to the
+    # router ("Use me to fetch GitHub repo statistics"). Empty => the orchestration roster
+    # falls back to system_prompt (pre-0009 agents).
+    description: str = ""
+
     # LLM configuration.
     llm_model: str = "smart"
     system_prompt: str = ""
@@ -81,11 +88,21 @@ class AgentRuntime(BaseModel):
     memory_scope: MemoryScope = "agent"
     guardrail_policy_id: str | None = None
     allowed_tools: list[str] = Field(default_factory=list)
+    # Per-agent tool-loop toggle (migration 0007). True (default) => the TOOL_LOOP stage
+    # runs the full bounded LLM<->tool loop ("multiple request"). False => the stage skips
+    # even with allowed_tools, so the task makes a single LLM call ("per request" — for
+    # rate-limited / free-tier models). Default true preserves prior behaviour for every
+    # existing agent. See core/stages/tool_loop.py for the enforcing skip.
+    tool_loop_enabled: bool = True
     allowed_skills: list[str] = Field(default_factory=list)
     allowed_kb_ids: list[str] = Field(default_factory=list)
     rag_top_k_per_kb: int = 5
     rag_min_score: float = 0.7
     token_budget_per_task: int = 10000
+
+    # Orchestrator hierarchy (denormalised from auth.agents at runtime-registration time, migration
+    # 0006). immutable_llm=true locks llm_model against a later PUT (enforced in api/agents.py).
+    immutable_llm: bool = False
 
     capabilities: list[dict[str, Any]] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -107,6 +124,11 @@ class AgentRuntimeRegistration(BaseModel):
     runtime_version: str = "1.0.0"
     status: AgentStatus = "active"
 
+    # See AgentRuntime.description. Optional at the API so pre-0009 callers and non-sub-agents keep
+    # working; the sub-agent creation UI requires it, because an undescribed sub-agent is one the
+    # planner can only route to by guessing at its name.
+    description: str = Field(default="", max_length=2000)
+
     llm_model: str = "smart"
     system_prompt: str = Field(..., min_length=1)
     max_tokens: int = Field(default=2048, ge=1)
@@ -115,6 +137,9 @@ class AgentRuntimeRegistration(BaseModel):
     memory_scope: MemoryScope = "agent"
     guardrail_policy_id: str | None = None
     allowed_tools: list[str] = Field(default_factory=list)
+    # See AgentRuntime.tool_loop_enabled. Default true = current multi-call behaviour;
+    # set false to force a single LLM call (skip the tool loop) for this agent.
+    tool_loop_enabled: bool = True
     allowed_skills: list[str] = Field(default_factory=list)
     allowed_kb_ids: list[str] = Field(default_factory=list)
     rag_top_k_per_kb: int = Field(default=5, ge=1, le=20)

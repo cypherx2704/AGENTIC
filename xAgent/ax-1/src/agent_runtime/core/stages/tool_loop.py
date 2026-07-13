@@ -1,9 +1,12 @@
 """TOOL_LOOP stage — the iterative LLM<->tool loop (Component 7, WP12).
 
 Runs AFTER the base LLM stage (registry slot ``TOOL_LOOP``). TRIGGER: registry-disabled by
-default; even when ``STAGE_ENABLE_TOOL_LOOP`` is on, the stage SKIPS unless the agent's
-runtime config lists ``allowed_tools``. So a toolless agent carries no tool behaviour
-regardless of the flag (and the base LLM answer stands).
+default; even when ``STAGE_ENABLE_TOOL_LOOP`` is on, the stage SKIPS unless (a) the agent's
+runtime config lists ``allowed_tools`` AND (b) the agent's per-agent ``tool_loop_enabled``
+toggle is true (migration 0007, default true). So a toolless agent — OR an agent switched to
+"per request" mode (``tool_loop_enabled=false``) — carries no tool behaviour and makes a
+single LLM call (the base LLM answer stands). "Per request" mode is for rate-limited /
+free-tier models where multiple LLM<->tool round-trips exhaust the shared usage limit.
 
 BEHAVIOUR (only when the agent has allowed_tools):
   1. Resolve EACH allowed tool via the Tool Registry with VERSION-PIN enforcement — an
@@ -11,8 +14,9 @@ BEHAVIOUR (only when the agent has allowed_tools):
      a bare ``name`` resolves ``latest``. A tool that fails to resolve is dropped from the
      offered set (logged) — the loop proceeds with the tools that did resolve.
   2. Offer the resolved tool schemas to the LLM and run the loop: the model proposes tool
-     calls -> dispatch each via ``McpClient.invoke`` (Idempotency-Key = task_id:tool_call_id,
-     the client owns the retry/breaker; retries ONLY conn/5xx, never 4xx) -> feed each
+     calls -> dispatch each via ``McpClient.invoke_mcp`` (real MCP: initialize -> tools/call;
+     Idempotency-Key = task_id:tool_call_id; the client owns the retry/breaker; retries ONLY
+     conn/5xx, never 4xx) -> feed each
      result back as a ``tool`` message -> ask the model again. Repeat until the model stops
      requesting tools (final answer) or a bound is hit.
 
@@ -53,15 +57,47 @@ logger = structlog.get_logger(__name__)
 
 
 class _ResolvedTool:
-    """A resolved, allowed tool: its invoke URL, version, and the schema offered to the LLM."""
+    """A resolved, allowed tool ready to offer to the LLM and invoke.
 
-    __slots__ = ("name", "version", "invoke_url", "schema")
+    MCP naming (Contract 4) distinguishes TWO identifiers, and conflating them is a bug:
 
-    def __init__(self, name: str, version: str, invoke_url: str, schema: dict[str, Any]) -> None:
-        self.name = name
+      * ``server_name`` — the MCP SERVER / registry name (dash-case, e.g. ``tool-web-search``).
+        This is the key the Tool Registry catalogs the server under (``GET /v1/tools/{server_name}``)
+        and is used ONLY for resolution + logging provenance.
+      * ``tool_name``   — the TOOL / capability name (snake_case, e.g. ``web_search``) declared in
+        ``manifest.tools[].name``. A single MCP server may host MANY tools; the ``tools/call``
+        ``name`` selects WHICH one. This is what the LLM is offered as the function name AND what is
+        sent as the ``name`` in ``tools/call`` — the server rejects any other value.
+
+    ``name`` is retained as an alias of ``tool_name`` so existing call sites (``by_name`` dispatch,
+    ``_select_tools`` scoring) keep working unchanged.
+    """
+
+    __slots__ = ("server_name", "tool_name", "version", "invoke_url", "mcp_endpoint", "schema")
+
+    def __init__(
+        self,
+        *,
+        server_name: str,
+        tool_name: str,
+        version: str,
+        invoke_url: str,
+        schema: dict[str, Any],
+        mcp_endpoint: str | None = None,
+    ) -> None:
+        self.server_name = server_name
+        self.tool_name = tool_name
         self.version = version
         self.invoke_url = invoke_url
+        # Full real-MCP (JSON-RPC/Streamable-HTTP) URL, ``{invoke_url}{mcp.endpoint}``, from the
+        # server's ``mcp`` manifest descriptor. Always set — a server without it is skipped upstream.
+        self.mcp_endpoint = mcp_endpoint
         self.schema = schema
+
+    @property
+    def name(self) -> str:
+        """The tool (capability) name — what the LLM calls and what invoke sends as ``tool``."""
+        return self.tool_name
 
 
 def _split_pin(entry: str) -> tuple[str, str | None]:
@@ -81,12 +117,30 @@ class ToolLoopStage(Stage):
         agent = ctx.agent
         if agent is None or not agent.allowed_tools:
             return  # no tools configured -> the base LLM answer stands (default-disabled shape)
+        # Per-agent tool-loop toggle (migration 0007): "per request" mode. When disabled the
+        # stage SKIPS even with allowed_tools, so the task makes a single LLM call (the base
+        # LLM answer stands) — for rate-limited / free-tier models where multiple round-trips
+        # exhaust the provider's shared usage limit. Default true => the loop runs as before.
+        if not getattr(agent, "tool_loop_enabled", True):
+            logger.info(
+                "tool_loop_disabled_for_agent",
+                task_id=ctx.task.task_id,
+                agent_id=agent.agent_id,
+            )
+            return
 
         settings = get_settings()
         resolved = await self._resolve_tools(ctx, agent.allowed_tools)
         if not resolved:
             logger.info("tool_loop_no_tools_resolved", task_id=ctx.task.task_id)
             return  # nothing resolved -> the base LLM answer stands
+
+        # Deterministic dispatch: two DISTINCT servers in allowed_tools can each declare a tool
+        # with the SAME capability name (e.g. a retired 'tool-web-search' and its flow-tool
+        # replacement both expose 'web_search'). Offering two identically-named function schemas
+        # is ambiguous and the by_name map would silently collapse them (last-wins). Keep the
+        # FIRST (allowed_tools order = the agent's declared preference) and drop later collisions.
+        resolved = self._dedupe_by_tool_name(ctx, resolved)
 
         # Small-model robustness: offer only the top-N most relevant tools so a weak (8B)
         # model has a small decision space. The gateway separately EMULATES tool-calling
@@ -203,15 +257,89 @@ class ToolLoopStage(Stage):
                     resolved=res.version,
                 )
                 continue
-            resolved.append(
-                _ResolvedTool(
-                    name=res.name or name,
-                    version=res.version,
-                    invoke_url=res.invoke_url,
-                    schema=self._schema_for(res.name or name, res.manifest),
+            server_name = res.name or name
+            mcp_endpoint = self._mcp_endpoint_of(res.invoke_url, res.manifest)
+            if mcp_endpoint is None:
+                # MCP is the only tool wire — a server that does not advertise an ``mcp``
+                # descriptor cannot be invoked, so it is not offered to the model.
+                logger.warning("tool_no_mcp_endpoint", task_id=ctx.task.task_id, tool=server_name)
+                continue
+            # An MCP server declares its tools in ``manifest.tools[]`` (Contract 4). Offer EACH of
+            # them to the LLM under its OWN tool name; ``tools/call`` selects which one by name.
+            for tool_name, tool_schema in self._tools_of(res.manifest):
+                resolved.append(
+                    _ResolvedTool(
+                        server_name=server_name,
+                        tool_name=tool_name,
+                        version=res.version,
+                        invoke_url=res.invoke_url,
+                        schema=tool_schema,
+                        mcp_endpoint=mcp_endpoint,
+                    )
                 )
-            )
         return resolved
+
+    @staticmethod
+    def _mcp_endpoint_of(invoke_url: str, manifest: dict[str, Any]) -> str | None:
+        """Resolve the tool server's real-MCP URL from its manifest ``mcp`` descriptor.
+
+        Returns ``{invoke_url}{mcp.endpoint}`` when the manifest advertises a real-MCP
+        (Streamable-HTTP) transport, else ``None`` (a server that does not speak MCP — it is
+        skipped, since MCP is the only tool wire). ``invoke_url`` is the registry-resolved base.
+        """
+        mcp = manifest.get("mcp") if isinstance(manifest, dict) else None
+        if not isinstance(mcp, dict):
+            return None
+        endpoint = mcp.get("endpoint")
+        if not isinstance(endpoint, str) or not endpoint:
+            return None
+        return f"{invoke_url.rstrip('/')}{endpoint}"
+
+    @staticmethod
+    def _tools_of(manifest: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+        """Yield ``(tool_name, llm_schema)`` for every tool an MCP server declares.
+
+        One entry per ``manifest.tools[]`` element (Contract 4), using its OWN ``name`` (e.g.
+        ``web_search``) — NOT the server name. A manifest with no usable ``tools[]`` offers
+        nothing; MCP servers always declare their tools, so there is no single-tool fallback.
+        """
+        entries: list[tuple[str, dict[str, Any]]] = []
+        tools = manifest.get("tools")
+        if isinstance(tools, list):
+            for t in tools:
+                if not isinstance(t, dict):
+                    continue
+                tname = str(t.get("name", "") or "").strip()
+                if not tname:
+                    continue
+                entries.append((tname, ToolLoopStage._schema_for(tname, t)))
+        return entries
+
+    @staticmethod
+    def _dedupe_by_tool_name(ctx: PipelineContext, resolved: list[_ResolvedTool]) -> list[_ResolvedTool]:
+        """Keep the FIRST resolved tool per tool-name; drop later same-named collisions (logged).
+
+        The tool NAME (capability) is what the LLM is offered and what ``tools/call`` selects, so two
+        servers exposing the same name are indistinguishable to the model and to the ``by_name``
+        dispatch map. Preserving the first (allowed_tools order = the agent's declared preference)
+        makes both the offered schema list and dispatch deterministic instead of last-wins.
+        """
+        seen: dict[str, _ResolvedTool] = {}
+        deduped: list[_ResolvedTool] = []
+        for tool in resolved:
+            kept = seen.get(tool.name)
+            if kept is not None:
+                logger.warning(
+                    "tool_loop_duplicate_tool_name_dropped",
+                    task_id=ctx.task.task_id,
+                    tool_name=tool.name,
+                    kept_server=kept.server_name,
+                    dropped_server=tool.server_name,
+                )
+                continue
+            seen[tool.name] = tool
+            deduped.append(tool)
+        return deduped
 
     @staticmethod
     def _select_tools(
@@ -312,8 +440,10 @@ class ToolLoopStage(Stage):
         status = "passed"
         outcome: dict[str, Any]
         try:
-            result = await mcp.invoke(
-                tool.invoke_url,
+            # Dispatch over real MCP (JSON-RPC / Streamable HTTP): initialize -> tools/call,
+            # with auth + Idempotency-Key + per-(endpoint, agent) circuit breaker + conn/5xx retry.
+            result = await mcp.invoke_mcp(
+                tool.mcp_endpoint,
                 call.name,
                 call.arguments,
                 task_id=ctx.task.task_id,
@@ -352,14 +482,23 @@ class ToolLoopStage(Stage):
         if get_access is None:
             return "automated"
         try:
+            # The registry catalogs access by the SERVER name (its resource path); the CAPABILITY
+            # is the tool name the model called. Using tool.name here would 404 the registry
+            # (it knows the server as ``tool-web-search``, not the tool ``web_search``) and
+            # fail-close to 'none' — so pass the server name for the lookup, tool name as capability.
             return await get_access(
-                tool.name,
+                tool.server_name,
                 capability=call.name,
                 agent_jwt=ctx.inbound_agent_jwt,
                 on_behalf_of=ctx.principal.agent_id,
             )
         except ApiError as exc:
-            logger.warning("tool_access_resolve_failed", task_id=ctx.task.task_id, tool=tool.name, error=exc.message)
+            logger.warning(
+                "tool_access_resolve_failed",
+                task_id=ctx.task.task_id,
+                tool=tool.name,
+                error=exc.message,
+            )
             return "none"
 
     async def _await_approval(self, ctx: PipelineContext, tool: _ResolvedTool, call: Any) -> bool:

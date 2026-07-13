@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.cypherx.ai/v1/workflows/run.schema.json",
+  "title": "Workflow Orchestration Run",
+  "x-enforcement-phase": "phase-10",
+  "description": "Contract 3 (orchestration extension) — the RUNTIME instance of a workflow: the run status plus the subtask tree that correlates each spawned task to its parent (the parent/child linkage that per-task agent.task.completed/failed events lack). DEFINED NOW for alignment; ENFORCEMENT TURNS ON in Phase 10 (Orchestrator). Backed by xagent.workflows (the run) + xagent.workflow_tasks (the tasks[] tree). Aggregate tokens_used/cost_usd roll up the tree; cost_budget_usd is the ceiling that trips an early-stop cancel on breach.",
+  "type": "object",
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "UUID identifying this orchestration run."
+    },
+    "workflow_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The workflow (workflows/dag.schema.json) this run executes."
+    },
+    "schema_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "description": "Semantic version of this contract schema, e.g. \"1.0.0\"."
+    },
+    "tenant_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Organisation/tenant UUID that owns this run."
+    },
+    "root_agent_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The orchestrator agent that owns and drives this run."
+    },
+    "root_task_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The root task of the run (== delegation_root_task when A2A is ever involved)."
+    },
+    "goal": {
+      "type": "string",
+      "description": "The natural-language goal driving this run."
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["solo", "subagents"],
+      "description": "`solo` runs the orchestrator alone (single-agent); `subagents` decomposes and fans out to sub-agents."
+    },
+    "decomposition": {
+      "type": "string",
+      "enum": ["template", "llm"],
+      "description": "How the DAG was produced. 'llm' = the orchestrator's planner produced it (every delegating graph). 'template' = the single deterministic graph that needs no planner: 'solo', one node run by the orchestrator itself (no delegation). There is no keyword/template router — a multi-node DAG is always 'llm'."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["pending", "planning", "running", "awaiting_approval", "completed", "failed", "cancelled", "timeout"],
+      "description": "Run lifecycle status."
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 UTC timestamp (ms precision) when the run started."
+    },
+    "completed_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 UTC timestamp (ms precision) when the run reached a terminal status."
+    },
+    "tokens_used": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Aggregate tokens across all subtasks."
+    },
+    "cost_usd": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Aggregate cost across all subtasks, in USD."
+    },
+    "cost_budget_usd": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Per-run cost ceiling; on breach the run is cancelled (early stop)."
+    },
+    "error_code": {
+      "type": "string",
+      "description": "Contract-2 error code when the run failed (e.g. INVALID_DAG, BUDGET_EXCEEDED, APPROVAL_TIMEOUT)."
+    },
+    "error_msg": {
+      "type": "string",
+      "description": "Human-readable failure detail."
+    },
+    "output": {
+      "type": "object",
+      "description": "The synthesized final result (e.g. {\"message\": \"...\"}). Present on completed. Total serialized size MUST NOT exceed 256 KiB.",
+      "additionalProperties": true
+    },
+    "tasks": {
+      "type": "array",
+      "description": "The subtask tree: one entry per spawned node, with parent linkage.",
+      "items": { "$ref": "#/$defs/run_task" }
+    }
+  },
+  "required": ["run_id", "workflow_id", "schema_version", "tenant_id", "status"],
+  "$defs": {
+    "run_task": {
+      "type": "object",
+      "description": "One executed subtask node in the run tree.",
+      "properties": {
+        "task_id": { "type": "string", "format": "uuid", "description": "The spawned xagent.tasks id." },
+        "node_id": { "type": "string", "minLength": 1, "description": "The DAG node this task realizes." },
+        "parent_task_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "The parent task that spawned this one; NULL/absent for the root."
+        },
+        "assigned_agent_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "The sub-agent that ran this node."
+        },
+        "sender_agent_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "The agent that dispatched this node (the orchestrator, or a parent agent)."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "running", "awaiting_approval", "completed", "failed", "cancelled", "timeout", "skipped"],
+          "description": "Subtask status (adds `skipped` for on_error=skip nodes)."
+        },
+        "delegation_depth": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Depth of this task in the delegation tree (root = 0)."
+        },
+        "started_at": { "type": "string", "format": "date-time", "description": "RFC 3339 UTC (ms)." },
+        "completed_at": { "type": "string", "format": "date-time", "description": "RFC 3339 UTC (ms)." },
+        "tokens_used": { "type": "integer", "minimum": 0, "description": "Tokens used by this subtask." },
+        "cost_usd": { "type": "number", "minimum": 0, "description": "Cost of this subtask in USD." },
+        "output": {
+          "type": "object",
+          "description": "The subtask's summarized result returned to the orchestrator (summary + citations), NOT its full transcript.",
+          "additionalProperties": true
+        }
+      },
+      "required": ["task_id", "node_id", "status"],
+      "additionalProperties": true
+    }
+  },
+  "$comment": "additionalProperties:true throughout for forward-compatibility. Enforcement is Phase 10; services MUST accept this shape now and MUST NOT enforce it before then. This is the parent/child correlation the per-task agent.task.completed/.failed events lack; a companion Kafka event cypherx.agent.workflow.completed/.failed carries the run-tree fan-in. Sibling: workflows/dag.schema.json (the static graph).",
+  "additionalProperties": true
+}

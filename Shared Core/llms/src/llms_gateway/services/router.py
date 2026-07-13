@@ -107,12 +107,37 @@ class ModelRouter:
         logger.info("aliases_loaded", rows=len(rows))
         return True
 
-    def resolve(self, model: str, tenant_id: str) -> Resolution:
-        """Resolve a model alias/literal to a (provider, model_id) pair."""
-        # 1) tenant-specific alias
+    async def resolve(self, model: str, tenant_id: str) -> Resolution:
+        """Resolve a model alias/literal to a (provider, model_id) pair.
+
+        Resolution order (a TENANT alias always wins so a tenant can override a platform
+        alias or shadow a seeded literal model of the same name):
+          1. tenant-specific alias — cached, else an RLS-scoped DB lookup for THIS tenant
+             (tenant aliases are never in the global preload; RLS hides them from it).
+          2. platform default alias (DB-loaded cache, then the built-in fallback map).
+          3. literal model id — DB-loaded capability registry, then the cold-start map.
+        """
+        # 1a) tenant alias — fast path from the warm cache (rarely populated: the global
+        #     preload can't see tenant rows under RLS, but a prior per-tenant lookup may
+        #     have cached it here).
         res = self._db_aliases.get((tenant_id, model))
         if res is not None:
             return res
+        # 1b) tenant alias — authoritative per-tenant DB lookup inside the tenant's own
+        #     RLS context. This is what makes a UI-created tenant alias actually resolve.
+        if self._pool is not None:
+            try:
+                from ..db.pool import fetch_tenant_alias
+
+                row = await fetch_tenant_alias(self._pool, tenant_id, model)
+            except Exception as exc:  # noqa: BLE001 — a lookup failure must not 5xx; fall through
+                logger.warning("tenant_alias_lookup_failed", model=model, error=str(exc))
+                row = None
+            if row is not None:
+                resolved = Resolution(row[0], row[1])
+                # memoise so repeat calls this refresh-window skip the round-trip
+                self._db_aliases[(tenant_id, model)] = resolved
+                return resolved
         # 2) platform default alias (DB, then built-in)
         res = self._db_aliases.get((None, model))
         if res is not None:

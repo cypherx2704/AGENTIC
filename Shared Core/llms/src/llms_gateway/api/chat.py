@@ -221,7 +221,7 @@ async def chat_completions(
     principal: Principal = Depends(require_principal),
 ) -> JSONResponse | StreamingResponse:
     model_router = _get_router(request)
-    resolution = model_router.resolve(body.model, principal.tenant_id)
+    resolution = await model_router.resolve(body.model, principal.tenant_id)
     # BYOK-aware: prefer the tenant's registered provider key (fail-open to platform key).
     provider = await model_router.provider_for_request(resolution, principal.tenant_id)
 

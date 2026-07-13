@@ -3,28 +3,33 @@
 import { Suspense, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { PageHeader } from '@/components/AppShell';
+import { Page, PageBody, PageHeader } from '@/components/AppShell';
 import { AgentList } from '@/components/AgentList';
+import { AgentName } from '@/components/AgentNames';
 import {
   Badge,
   Button,
+  Callout,
   Card,
   CardBody,
   CardHeader,
   ConfirmDialog,
+  CopyButton,
   ErrorBanner,
   Input,
   Loading,
   Modal,
+  Select,
   StatusBadge,
   Table,
   useToast,
 } from '@/components/ui';
 import type { Column } from '@/components/ui';
+import { useAgentList } from '@/lib/useAgentList';
 import { useAsync } from '@/lib/useAsync';
-import { createKey, listKeys, revokeKey } from '@/lib/services';
-import type { ApiKeyListItem, CreateKeyResponse } from '@/lib/types';
-import { formatTime, shortId } from '@/lib/utils';
+import { createKey, listKeys, revokeKey, rotateAgentKey } from '@/lib/services';
+import type { ApiKeyListItem, CreateKeyResponse, RotateKeyResponse } from '@/lib/types';
+import { formatTime } from '@/lib/utils';
 
 function KeysInner() {
   const router = useRouter();
@@ -40,37 +45,42 @@ function KeysInner() {
   // An agent is selected -> manage its keys (deep-linkable via ?agent=).
   if (agentId) {
     return (
-      <div>
+      <Page>
         <PageHeader
-          title="API keys"
+          title="API Keys"
           description="Issue and revoke this agent's API keys. The raw secret is shown exactly once."
           actions={
-            <Link href="/keys" className="text-sm text-brand hover:underline">
-              ← All agents
+            <Link href="/keys" className="text-[13px] font-medium text-brand hover:underline">
+              ← All Agents
             </Link>
           }
         />
-        <KeyManager agentId={agentId} toastError={toast.error} />
-      </div>
+        <PageBody fill>
+          <KeyManager agentId={agentId} toastError={toast.error} />
+        </PageBody>
+      </Page>
     );
   }
 
   // No agent selected -> pick one from the tenant's agents (or paste an id as a fallback).
   return (
-    <div>
-      <PageHeader title="API keys" description="Choose an agent to manage its API keys." />
-      <AgentList
-        onSelect={(a) => selectAgent(a.agent_id)}
-        actionLabel="Manage keys"
-        emptyLabel="No agents yet — create one on the Agents page first."
-        fallback={<ManageById onSubmit={selectAgent} />}
-      />
-    </div>
+    <Page>
+      <PageHeader title="API Keys" description="Choose an agent to manage its API keys." />
+      <PageBody>
+        <AgentList
+          onSelect={(a) => selectAgent(a.agent_id)}
+          actionLabel="Manage Keys"
+          emptyLabel="No agents yet — create one on the Agents page first."
+          fallback={<ManageById onSubmit={selectAgent} />}
+        />
+      </PageBody>
+    </Page>
   );
 }
 
-/** Fallback: jump straight to an agent's keys by pasting its id (for agents beyond the loaded pages). */
+/** Fallback: pick an agent by NAME to jump to its keys — never surfaces the raw agent UUID. */
 function ManageById({ onSubmit }: { onSubmit: (id: string) => void }) {
+  const { agents, loading } = useAgentList();
   const [id, setId] = useState('');
   return (
     <form
@@ -80,9 +90,22 @@ function ManageById({ onSubmit }: { onSubmit: (id: string) => void }) {
       }}
       className="flex items-end gap-2"
     >
-      <Input placeholder="agent id…" value={id} onChange={(e) => setId(e.target.value)} className="w-72" />
-      <Button type="submit" size="sm" variant="secondary" disabled={!id.trim()}>
-        Manage keys
+      <Select
+        label="Agent"
+        value={id}
+        onChange={(e) => setId(e.target.value)}
+        className="w-72"
+        disabled={loading || agents.length === 0}
+      >
+        <option value="">{loading ? 'Loading agents…' : 'Select an agent…'}</option>
+        {agents.map((a) => (
+          <option key={a.agent_id} value={a.agent_id}>
+            {a.name}
+          </option>
+        ))}
+      </Select>
+      <Button type="submit" size="md" variant="secondary" disabled={!id.trim()}>
+        Manage Keys
       </Button>
     </form>
   );
@@ -92,9 +115,13 @@ function KeyManager({ agentId, toastError }: { agentId: string; toastError: (m: 
   const toast = useToast();
   const { data, loading, error, reload } = useAsync((signal) => listKeys(agentId, signal), [agentId]);
   const [createOpen, setCreateOpen] = useState(false);
-  const [revealKey, setRevealKey] = useState<CreateKeyResponse | null>(null);
+  // The reveal modal is reused for BOTH issue and rotate — a rotation carries the extra
+  // previous-key grace fields, distinguished structurally inside RawKeyModal.
+  const [revealKey, setRevealKey] = useState<CreateKeyResponse | RotateKeyResponse | null>(null);
   const [revoking, setRevoking] = useState<string | null>(null);
   const [confirmRevoke, setConfirmRevoke] = useState<ApiKeyListItem | null>(null);
+  const [rotating, setRotating] = useState<string | null>(null);
+  const [confirmRotate, setConfirmRotate] = useState<ApiKeyListItem | null>(null);
 
   const keys = data?.keys ?? [];
 
@@ -109,6 +136,21 @@ function KeyManager({ agentId, toastError }: { agentId: string; toastError: (m: 
       toastError(err instanceof Error ? err.message : 'Revoke failed.');
     } finally {
       setRevoking(null);
+    }
+  }
+
+  async function onRotate(key: ApiKeyListItem) {
+    setRotating(key.key_id);
+    try {
+      const resp = await rotateAgentKey(agentId, key.key_id);
+      setConfirmRotate(null);
+      // Surface the new secret ONCE via the same reveal modal the create flow uses.
+      setRevealKey(resp);
+      reload();
+    } catch (err) {
+      toastError(err instanceof Error ? err.message : 'Rotation failed.');
+    } finally {
+      setRotating(null);
     }
   }
 
@@ -128,36 +170,49 @@ function KeyManager({ agentId, toastError }: { agentId: string; toastError: (m: 
     },
     { key: 'status', header: 'Status', render: (k) => <StatusBadge status={k.status} /> },
     { key: 'created', header: 'Created', render: (k) => <span className="text-xs text-muted">{formatTime(k.created_at)}</span> },
-    { key: 'last_used', header: 'Last used', render: (k) => <span className="text-xs text-muted">{formatTime(k.last_used_at)}</span> },
+    { key: 'last_used', header: 'Last Used', render: (k) => <span className="text-xs text-muted">{formatTime(k.last_used_at)}</span> },
     {
       key: 'actions',
       header: '',
       render: (k) =>
         k.status === 'active' ? (
-          <Button
-            variant="danger"
-            size="sm"
-            loading={revoking === k.key_id}
-            onClick={() => setConfirmRevoke(k)}
-          >
-            Revoke
-          </Button>
+          <div className="flex gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              loading={rotating === k.key_id}
+              disabled={revoking === k.key_id}
+              onClick={() => setConfirmRotate(k)}
+            >
+              Rotate
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
+              loading={revoking === k.key_id}
+              disabled={rotating === k.key_id}
+              onClick={() => setConfirmRevoke(k)}
+            >
+              Revoke
+            </Button>
+          </div>
         ) : null,
     },
   ];
 
   return (
-    <Card>
+    <>
+    <Card className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <CardHeader
         title="Keys"
-        description={<span className="font-mono text-xs">{agentId}</span>}
+        description={<AgentName agentId={agentId} />}
         actions={
-          <Button size="sm" onClick={() => setCreateOpen(true)}>
-            New key
+          <Button size="md" onClick={() => setCreateOpen(true)}>
+            New Key
           </Button>
         }
       />
-      <CardBody className="px-0 py-0">
+      <CardBody className="min-h-0 flex-1 overflow-y-auto p-0">
         {error ? (
           <div className="p-4">
             <ErrorBanner error={error} title="Could not load keys" />
@@ -168,6 +223,7 @@ function KeyManager({ agentId, toastError }: { agentId: string; toastError: (m: 
           <Table columns={columns} rows={keys} rowKey={(k) => k.key_id} empty="No keys for this agent yet." />
         )}
       </CardBody>
+    </Card>
 
       <CreateKeyModal
         open={createOpen}
@@ -188,7 +244,7 @@ function KeyManager({ agentId, toastError }: { agentId: string; toastError: (m: 
         onConfirm={() => confirmRevoke && onRevoke(confirmRevoke)}
         title="Revoke this API key?"
         description="This cannot be undone."
-        confirmLabel="Revoke key"
+        confirmLabel="Revoke Key"
         loading={revoking !== null}
       >
         {confirmRevoke && (
@@ -200,7 +256,28 @@ function KeyManager({ agentId, toastError }: { agentId: string; toastError: (m: 
           </p>
         )}
       </ConfirmDialog>
-    </Card>
+
+      <ConfirmDialog
+        open={confirmRotate !== null}
+        onClose={() => setConfirmRotate(null)}
+        onConfirm={() => confirmRotate && onRotate(confirmRotate)}
+        title="Rotate this API key?"
+        description="A new secret is issued now."
+        confirmLabel="Rotate Key"
+        confirmVariant="primary"
+        loading={rotating !== null}
+      >
+        {confirmRotate && (
+          <p className="text-sm text-muted">
+            A new secret is issued for{' '}
+            <span className="font-mono text-fg">{confirmRotate.key_prefix}…</span>
+            {confirmRotate.name ? ` (${confirmRotate.name})` : ''}. The old key keeps working during a
+            short grace window, then stops. You&apos;ll see the new secret only once — copy it
+            immediately.
+          </p>
+        )}
+      </ConfirmDialog>
+    </>
   );
 }
 
@@ -246,7 +323,7 @@ function CreateKeyModal({
     <Modal
       open={open}
       onClose={onClose}
-      title="Issue API key"
+      title="Issue API Key"
       description="The raw secret is returned once. Copy it now — it cannot be retrieved later."
       footer={
         <>
@@ -254,16 +331,16 @@ function CreateKeyModal({
             Cancel
           </Button>
           <Button form="create-key-form" type="submit" loading={busy} disabled={!scopes.trim()}>
-            Issue key
+            Issue Key
           </Button>
         </>
       }
     >
       <form id="create-key-form" onSubmit={submit} className="flex flex-col gap-4">
         <Input label="Scopes" value={scopes} onChange={(e) => setScopes(e.target.value)} hint="Comma-separated." required />
-        <Input label="Name (optional)" value={name} onChange={(e) => setName(e.target.value)} />
+        <Input label="Name (Optional)" value={name} onChange={(e) => setName(e.target.value)} />
         <Input
-          label="Expires in days (optional)"
+          label="Expires in Days (Optional)"
           type="number"
           min={1}
           value={expires}
@@ -275,10 +352,18 @@ function CreateKeyModal({
   );
 }
 
-/** The raw-key-once modal — the ONLY place the secret is ever shown. */
-function RawKeyModal({ value, onClose }: { value: CreateKeyResponse | null; onClose: () => void }) {
+/** The raw-key-once modal — the ONLY place the secret is ever shown (issue AND rotate). */
+function RawKeyModal({
+  value,
+  onClose,
+}: {
+  value: CreateKeyResponse | RotateKeyResponse | null;
+  onClose: () => void;
+}) {
   const toast = useToast();
   const [copied, setCopied] = useState(false);
+  // A rotation response carries the previous-key grace fields; a fresh issue does not.
+  const rotation = value && 'previous_key_expires_at' in value ? value : null;
 
   async function copy() {
     if (!value) return;
@@ -296,7 +381,7 @@ function RawKeyModal({ value, onClose }: { value: CreateKeyResponse | null; onCl
       open={value !== null}
       onClose={onClose}
       closeOnBackdrop={false}
-      title="Copy your API key now"
+      title="Copy Your API Key Now"
       description="This is the only time the full secret is shown. Store it securely."
       size="md"
       footer={
@@ -304,12 +389,18 @@ function RawKeyModal({ value, onClose }: { value: CreateKeyResponse | null; onCl
           <Button variant="secondary" onClick={copy}>
             {copied ? 'Copied' : 'Copy'}
           </Button>
-          <Button onClick={onClose}>I have stored it</Button>
+          <Button onClick={onClose}>I Have Stored It</Button>
         </>
       }
     >
       {value && (
         <div className="flex flex-col gap-3">
+          {rotation && (
+            <Callout tone="info" title="Previous Key Still Active">
+              The previous key keeps working until {formatTime(rotation.previous_key_expires_at)}. Move
+              your integrations to this new secret before then — after that, only this key works.
+            </Callout>
+          )}
           <div className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning">
             The secret cannot be retrieved again. If you lose it, revoke this key and issue a new one.
           </div>
@@ -319,7 +410,7 @@ function RawKeyModal({ value, onClose }: { value: CreateKeyResponse | null; onCl
           <dl className="grid grid-cols-2 gap-2 text-xs text-muted">
             <div>
               <dt className="font-medium">Key ID</dt>
-              <dd className="font-mono text-fg">{shortId(value.key_id, 16)}</dd>
+              <dd><CopyButton value={value.key_id} label="Copy Key ID" /></dd>
             </div>
             <div>
               <dt className="font-medium">Prefix</dt>

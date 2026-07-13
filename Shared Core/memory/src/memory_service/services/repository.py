@@ -20,7 +20,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from . import scoping
-from .scoring import ScoringWeights, composite_score, heuristic_importance
+from .scoring import ScoringWeights, composite_score, heuristic_importance, mmr_rerank
 from .similarity import cosine_similarity
 
 
@@ -61,6 +61,10 @@ class StoredMemory:
     superseded_by_id: str | None = None
     session_scope_id: str | None = None
     agent_scope_id: str | None = None
+    # ── B4: retrieval-frequency counter for ACT-R base-level activation (migration #6) ──
+    # How many times this memory has been RETURNED by a search. Only read under
+    # MEMORY_SCORING_DECAY='power_actr'; default 0 leaves the exponential path unchanged.
+    access_count: int = 0
     # Transient (not persisted): set on search results so the API can surface it.
     similarity: float | None = None
     # Transient: the composite re-rank score (only set when MEMORY_SCORING_ENABLED).
@@ -112,6 +116,10 @@ class MemoryRepository(ABC):
         dedup_threshold: float,
         trace_id: str,
         producer_version: str,
+        # ── B7 associative linking (additive; default off => no edges written) ──────
+        linking_enabled: bool = False,
+        linking_sim_min: float = 0.50,
+        linking_max_neighbors: int = 3,
     ) -> StoreResult: ...
 
     @abstractmethod
@@ -133,6 +141,11 @@ class MemoryRepository(ABC):
         current_only: bool = False,
         session_scope_id: str | None = None,
         agent_scope_id: str | None = None,
+        # ── B6 MMR diversity re-rank + B7 link expansion (default off => unchanged) ──
+        mmr_enabled: bool = False,
+        mmr_lambda: float = 0.5,
+        linking_enabled: bool = False,
+        link_expansion_limit: int = 10,
     ) -> list[StoredMemory]: ...
 
     @abstractmethod
@@ -242,6 +255,8 @@ class InMemoryRepository(MemoryRepository):
         self._wipe_log: list[dict[str, Any]] = []
         self.audit: list[dict[str, Any]] = []  # soft-delete / supersession audit trail
         self.events: list[dict[str, Any]] = []  # captured outbox events (test introspection)
+        # ── B7: associative edges (src_id -> list of (dst_id, relation, weight)) ──────
+        self._links: dict[str, list[tuple[str, str, float]]] = {}
         self._tenant_visibility: dict[str, str] = {}
         self._tenant_dedup: dict[str, float] = {}
         self._default_visibility = default_visibility
@@ -285,10 +300,15 @@ class InMemoryRepository(MemoryRepository):
         dedup_threshold: float,
         trace_id: str,
         producer_version: str,
+        linking_enabled: bool = False,
+        linking_sim_min: float = 0.50,
+        linking_max_neighbors: int = 3,
     ) -> StoreResult:
         # Dedup: find the nearest same-principal neighbour; >= threshold -> bump-only.
+        # Also collect all same-principal neighbours + their cosine for B7 link decisions.
         best: StoredMemory | None = None
         best_sim = -1.0
+        neighbours: list[tuple[str, float]] = []
         for m in self._memories.values():
             if (
                 m.tenant_id == memory.tenant_id
@@ -296,6 +316,7 @@ class InMemoryRepository(MemoryRepository):
                 and m.principal_id == memory.principal_id
             ):
                 sim = cosine_similarity(memory.vector, m.vector)
+                neighbours.append((m.id, sim))
                 if sim > best_sim:
                     best_sim = sim
                     best = m
@@ -331,6 +352,24 @@ class InMemoryRepository(MemoryRepository):
                 )
 
         self._memories[memory.id] = memory
+        # ── B7: write associative edges to the nearest related neighbours (flag-guarded) ──
+        if linking_enabled:
+            from .linking import LinkCandidate, decide_links
+
+            decisions = decide_links(
+                [LinkCandidate(memory_id=mid, similarity=sim) for mid, sim in neighbours],
+                sim_min=linking_sim_min, dedup_threshold=dedup_threshold,
+                max_neighbors=linking_max_neighbors,
+            )
+            if decisions:
+                self._links.setdefault(memory.id, [])
+                for d in decisions:
+                    # Undirected association: index both directions so a 1-hop walk from
+                    # either endpoint finds the other.
+                    self._links[memory.id].append((d.dst_memory_id, d.relation, d.weight))
+                    self._links.setdefault(d.dst_memory_id, []).append(
+                        (memory.id, d.relation, d.weight)
+                    )
         self.events.append(
             {"topic": "cypherx.memory.stored", "tenant_id": memory.tenant_id,
              "memory_id": memory.id, "deduped": False}
@@ -355,75 +394,108 @@ class InMemoryRepository(MemoryRepository):
         current_only: bool = False,
         session_scope_id: str | None = None,
         agent_scope_id: str | None = None,
+        mmr_enabled: bool = False,
+        mmr_lambda: float = 0.5,
+        linking_enabled: bool = False,
+        link_expansion_limit: int = 10,
     ) -> list[StoredMemory]:
-        candidates: list[StoredMemory] = []
         now = _now()
-        for m in self._memories.values():
+
+        def _visible(m: StoredMemory) -> bool:
             if m.tenant_id != tenant_id:
-                continue
+                return False
             if m.expires_at is not None and m.expires_at <= now:
-                continue
+                return False
             # Temporal validity (flag-guarded): hide superseded memories by default.
             if current_only and m.valid_until is not None and m.valid_until <= now:
-                continue
+                return False
             # VISIBILITY — the leak guard. A non-owner only ever sees tenant_shared under
             # the 'tenant' policy; principal_only never crosses.
-            visible = scoping.can_view(
-                caller_type=caller_type,
-                caller_id=caller_id,
-                owner_type=m.principal_type,
-                owner_id=m.principal_id,
-                memory_scope=m.scope,
+            if not scoping.can_view(
+                caller_type=caller_type, caller_id=caller_id, owner_type=m.principal_type,
+                owner_id=m.principal_id, memory_scope=m.scope,
                 user_scope_visibility=user_scope_visibility,
-            )
-            if not visible:
-                continue
+            ):
+                return False
             is_owner = m.principal_type == caller_type and m.principal_id == caller_id
             if not include_shared and not is_owner:
-                continue
+                return False
             if type_filter is not None and m.type != type_filter:
-                continue
+                return False
             if tags_filter and not set(tags_filter).issubset(set(m.tags)):
-                continue
+                return False
             # Optional richer-scope filters (additive; only narrow when provided).
             if session_scope_id is not None and m.session_scope_id != session_scope_id:
-                continue
-            if agent_scope_id is not None and m.agent_scope_id != agent_scope_id:
-                continue
-            candidates.append(m)
+                return False
+            return not (agent_scope_id is not None and m.agent_scope_id != agent_scope_id)
 
+        candidates: list[StoredMemory] = [m for m in self._memories.values() if _visible(m)]
+
+        comps: dict[str, float] = {}
         if scoring_enabled:
-            # Composite re-rank (Generative Agents). The candidate SET is unchanged; only
-            # the order differs from the pure-cosine path. Recency uses the PRIOR last-use
-            # timestamp (captured before this retrieval bumps it).
+            # Composite re-rank (Generative Agents / ACT-R). The candidate SET is unchanged;
+            # only the order differs. Recency + access_count use the PRIOR values (captured
+            # before this retrieval bumps them).
             weights = scoring_weights or ScoringWeights()
-            refs: dict[str, datetime] = {
-                m.id: (m.last_retrieved_at or m.last_accessed_at or m.created_at)
-                for m in candidates
-            }
-            comps: dict[str, float] = {
+            comps = {
                 m.id: composite_score(
                     cosine=cosine_similarity(query_vector, m.vector),
-                    importance=m.importance_score, reference=refs[m.id], now=now,
-                    weights=weights,
+                    importance=m.importance_score,
+                    reference=(m.last_retrieved_at or m.last_accessed_at or m.created_at),
+                    now=now, weights=weights, access_count=m.access_count,
                 )
                 for m in candidates
             }
+
+        if mmr_enabled:
+            # B6: diversity re-rank of the fetched window. Fail-soft to the base order.
+            try:
+                scored = mmr_rerank(
+                    candidates, query_vector, lambda_mult=mmr_lambda, top_k=top_k
+                )
+            except Exception:  # noqa: BLE001
+                scored = sorted(
+                    candidates, key=lambda m: cosine_similarity(query_vector, m.vector),
+                    reverse=True,
+                )[:top_k]
+        elif scoring_enabled:
             scored = sorted(candidates, key=lambda m: comps[m.id], reverse=True)[:top_k]
         else:
-            comps = {}
             scored = sorted(
                 candidates,
                 key=lambda m: cosine_similarity(query_vector, m.vector),
                 reverse=True,
             )[:top_k]
 
+        # ── B7: bounded 1-hop, embedding-free link expansion (flag-guarded; fail-soft) ──
+        # Walk edges from the ranked top_k and APPEND visible linked memories the single-shot
+        # cosine missed (a memory relevant by association but far from the query vector). Only
+        # ADDS to the result; never drops a vector row, so single-hop recall can't regress.
+        if linking_enabled and scored:
+            try:
+                have = {m.id for m in scored}
+                added = 0
+                for seed in list(scored):
+                    for dst_id, _rel, _w in self._links.get(seed.id, []):
+                        if added >= link_expansion_limit:
+                            break
+                        if dst_id in have:
+                            continue
+                        linked = self._memories.get(dst_id)
+                        if linked is not None and _visible(linked):
+                            scored.append(linked)
+                            have.add(dst_id)
+                            added += 1
+            except Exception:  # noqa: BLE001 — expansion is additive: fail soft to vector set
+                pass
+
         out: list[StoredMemory] = []
         for m in scored:
             m.last_accessed_at = now  # inline bump on retrieval
             m.last_retrieved_at = now  # recency input for the composite re-rank
+            m.access_count += 1  # B4: retrieval-frequency reinforcement
             m.similarity = cosine_similarity(query_vector, m.vector)
-            if scoring_enabled:
+            if m.id in comps:
                 m.composite = comps[m.id]
             out.append(m)
         return out
@@ -688,6 +760,7 @@ def to_wire(m: StoredMemory, *, deduped: bool | None = None) -> dict[str, Any]:
         "last_retrieved_at": _iso(m.last_retrieved_at),
         "valid_until": _iso(m.valid_until),
         "superseded_by_id": m.superseded_by_id,
+        "access_count": int(m.access_count),
     }
     if m.session_scope_id is not None:
         out["session_scope_id"] = m.session_scope_id

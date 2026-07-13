@@ -1,17 +1,20 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { PageHeader } from '@/components/AppShell';
+import { Page, PageBody, PageHeader } from '@/components/AppShell';
+import { AgentName, useAgentNames } from '@/components/AgentNames';
 import { BarChart } from '@/components/BarChart';
 import type { BarDatum } from '@/components/BarChart';
-import { Card, CardBody, CardHeader, ErrorBanner, Loading, Select, Stat, Table } from '@/components/ui';
+import { Card, CardBody, CardHeader, CopyButton, ErrorBanner, Loading, Select, Stat, Table } from '@/components/ui';
 import type { Column } from '@/components/ui';
 import { useAsync } from '@/lib/useAsync';
 import { getCost, getUsage } from '@/lib/services';
 import type { CostRow, UsageRow } from '@/lib/types';
 import { formatCost, formatNumber } from '@/lib/utils';
 
-const GROUP_BY = ['date', 'model', 'agent_id', 'provider'];
+// Values MUST match the backend group_by allowlist: model | agent | api_key | date.
+const GROUP_BY = ['date', 'model', 'agent', 'api_key'];
+const GROUP_LABEL: Record<string, string> = { date: 'Date', model: 'Model', agent: 'Agent', api_key: 'API Key' };
 
 function num(v: unknown): number {
   return typeof v === 'number' ? v : Number(v) || 0;
@@ -22,10 +25,41 @@ function groupLabel(row: Record<string, unknown>, groupBy: string): string {
   return v == null ? '(none)' : String(v);
 }
 
+/** Group-key table cell: agent id → name (never the UUID), api_key id → copy affordance, else plain text. */
+function GroupCell({ row, groupBy }: { row: Record<string, unknown>; groupBy: string }) {
+  if (groupBy === 'agent') {
+    return <AgentName agentId={String(row.agent ?? row.agent_id ?? '')} />;
+  }
+  if (groupBy === 'api_key') {
+    const keyId = String(row.api_key ?? row.api_key_id ?? '');
+    return keyId ? <CopyButton value={keyId} label="Copy Key ID" /> : <span className="text-fg">(none)</span>;
+  }
+  return <span className="text-fg">{groupLabel(row, groupBy)}</span>;
+}
+
+function LegendDot({ tone, label }: { tone: string; label: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 text-xs text-muted">
+      <span className={`h-2 w-2 rounded-sm ${tone}`} />
+      {label}
+    </span>
+  );
+}
+
 export default function UsagePage() {
   const [groupBy, setGroupBy] = useState('model');
   const usageQ = useAsync((signal) => getUsage({ group_by: groupBy }, signal), [groupBy]);
   const costQ = useAsync((signal) => getCost({ group_by: groupBy }, signal), [groupBy]);
+  const { nameOf } = useAgentNames();
+
+  // Chart labels are plain strings: resolve an agent group key to its NAME (never the UUID); others as-is.
+  const barLabel = (row: Record<string, unknown>): string => {
+    if (groupBy === 'agent') {
+      const id = String(row.agent ?? row.agent_id ?? '');
+      return nameOf(id) ?? (id ? '(unnamed agent)' : '(none)');
+    }
+    return groupLabel(row, groupBy);
+  };
 
   // Memoize the rows off the stable query-data references (not freshly-allocated arrays).
   const usage = useMemo(() => usageQ.data?.data ?? [], [usageQ.data]);
@@ -54,95 +88,106 @@ export default function UsagePage() {
     const cacheWrite = num(r.cache_write_tokens);
     const fresh = Math.max(0, total - cacheRead - cacheWrite);
     return {
-      label: groupLabel(r, groupBy),
+      label: barLabel(r),
       value: total,
       segments: [
-        { label: 'fresh', value: fresh, tone: 'bg-brand' },
-        { label: 'cache write', value: cacheWrite, tone: 'bg-warning' },
-        { label: 'cache read', value: cacheRead, tone: 'bg-success' },
+        { label: 'Fresh', value: fresh, tone: 'bg-brand' },
+        { label: 'Cache Write', value: cacheWrite, tone: 'bg-warning' },
+        { label: 'Cache Read', value: cacheRead, tone: 'bg-success' },
       ],
     };
   });
 
-  const costBars: BarDatum[] = cost.map((c) => ({ label: groupLabel(c, groupBy), value: num(c.cost_usd) }));
+  const costBars: BarDatum[] = cost.map((c) => ({ label: barLabel(c), value: num(c.cost_usd) }));
 
+  const gh = GROUP_LABEL[groupBy] ?? groupBy;
   const usageColumns: Array<Column<UsageRow>> = [
-    { key: 'group', header: groupBy, render: (r) => <span className="text-fg">{groupLabel(r, groupBy)}</span> },
-    { key: 'prompt', header: 'Prompt', render: (r) => formatNumber(num(r.prompt_tokens)) },
-    { key: 'completion', header: 'Completion', render: (r) => formatNumber(num(r.completion_tokens)) },
-    { key: 'cache_read', header: 'Cache read', render: (r) => formatNumber(num(r.cache_read_tokens)) },
-    { key: 'cache_write', header: 'Cache write', render: (r) => formatNumber(num(r.cache_write_tokens)) },
-    { key: 'total', header: 'Total', render: (r) => formatNumber(num(r.total_tokens) || num(r.prompt_tokens) + num(r.completion_tokens)) },
-    { key: 'requests', header: 'Requests', render: (r) => formatNumber(num(r.request_count)) },
+    { key: 'group', header: gh, render: (r) => <GroupCell row={r} groupBy={groupBy} /> },
+    { key: 'prompt', header: 'Prompt', className: 'text-right', render: (r) => <span className="font-mono text-xs tabular-nums">{formatNumber(num(r.prompt_tokens))}</span> },
+    { key: 'completion', header: 'Completion', className: 'text-right', render: (r) => <span className="font-mono text-xs tabular-nums">{formatNumber(num(r.completion_tokens))}</span> },
+    { key: 'cache_read', header: 'Cache Read', className: 'text-right', render: (r) => <span className="font-mono text-xs tabular-nums">{formatNumber(num(r.cache_read_tokens))}</span> },
+    { key: 'cache_write', header: 'Cache Write', className: 'text-right', render: (r) => <span className="font-mono text-xs tabular-nums">{formatNumber(num(r.cache_write_tokens))}</span> },
+    { key: 'total', header: 'Total', className: 'text-right', render: (r) => <span className="font-mono text-xs tabular-nums text-fg">{formatNumber(num(r.total_tokens) || num(r.prompt_tokens) + num(r.completion_tokens))}</span> },
+    { key: 'requests', header: 'Requests', className: 'text-right', render: (r) => <span className="font-mono text-xs tabular-nums">{formatNumber(num(r.request_count))}</span> },
   ];
 
   const costColumns: Array<Column<CostRow>> = [
-    { key: 'group', header: groupBy, render: (c) => <span className="text-fg">{groupLabel(c, groupBy)}</span> },
-    { key: 'cost', header: 'Cost (USD)', render: (c) => <span className="font-mono">{formatCost(num(c.cost_usd))}</span> },
-    { key: 'tokens', header: 'Tokens', render: (c) => formatNumber(num(c.total_tokens)) },
-    { key: 'requests', header: 'Requests', render: (c) => formatNumber(num(c.request_count)) },
+    { key: 'group', header: gh, render: (c) => <GroupCell row={c} groupBy={groupBy} /> },
+    { key: 'cost', header: 'Cost (USD)', className: 'text-right', render: (c) => <span className="font-mono tabular-nums text-fg">{formatCost(num(c.cost_usd))}</span> },
+    { key: 'tokens', header: 'Tokens', className: 'text-right', render: (c) => <span className="font-mono text-xs tabular-nums">{formatNumber(num(c.total_tokens))}</span> },
+    { key: 'requests', header: 'Requests', className: 'text-right', render: (c) => <span className="font-mono text-xs tabular-nums">{formatNumber(num(c.request_count))}</span> },
   ];
 
   return (
-    <div>
+    <Page>
       <PageHeader
-        title="LLM usage & cost"
+        title="LLM Usage & Cost"
         description="Token usage and cost from the LLMs gateway, grouped however you like."
         actions={
-          <Select value={groupBy} onChange={(e) => setGroupBy(e.target.value)} className="w-40">
+          <Select value={groupBy} onChange={(e) => setGroupBy(e.target.value)} className="w-44">
             {GROUP_BY.map((g) => (
               <option key={g} value={g}>
-                group by {g}
+                Group by {GROUP_LABEL[g] ?? g}
               </option>
             ))}
           </Select>
         }
       />
+      <PageBody>
+        <div className="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <Stat label="Total Tokens" value={formatNumber(totals.tokens)} />
+          <Stat label="Total Cost" value={formatCost(totals.costSum)} />
+          <Stat label="Requests" value={formatNumber(totals.requests)} />
+          <Stat label="Cache Read Tokens" value={formatNumber(totals.cacheRead)} sub={`${formatNumber(totals.cacheWrite)} Written`} />
+        </div>
 
-      <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <Stat label="Total tokens" value={formatNumber(totals.tokens)} />
-        <Stat label="Total cost" value={formatCost(totals.costSum)} />
-        <Stat label="Requests" value={formatNumber(totals.requests)} />
-        <Stat label="Cache read tokens" value={formatNumber(totals.cacheRead)} sub={`${formatNumber(totals.cacheWrite)} written`} />
-      </div>
+        {usageQ.error ? <ErrorBanner error={usageQ.error} title="Could not load usage" className="mb-3" /> : null}
+        {costQ.error ? <ErrorBanner error={costQ.error} title="Could not load cost" className="mb-3" /> : null}
 
-      {usageQ.error ? <ErrorBanner error={usageQ.error} title="Could not load usage" className="mb-4" /> : null}
-      {costQ.error ? <ErrorBanner error={costQ.error} title="Could not load cost" className="mb-4" /> : null}
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+          <Card>
+            <CardHeader
+              title="Tokens by Group"
+              actions={
+                <div className="flex items-center gap-3">
+                  <LegendDot tone="bg-brand" label="Fresh" />
+                  <LegendDot tone="bg-warning" label="Cache Write" />
+                  <LegendDot tone="bg-success" label="Cache Read" />
+                </div>
+              }
+            />
+            <CardBody>
+              {usageQ.loading ? <Loading /> : <BarChart data={tokenBars} valueFormat={(v) => formatNumber(v)} />}
+            </CardBody>
+          </Card>
+          <Card>
+            <CardHeader title="Cost by Group" />
+            <CardBody>{costQ.loading ? <Loading /> : <BarChart data={costBars} valueFormat={(v) => formatCost(v)} />}</CardBody>
+          </Card>
+        </div>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <Card>
-          <CardHeader title="Tokens by group" description="Stacked: fresh / cache write / cache read." />
-          <CardBody>
-            {usageQ.loading ? <Loading /> : <BarChart data={tokenBars} valueFormat={(v) => formatNumber(v)} />}
+        <Card className="mt-3">
+          <CardHeader title="Usage Detail" />
+          <CardBody className="px-0 py-0">
+            {usageQ.loading ? (
+              <Loading />
+            ) : (
+              <Table columns={usageColumns} rows={usage} rowKey={(_, i) => String(i)} empty="No usage in this window." />
+            )}
           </CardBody>
         </Card>
-        <Card>
-          <CardHeader title="Cost by group" />
-          <CardBody>{costQ.loading ? <Loading /> : <BarChart data={costBars} valueFormat={(v) => formatCost(v)} />}</CardBody>
+
+        <Card className="mt-3">
+          <CardHeader title="Cost Detail" />
+          <CardBody className="px-0 py-0">
+            {costQ.loading ? (
+              <Loading />
+            ) : (
+              <Table columns={costColumns} rows={cost} rowKey={(_, i) => String(i)} empty="No cost in this window." />
+            )}
+          </CardBody>
         </Card>
-      </div>
-
-      <Card className="mt-6">
-        <CardHeader title="Usage detail" />
-        <CardBody className="px-0 py-0">
-          {usageQ.loading ? (
-            <Loading />
-          ) : (
-            <Table columns={usageColumns} rows={usage} rowKey={(_, i) => String(i)} empty="No usage in this window." />
-          )}
-        </CardBody>
-      </Card>
-
-      <Card className="mt-6">
-        <CardHeader title="Cost detail" />
-        <CardBody className="px-0 py-0">
-          {costQ.loading ? (
-            <Loading />
-          ) : (
-            <Table columns={costColumns} rows={cost} rowKey={(_, i) => String(i)} empty="No cost in this window." />
-          )}
-        </CardBody>
-      </Card>
-    </div>
+      </PageBody>
+    </Page>
   );
 }

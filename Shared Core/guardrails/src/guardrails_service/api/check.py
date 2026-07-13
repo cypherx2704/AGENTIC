@@ -37,6 +37,7 @@ from fastapi.responses import JSONResponse
 from ..core import metrics, trace
 from ..core.auth import Principal, require_principal
 from ..core.errors import ApiError, ErrorCode
+from ..core.normalization import canonicalize
 from ..db.outbox import CheckWrite, ViolationRow
 from ..db.persist_queue import PersistenceQueue
 from ..models.check import RESERVED_BODY_FIELDS, CheckRequest, CheckResponse, Violation
@@ -203,6 +204,34 @@ async def _groundedness(
     return meta, conf, signal.high_risk
 
 
+def _build_detection_text(request: Request, text: str) -> str:
+    """Build the canonicalized detection VIEW (B1) — fail-soft to the raw text.
+
+    Layer A (strip zero-width / Tags / bidi) is always applied; NFKC (Layer B) and the
+    confusables skeleton fold (Layer C) are opt-in flags. A canonicalization error never
+    fabricates a decision — it falls back to the raw text path.
+    """
+    settings = request.app.state.settings
+    confusables = None
+    if settings.guardrails_confusables_fold:
+        confusables = getattr(request.app.state, "confusables_map", None) or None
+    try:
+        return canonicalize(text, nfkc=settings.injection_normalize, confusables=confusables)
+    except Exception as exc:  # noqa: BLE001 — canonicalization must never fail a check
+        logger.warning("canonicalize_failed", error=str(exc))
+        return text
+
+
+def _split_terms(raw: str) -> tuple[str, ...]:
+    """Parse a comma-separated context lexicon (lowercased, de-duplicated, order-stable)."""
+    seen: dict[str, None] = {}
+    for term in raw.split(","):
+        cleaned = term.strip().lower()
+        if cleaned:
+            seen.setdefault(cleaned, None)
+    return tuple(seen)
+
+
 async def _enforce_rate_limit(request: Request, principal: Principal, input_bytes: int) -> None:
     """Per-tenant rate limit + byte quota (429 on limit). No-op when not configured."""
     limiter: RateLimiter | None = getattr(request.app.state, "rate_limiter", None)
@@ -308,12 +337,32 @@ async def _run_check(
     else:
         metrics.classifier_cascade_total.labels("stub_only").inc()
 
+    # B1: build the canonicalized detection view for the block-category detectors (fail-soft).
+    detection_text = _build_detection_text(request, body.text)
+
+    # B7: thread caller canary tokens into the OUTPUT canary-leak detector (gated; inert off).
+    canary_tokens = (
+        body.canary_tokens if (settings.canary_leak_enabled and direction == "output") else None
+    )
+
+    # B8: native context-window PII validation (default off; rules are inert unless enabled).
+    pii_context_enabled = settings.guardrails_pii_context_validation
     ctx = RuleContext(
         classifier=classifier,
         input_text=body.input_text if direction == "output" else None,
         precomputed_toxicity=precomputed_toxicity,
         presidio_spans=presidio_spans,
         untrusted_spans=untrusted_spans,
+        detection_text=detection_text,
+        canary_tokens=canary_tokens,
+        pii_context_enabled=pii_context_enabled,
+        pii_context_window=settings.pii_context_window,
+        pii_context_passport_terms=(
+            _split_terms(settings.pii_context_passport_terms) if pii_context_enabled else ()
+        ),
+        pii_context_name_terms=(
+            _split_terms(settings.pii_context_name_terms) if pii_context_enabled else ()
+        ),
     )
     redaction_key = await _redaction_key(request, principal.tenant_id)
 

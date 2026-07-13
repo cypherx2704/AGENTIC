@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
-import { PageHeader } from '@/components/AppShell';
+import { Page, PageBody, PageHeader } from '@/components/AppShell';
 import {
   Badge,
   Button,
@@ -121,98 +121,105 @@ export default function LlmConnectionsPage() {
   }
 
   return (
-    <div>
+    <Page>
       <PageHeader
         title="LLM Connections"
-        description="Connect your own AI provider keys (OpenRouter, OpenAI, Claude, self-hosted, …). Keys are encrypted and stored in the platform database against your tenant — never in env. Chat, RAG and Memory all use them; there is no platform fallback."
+        description="Connect your own AI provider keys (OpenRouter, OpenAI, Claude, self-hosted, …). Keys are encrypted and stored against your tenant — never in env. Chat, RAG and Memory all use them; there is no platform fallback."
       />
 
-      <Card className="mb-4">
-        <CardHeader title="Add a connection" />
-        <CardBody>
-          <form onSubmit={onSubmit} className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <Select label="Provider" value={provider} onChange={(e) => onProviderChange(e.target.value)}>
-              {Object.entries(PRESETS).map(([key, v]) => (
-                <option key={key} value={key}>
-                  {v.label}
-                </option>
-              ))}
-            </Select>
-            <Select label="Wire protocol" value={kind} onChange={(e) => setKind(e.target.value)} hint="openai_compatible covers OpenRouter / OpenAI / self-hosted">
-              <option value="openai_compatible">openai_compatible</option>
-              <option value="openai">openai</option>
-              <option value="anthropic">anthropic</option>
-            </Select>
-            <Input
-              label="Base URL"
-              value={baseUrl}
-              onChange={(e) => setBaseUrl(e.target.value)}
-              placeholder="https://openrouter.ai/api/v1"
-              hint="Required for OpenRouter / self-hosted; leave blank for native OpenAI/Anthropic"
-            />
-            <Input label="Label (optional)" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="My OpenRouter key" />
-            <Input
-              className="sm:col-span-2"
-              label="API key"
-              type="password"
-              value={secret}
-              onChange={(e) => setSecret(e.target.value)}
-              placeholder="sk-or-v1-…  (stored encrypted; shown only once)"
-              autoComplete="off"
-            />
-            <div className="sm:col-span-2">
-              <Button type="submit" loading={submitting} disabled={submitting}>
-                Add connection
-              </Button>
-            </div>
-          </form>
-        </CardBody>
-      </Card>
+      <PageBody fill>
+        <Card className="mb-3 shrink-0">
+          <CardHeader title="Add a Connection" description="A new provider is just a connection here — never code." />
+          <CardBody>
+            <form onSubmit={onSubmit} className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <Select label="Provider" value={provider} onChange={(e) => onProviderChange(e.target.value)}>
+                {Object.entries(PRESETS).map(([key, v]) => (
+                  <option key={key} value={key}>
+                    {v.label}
+                  </option>
+                ))}
+              </Select>
+              <Select label="Wire Protocol" value={kind} onChange={(e) => setKind(e.target.value)} hint="openai_compatible covers OpenRouter / OpenAI / self-hosted.">
+                <option value="openai_compatible">openai_compatible</option>
+                <option value="openai">openai</option>
+                <option value="anthropic">anthropic</option>
+              </Select>
+              <Input
+                label="Base URL"
+                value={baseUrl}
+                onChange={(e) => setBaseUrl(e.target.value)}
+                placeholder="https://openrouter.ai/api/v1"
+                hint="Required for OpenRouter / self-hosted; leave blank for native OpenAI/Anthropic."
+              />
+              <Input label="Label (Optional)" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="My OpenRouter key" />
+              <Input
+                className="sm:col-span-2"
+                label="API Key"
+                type="password"
+                value={secret}
+                onChange={(e) => setSecret(e.target.value)}
+                placeholder="sk-or-v1-…  (stored encrypted; shown only once)"
+                autoComplete="off"
+              />
+              <div className="sm:col-span-2">
+                <Button type="submit" size="md" loading={submitting} disabled={submitting}>
+                  Add Connection
+                </Button>
+              </div>
+            </form>
+          </CardBody>
+        </Card>
 
-      <Card>
-        <CardHeader title="Connected providers" />
-        <CardBody>
-          {error ? <ErrorBanner error={error} title="Could not load connections" className="mb-3" /> : null}
-          {loading ? (
-            <Loading label="Loading connections…" />
-          ) : items.length === 0 ? (
-            <p className="text-sm text-muted">No connections yet — add one above to start using your own provider keys.</p>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-muted">
-                    <th className="py-2 pr-4 font-medium">Provider</th>
-                    <th className="py-2 pr-4 font-medium">Label</th>
-                    <th className="py-2 pr-4 font-medium">Base URL</th>
-                    <th className="py-2 pr-4 font-medium">Kind</th>
-                    <th className="py-2 pr-4 font-medium">Status</th>
-                    <th className="py-2" />
-                  </tr>
-                </thead>
-                <tbody>
-                  {items.map((c) => (
-                    <tr key={c.key_id} className="border-t border-border">
-                      <td className="py-2 pr-4 capitalize">{c.provider}</td>
-                      <td className="py-2 pr-4">{c.label || '—'}</td>
-                      <td className="py-2 pr-4 text-muted">{c.base_url || '—'}</td>
-                      <td className="py-2 pr-4">{c.kind || '—'}</td>
-                      <td className="py-2 pr-4">
-                        {c.status ? <StatusBadge status={c.status} /> : <Badge>unknown</Badge>}
-                      </td>
-                      <td className="py-2 text-right">
-                        <Button variant="ghost" size="sm" onClick={() => setConfirmDelete(c)}>
-                          Remove
-                        </Button>
-                      </td>
+        <Card className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <CardHeader title="Connected Providers" />
+          <CardBody className="min-h-0 flex-1 overflow-y-auto p-0">
+            {error ? (
+              <div className="p-4">
+                <ErrorBanner error={error} title="Could not load connections" />
+              </div>
+            ) : loading ? (
+              <div className="p-4">
+                <Loading label="Loading connections…" />
+              </div>
+            ) : items.length === 0 ? (
+              <div className="p-4">
+                <p className="text-sm text-muted">No connections yet — add one above to start using your own provider keys.</p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse text-sm">
+                  <thead>
+                    <tr className="text-left text-xs text-muted">
+                      <th className="border-b border-border px-3 py-2.5 font-medium">Provider</th>
+                      <th className="border-b border-border px-3 py-2.5 font-medium">Label</th>
+                      <th className="border-b border-border px-3 py-2.5 font-medium">Base URL</th>
+                      <th className="border-b border-border px-3 py-2.5 font-medium">Kind</th>
+                      <th className="border-b border-border px-3 py-2.5 font-medium">Status</th>
+                      <th className="border-b border-border px-3 py-2.5" />
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </CardBody>
-      </Card>
+                  </thead>
+                  <tbody>
+                    {items.map((c) => (
+                      <tr key={c.key_id} className="border-b border-border transition-colors last:border-0 hover:bg-surface-2">
+                        <td className="px-3 py-2.5 capitalize text-fg">{c.provider}</td>
+                        <td className="px-3 py-2.5 text-fg">{c.label || '—'}</td>
+                        <td className="px-3 py-2.5 font-mono text-xs text-muted">{c.base_url || '—'}</td>
+                        <td className="px-3 py-2.5 font-mono text-xs text-muted">{c.kind || '—'}</td>
+                        <td className="px-3 py-2.5">{c.status ? <StatusBadge status={c.status} /> : <Badge>Unknown</Badge>}</td>
+                        <td className="px-3 py-2.5 text-right">
+                          <Button variant="ghost" size="sm" onClick={() => setConfirmDelete(c)}>
+                            Remove
+                          </Button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardBody>
+        </Card>
+      </PageBody>
 
       <ConfirmDialog
         open={confirmDelete !== null}
@@ -220,7 +227,7 @@ export default function LlmConnectionsPage() {
         onConfirm={onDelete}
         title="Remove this connection?"
         description="This cannot be undone."
-        confirmLabel="Remove connection"
+        confirmLabel="Remove Connection"
         loading={deleting}
       >
         {confirmDelete && (
@@ -232,6 +239,6 @@ export default function LlmConnectionsPage() {
           </p>
         )}
       </ConfirmDialog>
-    </div>
+    </Page>
   );
 }

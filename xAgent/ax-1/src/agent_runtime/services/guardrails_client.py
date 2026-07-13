@@ -24,6 +24,7 @@ import structlog
 from ..core import metrics, trace
 from ..core.config import Settings
 from ..core.errors import ApiError, ErrorCode
+from .errors import error_detail as _error_detail
 from .service_token import ServiceTokenProvider
 
 logger = structlog.get_logger(__name__)
@@ -82,10 +83,18 @@ class GuardrailsClient:
             raise ApiError(ErrorCode.SERVICE_UNAVAILABLE, "Guardrails service unavailable.") from exc
         if resp.status_code >= 400:
             metrics.downstream_calls_total.labels("guardrails", "rejected").inc()
-            logger.warning("guardrails_call_rejected", path=path, status=resp.status_code)
+            # Guardrails answers with a Contract-2 envelope naming exactly WHY it refused (a 401
+            # alone has five distinct causes: bad service token, bad/expired forwarded agent JWT,
+            # an on_behalf_of mismatch, a missing forwarded JWT, a missing tenant_id claim).
+            # Discarding it turns a precise, actionable rejection into an unfalsifiable mystery.
+            detail = _error_detail(resp)
+            logger.warning(
+                "guardrails_call_rejected", path=path, status=resp.status_code, detail=detail
+            )
             raise ApiError(
                 ErrorCode.SERVICE_UNAVAILABLE,
-                f"Guardrails service returned {resp.status_code}.",
+                f"Guardrails service returned {resp.status_code}."
+                + (f" {detail}" if detail else ""),
             )
         data = resp.json()
         # FAIL CLOSED: a guardrail is a safety control, so a 2xx body lacking a valid decision

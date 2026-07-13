@@ -11,11 +11,18 @@ The classifier-backed toxicity rules receive the classifier via :class:`RuleCont
 
 from __future__ import annotations
 
+import base64
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from ..classifier import Category, Classifier
+from .signatures import (
+    INJECTION_AUTOMATON,
+    JAILBREAK_AUTOMATON,
+    AhoCorasick,
+    signature_matches,
+)
 
 Action = str  # 'allow' | 'warn' | 'redact' | 'block'
 Direction = str  # 'input' | 'output' | 'both'
@@ -53,6 +60,27 @@ class RuleContext:
     # Injection-risk score in [0,1] produced by the input-side injection detector. Pure
     # METADATA carried for decision-trace; does not by itself change a verdict.
     injection_risk: float = 0.0
+    # Canonicalized DETECTION VIEW of the input (B1 — Unicode de-obfuscation). Built once per
+    # check by ``core.normalization.canonicalize`` (Layer A always-on; NFKC / confusables
+    # opt-in). BLOCK-category detectors (prompt-injection / jailbreak) match against this
+    # instead of the raw text, so obfuscated payloads (zero-width / Tags / bidi / fullwidth /
+    # homoglyph) collapse back onto the finite patterns. ``None`` => match the raw text
+    # (today's behaviour; unit-level callers). NEVER fed to PII redact rules (offset-map /
+    # "raw PII never leaves" invariant), so redaction offsets always map to the original.
+    detection_text: str | None = None
+    # Caller-supplied high-entropy canary token(s) embedded in the caller's own system prompt
+    # (B7 — output-canary-leak-v1). Any occurrence in the model OUTPUT (exact + de-spaced /
+    # hex / base64 variants) means the system prompt/context leaked -> block. ``None`` =>
+    # the detector is inert (byte-identical to today, exactly like ``untrusted_spans``).
+    canary_tokens: list[str] | None = None
+    # Native context-window PII validation (B8 — default OFF). When ``pii_context_enabled`` a
+    # passport-number / name candidate is admitted only when a supporting term from the
+    # respective lexicon appears within ``pii_context_window`` chars. ``pii_context_enabled``
+    # False (default) => the passport/name context detectors are a pure no-op.
+    pii_context_enabled: bool = False
+    pii_context_window: int = 40
+    pii_context_passport_terms: tuple[str, ...] = ()
+    pii_context_name_terms: tuple[str, ...] = ()
 
 
 @dataclass
@@ -152,6 +180,251 @@ def _luhn_ok(digits: str) -> bool:
     return total % 10 == 0
 
 
+# ── ICAO 9303 MRZ passport detection (regex + check digits — B3) ─────────────────
+# MRZ documents are fixed-width lines over the alphabet [A-Z0-9<]. TD3 (passport) = two
+# 44-char lines; TD2 = two 36-char lines; TD1 (ID card) = three 30-char lines. Detection is
+# an anchored fixed-width match (ReDoS-safe) confirmed by the ICAO Doc 9303 7-3-1 mod-10
+# check digits over the document number, DOB, expiry, and a composite field — the SAME
+# "regex + deterministic validation" shape as the Luhn credit-card rule. Because FOUR
+# independent check digits must all pass, false positives are astronomically unlikely.
+_MRZ_LINE_RE = re.compile(r"[A-Z0-9<]+")
+_MRZ_WEIGHTS = (7, 3, 1)
+
+
+def _mrz_char_value(ch: str) -> int:
+    """ICAO 9303 character value: '0'-'9' -> 0-9, 'A'-'Z' -> 10-35, '<' -> 0; else -1."""
+    if ch == "<":
+        return 0
+    if "0" <= ch <= "9":
+        return ord(ch) - 48
+    if "A" <= ch <= "Z":
+        return ord(ch) - 55  # 'A' (65) -> 10
+    return -1
+
+
+def _mrz_check_digit(data: str) -> int:
+    """Compute the ICAO 9303 7-3-1 mod-10 check digit over ``data`` (mirrors ``_luhn_ok``).
+
+    Returns -1 if any character is outside the MRZ alphabet (so an invalid field never
+    accidentally validates).
+    """
+    total = 0
+    for i, ch in enumerate(data):
+        value = _mrz_char_value(ch)
+        if value < 0:
+            return -1
+        total += value * _MRZ_WEIGHTS[i % 3]
+    return total % 10
+
+
+def _mrz_field_ok(data: str, check_char: str) -> bool:
+    """True if ``check_char`` is a digit equal to the computed check digit of ``data``."""
+    if not check_char.isdigit():
+        return False
+    computed = _mrz_check_digit(data)
+    return computed >= 0 and computed == int(check_char)
+
+
+def _mrz_td3_valid(line2: str) -> bool:
+    """Validate a TD3 (passport) second line: doc-number, DOB, expiry, composite check digits."""
+    if len(line2) != 44:
+        return False
+    doc_ok = _mrz_field_ok(line2[0:9], line2[9])
+    dob_ok = _mrz_field_ok(line2[13:19], line2[19])
+    exp_ok = _mrz_field_ok(line2[21:27], line2[27])
+    composite = line2[0:10] + line2[13:20] + line2[21:28] + line2[28:43]
+    comp_ok = _mrz_field_ok(composite, line2[43])
+    return doc_ok and dob_ok and exp_ok and comp_ok
+
+
+def _mrz_td2_valid(line2: str) -> bool:
+    """Validate a TD2 second line (doc-number, DOB, expiry, composite check digits)."""
+    if len(line2) != 36:
+        return False
+    doc_ok = _mrz_field_ok(line2[0:9], line2[9])
+    dob_ok = _mrz_field_ok(line2[13:19], line2[19])
+    exp_ok = _mrz_field_ok(line2[21:27], line2[27])
+    composite = line2[0:10] + line2[13:20] + line2[21:28] + line2[28:35]
+    comp_ok = _mrz_field_ok(composite, line2[35])
+    return doc_ok and dob_ok and exp_ok and comp_ok
+
+
+def _mrz_td1_valid(line1: str, line2: str) -> bool:
+    """Validate a TD1 pair (doc-number, DOB, expiry, composite check digits across lines)."""
+    if len(line1) != 30 or len(line2) != 30:
+        return False
+    doc_ok = _mrz_field_ok(line1[5:14], line1[14])
+    dob_ok = _mrz_field_ok(line2[0:6], line2[6])
+    exp_ok = _mrz_field_ok(line2[8:14], line2[14])
+    composite = line1[5:30] + line2[0:7] + line2[8:15] + line2[18:29]
+    comp_ok = _mrz_field_ok(composite, line2[29])
+    return doc_ok and dob_ok and exp_ok and comp_ok
+
+
+def _mrz_lines_with_spans(text: str) -> list[tuple[int, int, str]]:
+    """Return one ``(start, end, line)`` per full line that is pure MRZ chars, else skipped."""
+    out: list[tuple[int, int, str]] = []
+    idx = 0
+    for raw_line in text.splitlines(keepends=True):
+        content = raw_line.rstrip("\r\n")
+        end = idx + len(content)
+        m = _MRZ_LINE_RE.fullmatch(content)
+        if m is not None:
+            out.append((idx, end, content))
+        else:
+            out.append((idx, end, ""))  # placeholder keeps adjacency but is not MRZ
+        idx += len(raw_line)
+    return out
+
+
+def detect_pii_passport_mrz(text: str, _ctx: RuleContext) -> list[RuleHit]:
+    """Detect ICAO 9303 MRZ passport / travel-document blocks (TD1/TD2/TD3) via check digits.
+
+    Runs on the ORIGINAL ``text`` (redaction offsets map to the original — the "raw PII never
+    leaves" invariant). The matched span is the exact source substring covering the MRZ block
+    so the pipeline's ``processed_text.replace`` swaps in the deterministic ``[REDACTED:
+    passport:hex8]`` token. Only VALIDATED blocks (all four check digits pass) are emitted, so
+    a checksum-failing near-miss is never flagged.
+    """
+    lines = _mrz_lines_with_spans(text)
+    hits: list[RuleHit] = []
+    consumed = 0  # index up to which lines are already part of an emitted block
+    i = 0
+    n = len(lines)
+    while i < n:
+        if i < consumed:
+            i += 1
+            continue
+        start, _end, content = lines[i]
+        width = len(content)
+        # TD3 (passport) — two 44-char lines.
+        if width == 44 and i + 1 < n and len(lines[i + 1][2]) == 44 and _mrz_td3_valid(lines[i + 1][2]):
+            block_end = lines[i + 1][1]
+            hits.append(RuleHit(text[start:block_end], "passport"))
+            consumed = i + 2
+            i += 2
+            continue
+        # TD2 — two 36-char lines.
+        if width == 36 and i + 1 < n and len(lines[i + 1][2]) == 36 and _mrz_td2_valid(lines[i + 1][2]):
+            block_end = lines[i + 1][1]
+            hits.append(RuleHit(text[start:block_end], "passport"))
+            consumed = i + 2
+            i += 2
+            continue
+        # TD1 — three 30-char lines.
+        if (
+            width == 30
+            and i + 2 < n
+            and len(lines[i + 1][2]) == 30
+            and len(lines[i + 2][2]) == 30
+            and _mrz_td1_valid(content, lines[i + 1][2])
+        ):
+            block_end = lines[i + 2][1]
+            hits.append(RuleHit(text[start:block_end], "passport"))
+            consumed = i + 3
+            i += 3
+            continue
+        i += 1
+    return hits
+
+
+# ── Per-request canary-token leak detector (output rule — B7) ────────────────────
+def _canary_variants(token: str) -> list[str]:
+    """Precompute lowercase match variants of a canary token: exact + hex + base64.
+
+    The de-spaced comparison is done against a whitespace-stripped copy of the OUTPUT (not
+    against a variant here), so "AB CD EF" style spacing is also caught.
+    """
+    variants: list[str] = [token.lower()]
+    raw = token.encode("utf-8")
+    variants.append(raw.hex().lower())
+    with_pad = base64.b64encode(raw).decode("ascii").lower()
+    variants.append(with_pad)
+    variants.append(with_pad.rstrip("="))  # unpadded base64
+    return [v for v in variants if v]
+
+
+def detect_output_canary_leak(text: str, ctx: RuleContext) -> list[RuleHit]:
+    """Block the output when a caller-supplied canary token leaks (exact / de-spaced / hex /
+    base64). Inert (returns ``[]``) when ``ctx.canary_tokens`` is unset — byte-identical to
+    today. The matched value stored is a SAFE fixed label, never the raw token.
+    """
+    tokens = ctx.canary_tokens or []
+    if not tokens:
+        return []
+    lowered = text.lower()
+    despaced = re.sub(r"\s+", "", lowered)
+    hits: list[RuleHit] = []
+    for token in tokens:
+        if not token:
+            continue
+        token_despaced = re.sub(r"\s+", "", token.lower())
+        leaked = any(v in lowered for v in _canary_variants(token))
+        if not leaked and token_despaced and token_despaced in despaced:
+            leaked = True
+        if leaked:
+            hits.append(RuleHit(matched_text="canary_token_leak", category="security"))
+    return hits
+
+
+# ── Native context-window PII validation -> passport/name (B8) ───────────────────
+# A bare passport-number pattern (6-9 alphanumerics with >=1 digit) is a false-positive
+# machine on its own; gating it on a proximity keyword window (Presidio context enhancer /
+# Google DLP hotword mechanism) makes it deployable as a microsecond substring scan.
+_PASSPORT_CANDIDATE_RE = re.compile(r"(?<![A-Za-z0-9])[A-Z0-9]{6,9}(?![A-Za-z0-9])")
+# A name candidate: an honorific ("Mr.", "Dr.") immediately followed by 1-3 capitalized words.
+_NAME_CANDIDATE_RE = re.compile(
+    r"\b(?:Mr|Mrs|Ms|Dr|Prof|Miss|Sir)\.?\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})"
+)
+
+
+def _context_supported(
+    text: str, start: int, end: int, terms: tuple[str, ...], window: int
+) -> bool:
+    """True if any ``terms`` entry appears within ``window`` chars of the ``[start, end)`` span.
+
+    Case-insensitive substring proximity — the exact precision mechanism Presidio's context
+    enhancer and Google DLP hotword rules use, implemented natively (no spaCy / model).
+    """
+    if not terms:
+        return False
+    lo = max(0, start - window)
+    hi = min(len(text), end + window)
+    ctx_window = text[lo:hi].lower()
+    return any(term in ctx_window for term in terms if term)
+
+
+def detect_pii_passport_context(text: str, ctx: RuleContext) -> list[RuleHit]:
+    """Passport-number-in-prose, admitted only with a supporting term nearby (B8; default off)."""
+    if not ctx.pii_context_enabled:
+        return []
+    hits: list[RuleHit] = []
+    for m in _PASSPORT_CANDIDATE_RE.finditer(text):
+        candidate = m.group(0)
+        if not any(c.isdigit() for c in candidate):
+            continue  # a passport number carries at least one digit
+        if _context_supported(
+            text, m.start(), m.end(), ctx.pii_context_passport_terms, ctx.pii_context_window
+        ):
+            hits.append(RuleHit(candidate, "passport"))
+    return hits
+
+
+def detect_pii_name_context(text: str, ctx: RuleContext) -> list[RuleHit]:
+    """Honorific-gated personal name, admitted only with a supporting term nearby (B8; off)."""
+    if not ctx.pii_context_enabled:
+        return []
+    hits: list[RuleHit] = []
+    for m in _NAME_CANDIDATE_RE.finditer(text):
+        # The honorific itself is the supporting context; still gate on the lexicon so an
+        # operator can tune/disable it. The captured group is the name (redacted), not the title.
+        if _context_supported(
+            text, m.start(), m.end(), ctx.pii_context_name_terms, ctx.pii_context_window
+        ):
+            hits.append(RuleHit(m.group(1), "name"))
+    return hits
+
+
 def _regex_hits(patterns: list[re.Pattern[str]], text: str, category: str) -> list[RuleHit]:
     hits: list[RuleHit] = []
     for pat in patterns:
@@ -161,24 +434,71 @@ def _regex_hits(patterns: list[re.Pattern[str]], text: str, category: str) -> li
 
 
 # ── INPUT rule detectors ───────────────────────────────────────────────────────
+def _detect_view(ctx: RuleContext, text: str) -> str:
+    """Return the canonicalized detection view when set (B1), else the raw text.
+
+    Block-category detectors match against this view so obfuscated payloads (zero-width /
+    Tags / bidi / fullwidth / homoglyph) are caught. ``None`` (unit-level callers) => raw
+    text, so the default path is byte-identical.
+    """
+    return ctx.detection_text if ctx.detection_text is not None else text
+
+
+def _detect_injection_style(
+    text: str,
+    ctx: RuleContext,
+    *,
+    patterns: list[re.Pattern[str]],
+    automaton: AhoCorasick,
+    base_category: str,
+) -> list[RuleHit]:
+    """Shared regex + Aho-Corasick signature detection for injection / jailbreak (B1 + B2).
+
+    Regex hits run over the canonicalized detection VIEW exactly as before (byte-identical
+    when the view equals the raw text). The corpus signature pack (compiled once at import)
+    is scanned in a single O(n) pass over the lowercased view and its WORD-BOUNDED matches
+    are appended, de-duplicated against the regex matches. The spotlight ``*_untrusted``
+    category marks any hit found inside a marked untrusted span so the pipeline can escalate.
+    """
+    view = _detect_view(ctx, text)
+    untrusted = ctx.untrusted_spans or []
+    untrusted_suffix = f"{base_category}_untrusted"
+    hits: list[RuleHit] = []
+    seen_lower: set[str] = set()
+
+    for pat in patterns:
+        for m in pat.finditer(view):
+            matched = m.group(0)
+            in_untrusted = any(matched in span for span in untrusted)
+            hits.append(RuleHit(matched, untrusted_suffix if in_untrusted else base_category))
+            seen_lower.add(matched.lower())
+
+    lowered = view.lower()
+    untrusted_lower = [s.lower() for s in untrusted]
+    for _start, _end, matched in signature_matches(automaton, lowered):
+        if matched in seen_lower:
+            continue
+        seen_lower.add(matched)
+        in_untrusted = any(matched in span for span in untrusted_lower)
+        hits.append(RuleHit(matched, untrusted_suffix if in_untrusted else base_category))
+    return hits
+
+
 def detect_prompt_injection(text: str, ctx: RuleContext) -> list[RuleHit]:
-    """Detect prompt-injection patterns.
+    """Detect prompt-injection patterns (regex + corpus signature pack, over the B1 view).
 
     Spotlight (ADDITIVE): an injection pattern that appears INSIDE a marked untrusted span
     (RAG/tool-provided content, ``ctx.untrusted_spans``) is the high-risk case and is
     emitted with the dedicated ``security_untrusted`` category so the pipeline can apply a
-    STRICTER action (block) regardless of any policy downgrade. With no marked spans this is
-    byte-identical to the prior regex behaviour (all hits use ``security``).
+    STRICTER action (block) regardless of any policy downgrade. With no marked spans / no
+    detection view this is byte-identical to the prior regex behaviour (all hits ``security``).
     """
-    untrusted = ctx.untrusted_spans or []
-    hits: list[RuleHit] = []
-    for pat in _PROMPT_INJECTION_PATTERNS:
-        for m in pat.finditer(text):
-            matched = m.group(0)
-            in_untrusted = any(matched in span for span in untrusted)
-            hits.append(RuleHit(matched_text=matched, category=
-                                "security_untrusted" if in_untrusted else "security"))
-    return hits
+    return _detect_injection_style(
+        text, ctx,
+        patterns=_PROMPT_INJECTION_PATTERNS,
+        automaton=INJECTION_AUTOMATON,
+        base_category="security",
+    )
 
 
 def detect_pii_email(text: str, ctx: RuleContext) -> list[RuleHit]:
@@ -200,11 +520,9 @@ def detect_pii_phone(text: str, ctx: RuleContext) -> list[RuleHit]:
         # (e.g. 20260613, 3.14159265, 0x80070005 -> 80070005, 1234567, '1111 2222 3333')
         # while still catching '+1 234 567 8900', '(123) 456-7890', '555-867-5309'.
         has_sep = bool(re.search(r"[\s.()\-]", raw))
-        if raw.startswith("+") and 8 <= len(digits) <= 15:
-            pass
-        elif has_sep and 10 <= len(digits) <= 11:
-            pass
-        else:
+        is_international = raw.startswith("+") and 8 <= len(digits) <= 15
+        is_domestic = has_sep and 10 <= len(digits) <= 11
+        if not (is_international or is_domestic):
             continue
         hits.append(RuleHit(raw, "phone"))
     return _union_presidio(hits, ctx, only=("phone",))
@@ -254,15 +572,13 @@ def detect_pii_address(text: str, ctx: RuleContext) -> list[RuleHit]:
 
 
 def detect_jailbreak(text: str, ctx: RuleContext) -> list[RuleHit]:
-    untrusted = ctx.untrusted_spans or []
-    hits: list[RuleHit] = []
-    for pat in _JAILBREAK_PATTERNS:
-        for m in pat.finditer(text):
-            matched = m.group(0)
-            in_untrusted = any(matched in span for span in untrusted)
-            hits.append(RuleHit(matched_text=matched, category=
-                                "jailbreak_untrusted" if in_untrusted else "jailbreak"))
-    return hits
+    """Detect jailbreak patterns (regex + corpus signature pack, over the B1 detection view)."""
+    return _detect_injection_style(
+        text, ctx,
+        patterns=_JAILBREAK_PATTERNS,
+        automaton=JAILBREAK_AUTOMATON,
+        base_category="jailbreak",
+    )
 
 
 def _toxicity_hits(text: str, ctx: RuleContext) -> list[RuleHit]:
@@ -457,6 +773,36 @@ INPUT_RULES: list[RuleSpec] = [
         timeout_ms=10,
     ),
     RuleSpec(
+        rule_id="pii-passport-mrz-v1",
+        name="PII Passport MRZ Detector",
+        direction="input",
+        default_action="redact",
+        severity="high",
+        category="pii",
+        detect=detect_pii_passport_mrz,
+        timeout_ms=10,
+    ),
+    RuleSpec(
+        rule_id="pii-passport-v1",
+        name="PII Passport (context-gated) Detector",
+        direction="input",
+        default_action="redact",
+        severity="high",
+        category="pii",
+        detect=detect_pii_passport_context,
+        timeout_ms=10,
+    ),
+    RuleSpec(
+        rule_id="pii-name-v1",
+        name="PII Name (honorific-gated) Detector",
+        direction="input",
+        default_action="redact",
+        severity="medium",
+        category="pii",
+        detect=detect_pii_name_context,
+        timeout_ms=10,
+    ),
+    RuleSpec(
         rule_id="jailbreak-v1",
         name="Jailbreak Detector",
         direction="input",
@@ -540,6 +886,26 @@ OUTPUT_RULES: list[RuleSpec] = [
         severity="medium",
         category="pii",
         detect=detect_pii_address,
+        timeout_ms=10,
+    ),
+    RuleSpec(
+        rule_id="output-pii-passport-mrz-v1",
+        name="Output PII Passport MRZ Detector",
+        direction="output",
+        default_action="redact",
+        severity="high",
+        category="pii",
+        detect=detect_pii_passport_mrz,
+        timeout_ms=10,
+    ),
+    RuleSpec(
+        rule_id="output-canary-leak-v1",
+        name="Output Canary Token Leak Detector",
+        direction="output",
+        default_action="block",
+        severity="high",
+        category="security",
+        detect=detect_output_canary_leak,
         timeout_ms=10,
     ),
     RuleSpec(

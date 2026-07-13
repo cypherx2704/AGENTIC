@@ -23,7 +23,8 @@ val INTEGRATION_TEST_TENANT_ID: UUID = UUID.fromString("00000000-0000-0000-0000-
  * the operator logs into the Console as. It must FULLY operate its own tenant: manage sub-agents
  * (`orchestrator:manage`), resolve human-in-the-loop approvals (`hil:approve`), manage agents/keys
  * (agent:read/write) + runtimes + tasks (agent:admin/execute via xAgent), call the LLM gateway
- * (llm:invoke), use guardrails (guardrails:check), RAG (rag:*) and memory (mem:*).
+ * (llm:invoke), use guardrails (guardrails:check), RAG (rag:*) and memory (mem:*), and create +
+ * invoke tenant tools (tool:admin/tool:invoke — e.g. the visual Tool Builder / MCP tool registry).
  *
  * platform:admin is DELIBERATELY EXCLUDED — it is a cross-tenant superpower and must never be
  * auto-granted to a self-registered tenant. RLS (Contract 13) confines every scope here to the
@@ -38,6 +39,7 @@ val ORCHESTRATOR_DEFAULT_SCOPES: List<String> = listOf(
     "guardrails:check",
     "rag:admin", "rag:query", "rag:ingest",
     "mem:read", "mem:write",
+    "tool:admin", "tool:invoke",
 )
 
 /** auth.agents.status */

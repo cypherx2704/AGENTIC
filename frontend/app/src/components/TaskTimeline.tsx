@@ -6,16 +6,18 @@ import { formatDuration, formatNumber } from '@/lib/utils';
 
 /** Human label for the canonical xAgent step names. */
 const STEP_LABELS: Record<string, string> = {
-  guardrail_check_input: 'Guardrail (input)',
-  load: 'Load agent config',
-  prompt_build: 'Build prompt',
-  rag_query: 'RAG retrieval',
-  memory_retrieve: 'Memory retrieve',
-  memory_write: 'Memory write',
-  llm_call: 'LLM call',
-  tool_loop: 'Tool loop',
-  guardrail_check_output: 'Guardrail (output)',
-  event: 'Emit event',
+  guardrail_check_input: 'Guardrail (Input)',
+  load: 'Load Agent Config',
+  prompt_build: 'Build Prompt',
+  rag_query: 'RAG Retrieval',
+  memory_retrieve: 'Memory Retrieve',
+  memory_write: 'Memory Write',
+  llm_call: 'LLM Call',
+  tool_loop: 'Tool Loop',
+  tool_call: 'Tool Call',
+  tool_loop_limit: 'Tool Loop Limit',
+  guardrail_check_output: 'Guardrail (Output)',
+  event: 'Emit Event',
 };
 
 function label(step: string): string {
@@ -43,6 +45,8 @@ export function TaskTimeline({ steps }: { steps: TaskStep[] }) {
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 <span className="text-sm font-medium text-fg">{label(s.step)}</span>
+                {/* Every tool step's name is the literal "tool_call" — show WHICH tool ran. */}
+                {s.tool ? <span className="font-mono text-xs text-brand">{s.tool}</span> : null}
                 <StatusBadge status={s.status} />
               </div>
               <div className="flex items-center gap-3 font-mono text-xs text-muted">

@@ -1,0 +1,15 @@
+apiVersion: v2
+name: tool-flow-bridge
+description: |
+  Values-only consumer of the cypherx-service base chart for the Flow-Tool-Bridge
+  (Tool Builder backend). Wires the flow_tools Postgres schema + the bridge's runtime
+  config (registry URL, Kubernetes provisioner, shared Node-RED secrets). Per-tenant
+  Node-RED instances are created at runtime by the bridge's KubernetesProvisioner — see
+  charts/nodered-tenant for the prerequisites (namespace, shared secret, provisioner RBAC).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+dependencies:
+  - name: cypherx-service
+    version: "0.1.0"
+    repository: "file://../cypherx-service"

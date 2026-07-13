@@ -3,8 +3,8 @@
 All configuration is read from the process environment (no prefix), matching the
 Doppler-injected env-var convention. Defaults target a local developer machine so
 the service boots without a populated environment. NOTHING is hardcoded at a call
-site — every tunable (timeouts, failure thresholds, the platform seed manifest URL)
-lives here and is env-overridable.
+site — every tunable (timeouts, failure thresholds, discovery caps) lives here and
+is env-overridable.
 """
 
 from __future__ import annotations
@@ -66,13 +66,6 @@ class Settings(BaseSettings):
     # A single success resets the counter and returns the tool to 'active'.
     health_degrade_after: int = 1
     health_offline_after: int = 3
-
-    # ── Platform seed (WP11) ──────────────────────────────────────────────────
-    # The platform tool-web-search server is seeded at startup (idempotent). Its
-    # manifest is polled at this base URL ({base}/manifest). NEVER hardcoded — the
-    # in-cluster value is e.g. http://tool-web-search.tools.svc.cluster.local:8080.
-    seed_platform_tools: bool = True
-    tool_web_search_base_url: str = "http://tool-web-search:8080"
 
     # ── Discovery (WP11) ──────────────────────────────────────────────────────
     # Hard cap on rows returned by GET /v1/tools so a tenant can never trigger an

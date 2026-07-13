@@ -46,10 +46,28 @@ logger = structlog.get_logger(__name__)
 
 @dataclass
 class AuthAgent:
-    """Normalised view of an Auth ``GET /v1/agents/{id}`` response."""
+    """Normalised view of an Auth ``GET /v1/agents/{id}`` response.
+
+    Carries the orchestrator-hierarchy facts (agent_type / parent_orchestrator_id / immutable_llm)
+    so the runtime-registration path can DENORMALISE them into ``xagent.agents`` (the source of truth
+    is ``auth.agents``). Defaults are the fail-safe "not a sub-agent, not locked" values, so an older
+    Auth that omits them behaves exactly as before.
+    """
 
     agent_id: str
     tenant_id: str
+    agent_type: str = "user_created"
+    parent_orchestrator_id: str | None = None
+    immutable_llm: bool = False
+
+
+@dataclass
+class MintedSubAgentToken:
+    """A scoped sub-agent JWT minted by the Auth delegation endpoint (orchestration)."""
+
+    token: str
+    expires_in: int
+    scopes: list[str]
 
 
 class AuthClient:
@@ -120,7 +138,64 @@ class AuthClient:
         resolved_tenant = data.get("tenant_id")
         if not resolved_tenant:
             raise ApiError(ErrorCode.SERVICE_UNAVAILABLE, "Auth returned an agent without a tenant_id.")
-        return AuthAgent(agent_id=str(data.get("agent_id", agent_id)), tenant_id=str(resolved_tenant))
+        parent = data.get("parent_orchestrator_id")
+        return AuthAgent(
+            agent_id=str(data.get("agent_id", agent_id)),
+            tenant_id=str(resolved_tenant),
+            agent_type=str(data.get("agent_type") or "user_created"),
+            parent_orchestrator_id=str(parent) if parent else None,
+            immutable_llm=bool(data.get("immutable_llm", False)),
+        )
+
+    async def mint_sub_agent_token(
+        self,
+        sub_agent_id: str,
+        *,
+        agent_jwt: str,
+        requested_scopes: list[str] | None = None,
+    ) -> MintedSubAgentToken:
+        """Mint a scoped agent JWT FOR one of the orchestrator's sub-agents (delegation mint).
+
+        Calls Auth ``POST /v1/orchestrator/sub-agents/{id}/token`` authenticated by the
+        ORCHESTRATOR's OWN agent JWT (``agent_jwt``) — the route is ``orchestrator:manage``-gated and
+        Auth reads the caller from the Bearer (same as :meth:`get_agent`; a tenantless service token
+        would 403). The returned sub-agent token lets the executor run the sub-agent's pipeline under
+        the SUB-AGENT's identity so downstream confinement applies to the sub-agent.
+
+        404 -> NOT_FOUND (not this orchestrator's sub-agent — invisible), 403 -> FORBIDDEN (caller not
+        an orchestrator / missing scope), any other non-2xx -> SERVICE_UNAVAILABLE.
+        """
+        headers = {
+            "Authorization": f"Bearer {agent_jwt}",
+            "traceparent": trace.current_traceparent(),
+            "X-Request-ID": trace.request_id_var.get(),
+        }
+        base = self._settings.auth_service_url.rstrip("/")
+        url = f"{base}/v1/orchestrator/sub-agents/{sub_agent_id}/token"
+        body = {"scopes": requested_scopes or []}
+        try:
+            resp = await self._http().post(url, headers=headers, json=body)
+        except httpx.HTTPError as exc:
+            logger.warning("auth_mint_subagent_failed", sub_agent_id=sub_agent_id, error=str(exc))
+            raise ApiError(ErrorCode.SERVICE_UNAVAILABLE, "Auth service unavailable.") from exc
+
+        if resp.status_code == 404:
+            raise ApiError(ErrorCode.NOT_FOUND, f"Sub-agent {sub_agent_id} not found for this orchestrator.")
+        if resp.status_code == 403:
+            raise ApiError(ErrorCode.FORBIDDEN, "Not authorized to mint a token for this sub-agent.")
+        if resp.status_code >= 400:
+            logger.warning("auth_mint_subagent_rejected", sub_agent_id=sub_agent_id, status=resp.status_code)
+            raise ApiError(ErrorCode.SERVICE_UNAVAILABLE, f"Auth service returned {resp.status_code}.")
+
+        data = resp.json()
+        token = data.get("token")
+        if not token:
+            raise ApiError(ErrorCode.SERVICE_UNAVAILABLE, "Auth returned no sub-agent token.")
+        return MintedSubAgentToken(
+            token=str(token),
+            expires_in=int(data.get("expires_in") or 0),
+            scopes=[str(s) for s in (data.get("scopes") or [])],
+        )
 
     async def authorize(
         self,

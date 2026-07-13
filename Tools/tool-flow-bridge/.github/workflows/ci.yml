@@ -1,0 +1,121 @@
+# =============================================================================
+# ci.yml — tool-flow-bridge (Component 18 caller).
+# =============================================================================
+# Thin caller for the platform reusable pipeline (lint -> test -> build -> Trivy
+# -> ECR push -> gitops PR) for the BRIDGE image, plus a dedicated job for the
+# per-tenant NODE-RED image (which has no Python lint/test surface, so it can't
+# use the reusable service workflow — it is built, Trivy-scanned and pushed here
+# under the same Component-18 tag policy).
+#
+# NOTE: aws_account_id is shown as the dev placeholder. Wire real account ids +
+# GitHub Environments (dev/staging/prod) per infra/ci/README.md before enabling.
+# =============================================================================
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  # ── The bridge service image: full lint + pytest + build + Trivy + push ──────
+  bridge:
+    uses: cypherx-ai/cypherx-infra/.github/workflows/reusable-service-ci.yml@main
+    with:
+      service: tool-flow-bridge
+      language: python
+      environment: dev
+      aws_region: us-east-1
+      aws_account_id: "111111111111"
+      dockerfile: Dockerfile
+      build_context: .
+      gitops_repo: cypherx-ai/cypherx-gitops
+      trivy_severity: CRITICAL
+
+  # ── The per-tenant Node-RED image: build + Trivy + push (no lint/test) ───────
+  nodered-image:
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCOUNT_ID: "111111111111"
+      AWS_REGION: us-east-1
+      ECR_REPOSITORY: cypherx/nodered-tenant
+    steps:
+      - uses: actions/checkout@v4
+
+      # Component-18 tag policy: PR -> pr-<n>-<sha7>, main -> sha-<sha7>, tag -> semver. Never :latest.
+      - name: Compute image tag
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHA7="${GITHUB_SHA::7}"
+          REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          PUSHED="false"
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"; PUSHED="true"
+          elif [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            TAG="pr-${{ github.event.pull_request.number }}-${SHA7}"; PUSHED="true"
+          elif [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            TAG="sha-${SHA7}"; PUSHED="true"
+          else
+            TAG="sha-${SHA7}"; PUSHED="false"
+          fi
+          if [[ "${TAG}" == "latest" ]]; then
+            echo "::error:::latest is forbidden by Component 18 tag policy"; exit 1
+          fi
+          echo "pushed=${PUSHED}" >> "$GITHUB_OUTPUT"
+          echo "image_ref=${REGISTRY}/${ECR_REPOSITORY}:${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Build locally so Trivy scans the exact artifact we would push.
+      - name: Build Node-RED image (local)
+        uses: docker/build-push-action@v6
+        with:
+          context: nodered
+          file: nodered/Dockerfile
+          load: true
+          push: false
+          tags: ${{ steps.meta.outputs.image_ref }}
+          provenance: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Trivy vulnerability scan (fail on CRITICAL)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ steps.meta.outputs.image_ref }}
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: "os,library"
+          severity: CRITICAL
+
+      - name: Configure AWS credentials (OIDC)
+        if: steps.meta.outputs.pushed == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/cypherx-dev-github-actions
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-nodered-tenant-${{ github.run_id }}
+
+      - name: Login to ECR
+        if: steps.meta.outputs.pushed == 'true'
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Push Node-RED image to ECR
+        if: steps.meta.outputs.pushed == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: nodered
+          file: nodered/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.image_ref }}
+          provenance: false
+          cache-from: type=gha

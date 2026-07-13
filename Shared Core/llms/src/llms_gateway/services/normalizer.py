@@ -253,8 +253,13 @@ def to_openai(req: ChatCompletionRequest) -> dict[str, Any]:
         payload["stream_options"] = so
     else:
         payload.pop("stream_options", None)
-    # Gateway-internal fields not understood by the OpenAI SDK.
-    payload.pop("metadata", None)
+    # Gateway-internal fields not understood by the OpenAI SDK / OpenAI-compatible
+    # providers (OpenRouter, Together, Groq, vLLM, …). These are consumed by the gateway
+    # itself (routing, tool-emulation, metering) and MUST be stripped before the upstream
+    # `create(**kwargs)` call — otherwise the SDK raises
+    # "unexpected keyword argument '<field>'".
+    for internal_field in ("metadata", "tool_mode"):
+        payload.pop(internal_field, None)
     return payload
 
 

@@ -10,8 +10,17 @@ PostgreSQL 16, Atlas convention (same layout as the auth + llms services).
 | `20260608_0002__seed.sql` | The 11 first-cycle rule rows + the one platform-default policy. |
 | `20260611_0003__policy_authoring.sql` | Policy version-chain plumbing (`root_policy_id`, `stream_mode`, `fail_mode_override`), `policy_audit` table. |
 | `20260611_0004__hotpath_redaction_lifecycle.sql` | WP07: `rules.cost_usd` (Contract-19.1 metering); `tenant_redaction_keys` pluggable `key_ref` scheme (`env:`/`sealed:`/legacy `secretsmanager:`) + `version` + resolver/retirement indexes + DELETE grant for the grace-window retirement job. |
+| `20260614_0006__pii_coverage.sql` | SSN/IP/address detectors + output PII twins for phone/SSN/IP/address (closes a `/check/output` PII leak). Registry rows + platform-default policy enable. |
+| `20260710_0007__passport_mrz.sql` | B3: `pii-passport-mrz-v1` + `output-pii-passport-mrz-v1` (ICAO 9303 MRZ). Registry rows + policy enable. |
+| `20260710_0008__canary_leak.sql` | B7: `output-canary-leak-v1` (per-request canary-token leak; inert unless `CANARY_LEAK_ENABLED` + caller `canary_tokens`). Registry row + policy enable. |
+| `20260710_0009__pii_context.sql` | B8: `pii-passport-v1` + `pii-name-v1` (context-gated; inert unless `GUARDRAILS_PII_CONTEXT_VALIDATION`). Registry rows + policy enable. |
 | `schema.sql` | Flattened end-state snapshot (init + seed + later migrations) — declarative source-of-truth for `atlas schema apply` / drift detection. |
 | `atlas.hcl` | Atlas project config (`local` + `ci` envs). |
+
+> **NOTE (on-disk truth):** the table above lists the actual files on disk. Some earlier rows
+> were mislabeled historically; trust the filenames. Every new built-in `rule_id` ships a
+> registry seed row here AND is enabled in the platform-default policy — otherwise the
+> registry-consistency overlay flips `/readyz` to 503.
 
 ## Tables & scope (Contract 13)
 

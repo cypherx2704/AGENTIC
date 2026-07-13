@@ -69,11 +69,12 @@ Consecutive failures drive `active → degraded` (after `HEALTH_DEGRADE_AFTER`) 
 a poll error never escapes the loop. The poll logic is decoupled from HTTP behind a
 small client protocol so it is fully unit-testable with a fake client.
 
-## Platform seed
+## Platform tools
 
-`tool-web-search` is seeded as a platform tool (tenant_id NULL) at startup
-(idempotent), with its `web_search` capability + `tool:tool-web-search:invoke` scope.
-Its manifest `base_url` comes from `TOOL_WEB_SEARCH_BASE_URL` (never hardcoded).
+The registry seeds no platform tool at startup. Platform-wide (public) tools are
+registered through the normal API by their owning service — e.g. the public
+`web_search` flow-tool (server `mcp-web-search`) is bootstrapped into the registry by
+`tool-flow-bridge`, which replaced the retired bespoke `tool-web-search` service.
 
 ## Run
 

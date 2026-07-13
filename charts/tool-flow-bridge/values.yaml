@@ -1,0 +1,113 @@
+# tool-flow-bridge: values-only consumer of the cypherx-service base chart.
+# Everything under `cypherx-service:` is forwarded to the subchart.
+#
+# The service reads a single DATABASE_URL DSN; the base chart assembles POSTGRES_DSN from
+# the Doppler-synced password, so we alias DATABASE_URL=$(POSTGRES_DSN) via extraEnv (k8s
+# interpolates env defined earlier in the list). Schema migrations are the plain-SQL
+# flow_tools ones applied by the platform migrate job (NOT Atlas), so migration.enabled=false.
+
+cypherx-service:
+  service: tool-flow-bridge
+  environment: dev
+  replicaCount: 2
+
+  image:
+    repository: 000000000000.dkr.ecr.us-east-1.amazonaws.com/cypherx/tool-flow-bridge
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+
+  # Phase-1 node-role: this is a Tools-plane service.
+  nodeRole: tools
+
+  database:
+    enabled: true
+    pgbouncerHost: pgbouncer.data.svc.cluster.local
+    pgbouncerPort: 6432
+    name: cypherx_platform
+    schema: flow_tools
+    runtimeUser: flow_tools_user
+    ddlUser: flow_tools_ddl        # unused (SQL migrations run via the platform migrate job)
+    sslmode: require
+
+  doppler:
+    enabled: true
+    project: cypherx-platform
+    tokenSecretName: doppler-token-secret
+    runtimeConfig: tools.tool-flow-bridge   # holds db/tool-flow-bridge/runtime_password
+    ddlConfig: db.tool-flow-bridge.ddl
+
+  # SQL migrations are applied out-of-band (platform migrate job), not Atlas.
+  migration:
+    enabled: false
+
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 8
+    targetCPUUtilizationPercentage: 70
+
+  pdb:
+    enabled: true
+    minAvailable: 1
+
+  serviceMonitor:
+    enabled: true
+
+  networkPolicy:
+    enabled: true
+    ingressNamespace: ingress
+    observabilityNamespace: observability
+
+  istio:
+    sidecarInject: true
+
+  # ── Bridge runtime config (injected AFTER POSTGRES_DSN so the alias resolves) ──
+  extraEnv:
+    - name: DATABASE_URL
+      value: "$(POSTGRES_DSN)"
+    - name: AUTH_JWKS_URL
+      value: "http://auth-service.shared-core.svc.cluster.local:8080/.well-known/jwks.json"
+    - name: AUTH_ISSUER_URL
+      value: "http://auth-service.shared-core.svc.cluster.local:8080"
+    - name: AUTH_PLATFORM_AUDIENCE
+      value: "cypherx-platform"
+    - name: AUTH_SERVICE_URL
+      value: "http://auth-service.shared-core.svc.cluster.local:8080"
+    - name: SERVICE_PRINCIPAL_NAME
+      value: "tool-flow-bridge"
+    - name: TOOL_REGISTRY_URL
+      value: "http://tool-registry.tools.svc.cluster.local:8080"
+    - name: BRIDGE_BASE_URL
+      value: "http://tool-flow-bridge.tools.svc.cluster.local:8080"
+    - name: VALKEY_URL
+      value: "redis://valkey.data.svc.cluster.local:6379"
+    # Production: one hardened Node-RED per tenant, provisioned by the bridge.
+    - name: PROVISIONER_MODE
+      value: "kubernetes"
+    - name: NODERED_IMAGE
+      value: "000000000000.dkr.ecr.us-east-1.amazonaws.com/cypherx/nodered-tenant:0.1.0"
+    - name: NODERED_NAMESPACE
+      value: "cypherx-tools"
+    - name: NODERED_ADMIN_ROOT
+      value: "/bff/nodered"
+    - name: NODERED_INVOKE_SECRET_HEADER
+      value: "X-CypherX-Tool-Secret"
+    - name: STATIC_NODERED_HTTP_NODE_ROOT
+      value: "/flow"
+    # Egress allow-list for tenant Node-RED (CIDRs). Empty => deny all egress except DNS.
+    # NEVER add internal platform service CIDRs here.
+    - name: NODERED_EGRESS_ALLOW_CIDRS
+      value: ""
+    - name: DEFAULT_ACCESS_MODE
+      value: "ask"
+    # gVisor sandbox for the arbitrary-code workflow runtime (set to "" to disable).
+    - name: NODERED_RUNTIME_CLASS
+      value: "gvisor"
+
+  # SERVICE_BOOTSTRAP_SECRET + the shared Node-RED secrets (NODERED_ADMIN_TOKEN /
+  # NODERED_INVOKE_SECRET / NODERED_CREDENTIAL_SECRET) come from Doppler-synced Secrets.
+  extraEnvFrom:
+    - secretRef:
+        name: tool-flow-bridge-secrets
+    - secretRef:
+        name: nodered-shared-secrets

@@ -56,7 +56,7 @@ fi
 # --- Steps 1..7: per-service init then seed, in dependency order. -------------------------------------------------
 # Order matters: auth first (tenants/roles backbone), then the data/tool services. Each *__init.sql is idempotent.
 step=1
-for svc in auth llms guardrails xagent rag memory tool-registry skill-registry cypherx-a1; do
+for svc in auth llms guardrails xagent rag memory tool-registry skill-registry cypherx-a1 tool-flow-bridge; do
   dir="/migrations/$svc"
   echo "[$step/10] service: $svc  (dir $dir)"
   if [ ! -d "$dir" ]; then
@@ -130,6 +130,7 @@ set_role_pw mem_user    memory     "${MEM_DB_PASSWORD:-}"
 set_role_pw tool_user   tools      "${TOOL_DB_PASSWORD:-}"
 set_role_pw skill_user  skills     "${SKILL_DB_PASSWORD:-}"
 set_role_pw cxa1_user   cypherx_a1 "${CYPHERXA1_DB_PASSWORD:-}"
+set_role_pw flow_tools_user flow_tools "${FLOW_TOOLS_DB_PASSWORD:-}"
 
 echo "[10/10] migrate complete"
 echo "==================================================================================="

@@ -70,9 +70,14 @@ def _agent(scope: str = "agent") -> AgentRuntime:
 
 
 def _ctx(agent: AgentRuntime, *, prompt: str = "hi", session_id: str | None = None,
-         final_answer: str | None = None) -> PipelineContext:
+         final_answer: str | None = None,
+         scopes: list[str] | None = None) -> PipelineContext:
+    # The Memory service authorizes a WRITE against the forwarded AGENT jwt, so the agent must
+    # carry `mem:write` — MEMORY_WRITE now skips (loudly) rather than burning a guaranteed 403.
     ctx = PipelineContext(
-        principal=Principal(tenant_id=TENANT, agent_id=AGENT, scopes=["agent:execute"], raw_token="jwt"),
+        principal=Principal(tenant_id=TENANT, agent_id=AGENT,
+                            scopes=scopes if scopes is not None else ["agent:execute", "mem:write"],
+                            raw_token="jwt"),
         inbound_agent_jwt="jwt",
         trace_id=TRACE_ID,
         request_id="req-1",
@@ -242,3 +247,20 @@ async def test_write_client_error_is_fail_soft() -> None:
     step = _steps(ctx, STEP_TYPE_MEMORY_WRITE)[0]
     assert step.status == "failed"
     assert step.output["stored"] is False
+
+
+# ── the missing-scope guard (silent-403 regression) ─────────────────────────────────────
+async def test_write_skips_when_agent_lacks_mem_write_scope() -> None:
+    """memory_scope != 'none' WITHOUT the `mem:write` scope is a permanently broken pair: the
+    Memory service authorizes writes against the forwarded AGENT jwt, so EVERY task would burn a
+    guaranteed 403 — silently, because this stage is fail-soft. It must skip up front instead.
+    """
+    fake = _FakeMemoryClient(store_result=MemoryStoreResult(id="stored-1"))
+    deps.set_enhancement_clients(memory_client=fake)
+    ctx = _ctx(_agent("agent"), final_answer="the answer", scopes=["agent:execute"])  # no mem:write
+
+    await MemoryWriteStage().run(ctx)
+
+    assert fake.store_calls == []  # no guaranteed-403 call was made
+    assert _steps(ctx, STEP_TYPE_MEMORY_WRITE) == []  # skipped, not "failed"
+    assert ctx.terminal_error is None

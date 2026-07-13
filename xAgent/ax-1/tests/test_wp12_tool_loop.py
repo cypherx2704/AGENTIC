@@ -66,15 +66,15 @@ class _FakeRegistry:
 
 @dataclass
 class _FakeMcp:
-    """invoke returns a scripted McpResult per tool-name or raises an ApiError (fail-soft)."""
+    """invoke_mcp returns a scripted McpResult per tool-name or raises an ApiError (fail-soft)."""
 
     results: dict[str, Any]  # tool name -> McpResult | Exception
     calls: list[dict[str, Any]] = field(default_factory=list)
 
-    async def invoke(self, invoke_url: str, tool: str, args: dict[str, Any], *, task_id: str,
-                     tool_call_id: str, agent_jwt: str, on_behalf_of: str | None = None) -> McpResult:
+    async def invoke_mcp(self, mcp_url: str, tool: str, args: dict[str, Any], *, task_id: str,
+                         tool_call_id: str, agent_jwt: str, on_behalf_of: str | None = None) -> McpResult:
         self.calls.append({
-            "invoke_url": invoke_url, "tool": tool, "args": args,
+            "mcp_url": mcp_url, "tool": tool, "args": args,
             "task_id": task_id, "tool_call_id": tool_call_id,
             "idempotency_key": f"{task_id}:{tool_call_id}",
         })
@@ -151,7 +151,14 @@ def _completion(content: str | None = None, tool_calls: list[ToolCall] | None = 
 
 
 def _tool(name: str, version: str = "1.0.0", url: str = "http://tool") -> ToolResolution:
-    return ToolResolution(name=name, version=version, manifest={"description": name}, invoke_url=url)
+    return ToolResolution(
+        name=name, version=version, invoke_url=url,
+        manifest={
+            "description": name,
+            "tools": [{"name": name, "description": name, "input_schema": {"type": "object"}}],
+            "mcp": {"transport": "streamable-http", "endpoint": "/mcp"},
+        },
+    )
 
 
 def _agent(allowed_tools: list[str]) -> AgentRuntime:
@@ -207,7 +214,7 @@ async def test_tool_loop_invokes_then_final_answer() -> None:
     # One invocation; idempotency key = task_id:tool_call_id.
     assert len(mcp.calls) == 1
     assert mcp.calls[0]["idempotency_key"] == f"{TASK_ID}:call-1"
-    assert mcp.calls[0]["invoke_url"] == "http://tool"
+    assert mcp.calls[0]["mcp_url"] == "http://tool/mcp"
     # Final answer set; no terminal error.
     assert ctx.final_answer == "Final answer using the tool result."
     assert ctx.terminal_error is None

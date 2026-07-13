@@ -35,25 +35,51 @@ STATUS_RETIRED = "retired"
 # ── Discovery ─────────────────────────────────────────────────────────────────
 _LIST_TOOLS_SQL = """
     SELECT t.tool_id, t.name, t.tenant_id::text AS tenant_id, t.status,
-           t.latest_version, (t.tenant_id IS NULL) AS is_platform
+           t.latest_version, t.visibility, (t.tenant_id IS NULL) AS is_platform
       FROM tools t
+     ORDER BY t.name, (t.tenant_id IS NULL)  -- tenant row (FALSE) sorts before platform (TRUE)
+     LIMIT %s
+"""
+
+# Same projection/ordering as above, but the ?visibility= filter is applied IN SQL (before the
+# LIMIT). Filtering after the LIMIT in Python undercounts a narrowed Marketplace tab once the
+# tenant's visible set exceeds discovery_max_tools; pushing `visibility = ANY(%s)` past the LIMIT
+# makes the cap count only rows of the requested visibility.
+_LIST_TOOLS_SQL_FILTERED = """
+    SELECT t.tool_id, t.name, t.tenant_id::text AS tenant_id, t.status,
+           t.latest_version, t.visibility, (t.tenant_id IS NULL) AS is_platform
+      FROM tools t
+     WHERE t.visibility = ANY(%s)
      ORDER BY t.name, (t.tenant_id IS NULL)  -- tenant row (FALSE) sorts before platform (TRUE)
      LIMIT %s
 """
 
 
 async def list_visible_tools(
-    pool: AsyncConnectionPool, tenant_id: str, *, limit: int
+    pool: AsyncConnectionPool,
+    tenant_id: str,
+    *,
+    limit: int,
+    visibility: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Return tools visible to the tenant (own + platform), RLS-scoped.
 
     RLS admits the tenant's own rows AND platform rows (tenant_id IS NULL). The rows
     are ordered so that for a given name the tenant's row precedes the platform row;
     the API layer applies tenant-priority shadowing on top.
+
+    When ``visibility`` is supplied the filter is pushed INTO the SQL so the ``LIMIT`` counts
+    only rows of the requested Marketplace visibility (a post-LIMIT filter would undercount a
+    narrowed tab once the visible set exceeds ``limit``). ``None`` => all visible (unchanged path).
     """
 
     async def _fn(conn: AsyncConnection) -> list[dict[str, Any]]:
-        cur = await conn.cursor(row_factory=dict_row).execute(_LIST_TOOLS_SQL, (limit,))
+        if visibility:
+            cur = await conn.cursor(row_factory=dict_row).execute(
+                _LIST_TOOLS_SQL_FILTERED, (sorted(visibility), limit)
+            )
+        else:
+            cur = await conn.cursor(row_factory=dict_row).execute(_LIST_TOOLS_SQL, (limit,))
         return await cur.fetchall()
 
     return await in_tenant(pool, tenant_id, _fn)
@@ -68,7 +94,7 @@ async def get_tool_rows_by_name(
         cur = await conn.cursor(row_factory=dict_row).execute(
             """
             SELECT tool_id, name, tenant_id::text AS tenant_id, status, latest_version,
-                   (tenant_id IS NULL) AS is_platform
+                   visibility, (tenant_id IS NULL) AS is_platform
               FROM tools
              WHERE name = %s
             """,
@@ -77,6 +103,31 @@ async def get_tool_rows_by_name(
         return await cur.fetchall()
 
     return await in_tenant(pool, tenant_id, _fn)
+
+
+async def get_platform_tool_by_name(
+    pool: AsyncConnectionPool, name: str
+) -> dict[str, Any] | None:
+    """Return the PLATFORM tool row (``tenant_id IS NULL``) for ``name``, or ``None``.
+
+    Platform-scoped (empty GUC): the ``p_tools_read`` policy admits ``tenant_id IS NULL``
+    rows under an empty ``app.tenant_id``. Used by the platform-registration version path to
+    resolve the public tool independently of any tenant context.
+    """
+
+    async def _fn(conn: AsyncConnection) -> dict[str, Any] | None:
+        cur = await conn.cursor(row_factory=dict_row).execute(
+            """
+            SELECT tool_id, name, tenant_id::text AS tenant_id, status, latest_version,
+                   visibility, (tenant_id IS NULL) AS is_platform
+              FROM tools
+             WHERE name = %s AND tenant_id IS NULL
+            """,
+            (name,),
+        )
+        return await cur.fetchone()
+
+    return await in_platform(pool, _fn)
 
 
 async def get_version(
@@ -162,22 +213,34 @@ async def create_tool_with_version(
     version: str,
     manifest: dict[str, Any],
     capabilities: list[tuple[str, str]],
+    visibility: str = "private",
+    platform: bool = False,
 ) -> dict[str, Any]:
     """Register a NEW tool + its first version + capability rows in one transaction.
 
     All rows are written with ``tenant_id`` = the GUC tenant, so the WITH CHECK halves
     of the RLS policies accept them. A duplicate (tenant_id, name) raises a unique
-    violation which the API maps to 409 CONFLICT.
+    violation which the API maps to 409 CONFLICT. ``visibility`` labels the tool for the
+    Marketplace (``private``|``protected``|``public``); it is a label the API filters on,
+    not an RLS boundary.
+
+    ``platform`` switches the transaction scope: when ``False`` (default) the write runs
+    inside :func:`in_tenant` and ``tenant_id`` resolves to the caller's GUC. When ``True``
+    the write runs inside :func:`in_platform` (an EMPTY ``app.tenant_id``), so the shared
+    ``NULLIF(current_setting('app.tenant_id', true), '')::uuid`` expression yields ``NULL``
+    and the row is stamped as a PLATFORM (public) tool — accepted by the ``p_tools_platform``
+    RLS policy (``tenant_id IS NULL AND empty-GUC``). This is the ONLY registration path that
+    creates a ``tenant_id NULL`` / ``visibility='public'`` row; ``tenant_id`` is ignored here.
     """
 
     async def _fn(conn: AsyncConnection) -> dict[str, Any]:
         cur = await conn.cursor(row_factory=dict_row).execute(
             """
-            INSERT INTO tools (tenant_id, name, status, latest_version)
-            VALUES (NULLIF(current_setting('app.tenant_id', true), '')::uuid, %s, 'active', %s)
-            RETURNING tool_id, name, tenant_id::text AS tenant_id, status, latest_version
+            INSERT INTO tools (tenant_id, name, status, latest_version, visibility)
+            VALUES (NULLIF(current_setting('app.tenant_id', true), '')::uuid, %s, 'active', %s, %s)
+            RETURNING tool_id, name, tenant_id::text AS tenant_id, status, latest_version, visibility
             """,
-            (name, version),
+            (name, version, visibility),
         )
         tool = await cur.fetchone()
         assert tool is not None
@@ -186,6 +249,8 @@ async def create_tool_with_version(
         await _init_health(conn, tool["tool_id"])
         return tool
 
+    if platform:
+        return await in_platform(pool, _fn)
     return await in_tenant(pool, tenant_id, _fn)
 
 
@@ -198,24 +263,63 @@ async def add_version(
     manifest: dict[str, Any],
     capabilities: list[tuple[str, str]],
     max_active_versions: int,
+    visibility: str = "private",
+    platform: bool = False,
 ) -> dict[str, Any]:
     """Append a new active version to an existing tool, enforcing retention.
 
-    After inserting the version we count active versions; if it exceeds
-    ``max_active_versions`` we retire the OLDEST active version(s) down to the cap.
-    ``latest_version`` on the parent tool is advanced and capabilities are refreshed
-    from the new manifest. Returns ``{version, retired: [..]}``.
+    Two modes, keyed on whether ``version`` already exists for the tool:
+
+    * NEW version — insert it, advance ``latest_version``/``visibility``, refresh capabilities,
+      then retire the OLDEST active version(s) beyond ``max_active_versions``.
+    * SAME version (in-place REFRESH) — a re-registration of an already-registered version
+      (the stable-version manifest-refresh path: e.g. an MCP membership/metadata change that
+      keeps the version constant). We refresh the version's ``manifest`` + the tool's
+      ``capabilities`` (in TENANT context, so tenant-scoped capability rows land correctly —
+      the poller can't do this) + ``visibility``, WITHOUT churning the version chain or
+      retention. This runs in tenant context so it is the only place capabilities can be
+      correctly refreshed for a multi-tool MCP whose member set changed. ``latest_version`` is
+      left untouched on refresh (the caller always refreshes its current/stable version).
+
+    ``platform`` switches the transaction scope exactly as in
+    :func:`create_tool_with_version`: ``True`` runs inside :func:`in_platform` (empty GUC) so
+    the version/capability rows are stamped ``tenant_id NULL`` and accepted by the platform
+    RLS policies — used to version a PLATFORM (public) tool. ``tenant_id`` is ignored then.
+
+    Returns ``{version, retired: [..]}`` (``retired`` is empty on a refresh).
     """
 
     async def _fn(conn: AsyncConnection) -> dict[str, Any]:
+        cur = await conn.execute(
+            "SELECT 1 FROM tool_versions WHERE tool_id = %s AND version = %s",
+            (tool_id, version),
+        )
+        exists = await cur.fetchone() is not None
+        if exists:
+            # In-place refresh: same version, updated manifest/capabilities/visibility.
+            await conn.execute(
+                "UPDATE tool_versions SET manifest = %s, status = 'active' "
+                "WHERE tool_id = %s AND version = %s",
+                (Jsonb(manifest), tool_id, version),
+            )
+            await conn.execute(
+                "UPDATE tools SET visibility = %s WHERE tool_id = %s",
+                (visibility, tool_id),
+            )
+            await _replace_capabilities(conn, tool_id, capabilities)
+            return {"version": version, "retired": []}
+
         await _insert_version(conn, tool_id, version, manifest)
         await conn.execute(
-            "UPDATE tools SET latest_version = %s WHERE tool_id = %s", (version, tool_id)
+            "UPDATE tools SET latest_version = %s, visibility = %s WHERE tool_id = %s",
+            (version, visibility, tool_id),
         )
         await _replace_capabilities(conn, tool_id, capabilities)
         retired = await _enforce_retention(conn, tool_id, max_active_versions)
         return {"version": version, "retired": retired}
 
+    if platform:
+        return await in_platform(pool, _fn)
     return await in_tenant(pool, tenant_id, _fn)
 
 
@@ -278,6 +382,41 @@ async def _enforce_retention(
             (STATUS_RETIRED, tool_id, version),
         )
     return to_retire
+
+
+async def set_tool_status(
+    pool: AsyncConnectionPool,
+    tenant_id: str,
+    *,
+    tool_id: str,
+    status: str,
+    platform: bool = False,
+    retire_versions: bool = True,
+) -> None:
+    """Set ``tools.status`` for a tool (RLS-scoped), optionally retiring its active versions.
+
+    Used by the retire/de-register path. ``platform`` picks the transaction scope: ``False``
+    runs inside :func:`in_tenant` (the tenant write policy admits ONLY the caller's own row);
+    ``True`` runs inside :func:`in_platform` (the ``p_tools_platform`` policy admits the
+    ``tenant_id IS NULL`` platform row under an empty GUC). When retiring, active version rows
+    are flipped to ``retired`` too, so a de-registered tool stops resolving in discovery.
+    """
+
+    async def _fn(conn: AsyncConnection) -> None:
+        await conn.execute(
+            "UPDATE tools SET status = %s WHERE tool_id = %s",
+            (status, tool_id),
+        )
+        if retire_versions and status == STATUS_RETIRED:
+            await conn.execute(
+                "UPDATE tool_versions SET status = %s WHERE tool_id = %s AND status = %s",
+                (STATUS_RETIRED, tool_id, STATUS_ACTIVE),
+            )
+
+    if platform:
+        await in_platform(pool, _fn)
+        return
+    await in_tenant(pool, tenant_id, _fn)
 
 
 # ── Health persistence (platform-scoped: poller updates every tool) ────────────
@@ -368,12 +507,14 @@ async def resolve_agent_tool_access(
     tool_server_name: str,
     capability: str | None,
     is_restricted: bool,
+    restricted_default: str = "none",
 ) -> str:
     """Resolve the effective access mode for (agent, tool server, capability).
 
     Precedence: an explicit row for the exact (server, capability) wins; else an explicit
-    server-wide row (capability IS NULL); else the DEFAULT — ``none`` for a restricted tool,
-    ``automated`` otherwise.
+    server-wide row (capability IS NULL); else the DEFAULT — the restricted tool's own
+    ``restricted_default`` (``none`` unless the publisher chose ``ask``) for a restricted
+    tool, ``automated`` otherwise.
     """
 
     async def _fn(conn: AsyncConnection) -> str:
@@ -392,7 +533,7 @@ async def resolve_agent_tool_access(
         row = await cur.fetchone()
         if row is not None:
             return str(row["access_mode"])
-        return "none" if is_restricted else "automated"
+        return restricted_default if is_restricted else "automated"
 
     return await in_tenant(pool, tenant_id, _fn)
 
@@ -459,6 +600,27 @@ async def is_tool_restricted(pool: AsyncConnectionPool, tenant_id: str, tool_id:
     return await in_tenant(pool, tenant_id, _fn)
 
 
+async def get_restricted_default(
+    pool: AsyncConnectionPool, tenant_id: str, tool_id: str
+) -> str | None:
+    """The tool's server-wide default access mode if it is restricted, else ``None``.
+
+    ``None`` means the tool is not restricted (agents default to ``automated``). A returned
+    string (``none``/``ask``/``automated``) is the fallback an agent gets when it has no
+    explicit per-agent access row.
+    """
+
+    async def _fn(conn: AsyncConnection) -> str | None:
+        cur = await conn.cursor(row_factory=dict_row).execute(
+            "SELECT default_access_mode FROM tools.restricted_tools WHERE tool_id = %s",
+            (tool_id,),
+        )
+        row = await cur.fetchone()
+        return str(row["default_access_mode"]) if row is not None else None
+
+    return await in_tenant(pool, tenant_id, _fn)
+
+
 async def list_restricted_tools(pool: AsyncConnectionPool, tenant_id: str) -> list[dict[str, Any]]:
     async def _fn(conn: AsyncConnection) -> list[dict[str, Any]]:
         cur = await conn.cursor(row_factory=dict_row).execute(
@@ -475,90 +637,36 @@ async def list_restricted_tools(pool: AsyncConnectionPool, tenant_id: str) -> li
 
 
 async def mark_tool_restricted(
-    pool: AsyncConnectionPool, tenant_id: str, *, tool_id: str, reason: str
+    pool: AsyncConnectionPool,
+    tenant_id: str,
+    *,
+    tool_id: str,
+    reason: str,
+    default_access_mode: str = "none",
 ) -> None:
     async def _fn(conn: AsyncConnection) -> None:
         await conn.execute(
             """
-            INSERT INTO tools.restricted_tools (tool_id, tenant_id, reason)
-            VALUES (%s, NULLIF(current_setting('app.tenant_id', true), '')::uuid, %s)
+            INSERT INTO tools.restricted_tools (tool_id, tenant_id, reason, default_access_mode)
+            VALUES (%s, NULLIF(current_setting('app.tenant_id', true), '')::uuid, %s, %s)
             -- DO NOTHING (not DO UPDATE): restricted_tools.tool_id is the PK, so an existing
             -- row may belong to ANOTHER tenant and be RLS-invisible — a DO UPDATE on it errors.
             -- Marking an already-restricted tool is idempotent.
             ON CONFLICT (tool_id) DO NOTHING
             """,
-            (tool_id, reason),
+            (tool_id, reason, default_access_mode),
+        )
+        # Re-publish/edit path: refresh the reason + default mode for OUR OWN row. The RLS
+        # write policy (WITH CHECK own tenant) + the explicit tenant predicate scope this to
+        # the caller's row, so it never touches another tenant's (RLS-invisible) restriction.
+        await conn.execute(
+            """
+            UPDATE tools.restricted_tools
+               SET reason = %s, default_access_mode = %s
+             WHERE tool_id = %s
+               AND tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid
+            """,
+            (reason, default_access_mode, tool_id),
         )
 
     await in_tenant(pool, tenant_id, _fn)
-
-
-# ── Platform seed ─────────────────────────────────────────────────────────────
-async def seed_platform_tool(
-    pool: AsyncConnectionPool,
-    *,
-    name: str,
-    version: str,
-    manifest: dict[str, Any],
-    capabilities: list[tuple[str, str]],
-) -> str:
-    """Idempotently seed a PLATFORM tool (tenant_id IS NULL) + version + capabilities.
-
-    Platform-scoped (empty GUC). Returns the tool_id. Safe to call on every boot — an
-    existing platform tool of the same name is reused (no duplicate, capabilities
-    refreshed to the seed manifest).
-    """
-
-    async def _fn(conn: AsyncConnection) -> str:
-        cur = await conn.cursor(row_factory=dict_row).execute(
-            "SELECT tool_id FROM tools WHERE name = %s AND tenant_id IS NULL", (name,)
-        )
-        existing = await cur.fetchone()
-        if existing is None:
-            cur = await conn.cursor(row_factory=dict_row).execute(
-                """
-                INSERT INTO tools (tenant_id, name, status, latest_version)
-                VALUES (NULL, %s, 'active', %s)
-                RETURNING tool_id
-                """,
-                (name, version),
-            )
-            row = await cur.fetchone()
-            assert row is not None
-            tool_id = row["tool_id"]
-        else:
-            tool_id = existing["tool_id"]
-            await conn.execute(
-                "UPDATE tools SET latest_version = %s, status = 'active' WHERE tool_id = %s",
-                (version, tool_id),
-            )
-
-        # Version row (idempotent on (tool_id, version)).
-        await conn.execute(
-            """
-            INSERT INTO tool_versions (tenant_id, tool_id, version, manifest, status)
-            VALUES (NULL, %s, %s, %s, 'active')
-            ON CONFLICT (tool_id, version) DO UPDATE SET manifest = EXCLUDED.manifest
-            """,
-            (tool_id, version, Jsonb(manifest)),
-        )
-        await conn.execute("DELETE FROM tool_capabilities WHERE tool_id = %s", (tool_id,))
-        for capability, required_scope in capabilities:
-            await conn.execute(
-                """
-                INSERT INTO tool_capabilities (tenant_id, tool_id, capability, required_scope)
-                VALUES (NULL, %s, %s, %s)
-                """,
-                (tool_id, capability, required_scope),
-            )
-        await conn.execute(
-            """
-            INSERT INTO tool_health (tenant_id, tool_id, status, consecutive_failures)
-            VALUES (NULL, %s, 'active', 0)
-            ON CONFLICT (tool_id) DO NOTHING
-            """,
-            (tool_id,),
-        )
-        return str(tool_id)
-
-    return await in_platform(pool, _fn)

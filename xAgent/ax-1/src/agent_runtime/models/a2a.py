@@ -24,6 +24,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .task import STEP_TYPE_TOOL_CALL
+
 SCHEMA_VERSION = "1.0.0"
 
 # Map internal task_steps.status -> Contract 3 task_steps[].status (FIX 2).
@@ -44,16 +46,29 @@ def map_step_status(internal_status: str) -> str:
     return _STEP_STATUS_MAP.get(internal_status, "passed")
 
 
+#: Keys projected out of a ``tool_call`` audit step's ``output``. This is an ALLOW-LIST on purpose:
+#: other step types put sensitive material in ``output`` (a guardrail step's ``violations`` can
+#: carry the matched content), so the raw JSONB must never be forwarded wholesale.
+_TOOL_OUTPUT_KEYS = ("tool", "tool_version", "tool_call_id", "error")
+
+
 def build_step(
     *,
     step_name: str,
     status: str,
     duration_ms: int,
     tokens: int | None = None,
+    step_type: str | None = None,
+    output: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build one Contract 3 ``task_steps[]`` entry from an internal audit step.
 
     ``status`` is the INTERNAL status (possibly ``redacted``); it is mapped here.
+
+    ``step_type`` + the tool fields let a client tell WHICH tool a ``tool_call`` step invoked —
+    the audit row records it, but every tool step's ``step_name`` is the literal ``"tool_call"``,
+    so without this the tool's identity never reaches the wire. ``task_steps`` items are
+    ``additionalProperties: true`` in the contract, so these extra keys are contract-safe.
     """
     step: dict[str, Any] = {
         "step": step_name,
@@ -62,6 +77,13 @@ def build_step(
     }
     if tokens is not None:
         step["tokens"] = int(tokens)
+    if step_type is not None:
+        step["step_type"] = step_type
+    if step_type == STEP_TYPE_TOOL_CALL and isinstance(output, dict):
+        for key in _TOOL_OUTPUT_KEYS:
+            value = output.get(key)
+            if value is not None:
+                step[key] = value
     return step
 
 

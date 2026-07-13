@@ -30,6 +30,10 @@ from ..errors import ApiError
 from ..pipeline import PipelineContext, Stage
 from . import deps
 
+#: The scope the Memory service requires for POST /v1/memories. It authorizes against the
+#: FORWARDED AGENT JWT (not the xAgent service token), so the AGENT must carry it.
+MEM_WRITE_SCOPE = "mem:write"
+
 logger = structlog.get_logger(__name__)
 
 # Cap the stored interaction content so a huge answer never bloats the memory store. Not a
@@ -49,6 +53,21 @@ class MemoryWriteStage(Stage):
             return  # memory write disabled for this agent / globally -> no-op
         if ctx.terminal_error is not None or not ctx.final_answer:
             return  # never store a memory of a failed / blocked / answer-less interaction
+
+        # An agent's memory is configured on TWO surfaces that can drift: xAgent's `memory_scope`
+        # and Auth's `allowed_scopes`. memory_scope != 'none' WITHOUT `mem:write` is a permanently
+        # broken pair — the Memory service authorizes against the forwarded agent JWT, so every
+        # single task burns a guaranteed 403. Because this stage is deliberately fail-soft, that
+        # failed forever in silence. Detect it up front and skip LOUDLY instead.
+        if MEM_WRITE_SCOPE not in ctx.principal.scopes:
+            logger.warning(
+                "memory_write_skipped_missing_scope",
+                agent_id=agent.agent_id,
+                memory_scope=agent.memory_scope,
+                required_scope=MEM_WRITE_SCOPE,
+                hint="Grant the agent 'mem:write', or set its memory scope to 'none'.",
+            )
+            return
 
         scope = agent.memory_scope
         session_id = ctx.session_id if scope == "session" else None

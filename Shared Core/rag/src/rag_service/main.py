@@ -34,7 +34,9 @@ from .db.outbox import OutboxPublisher
 from .db.valkey import ValkeyClient
 from .services.bootstrap import PlatformSkillsBootstrap
 from .services.contextual import Contextualizer
+from .services.decompose import QueryDecomposer
 from .services.embeddings import EmbeddingClient
+from .services.multiquery import QueryExpander
 from .services.object_store import ObjectStore
 from .services.rerank import RerankClient
 from .services.service_token import ServiceTokenProvider
@@ -72,6 +74,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.reranker = RerankClient(settings, token_provider=token_provider)
     # Optional contextual-ingest client (no-op unless RAG_CONTEXTUAL_INGEST). Mock-tolerant.
     app.state.contextualizer = Contextualizer(settings, token_provider=token_provider)
+    # Optional query-transformation clients (no-op unless their flags + a per-query opt-in are on).
+    app.state.decomposer = QueryDecomposer(settings, token_provider=token_provider)
+    app.state.expander = QueryExpander(settings, token_provider=token_provider)
     app.state.object_store = ObjectStore(settings)
 
     # ── Outbox publisher (Kafka connect is lazy + fail-soft) ───────────────────
@@ -103,6 +108,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await app.state.embedder.aclose()
         await app.state.reranker.aclose()
         await app.state.contextualizer.aclose()
+        await app.state.decomposer.aclose()
+        await app.state.expander.aclose()
         await token_provider.aclose()
         await app.state.object_store.aclose()
         await valkey.close()

@@ -1,8 +1,13 @@
 export { Button } from './Button';
 export type { ButtonProps } from './Button';
 export { Input, PasswordInput, Textarea, Select, Field } from './Input';
+export { Switch } from './Switch';
+export type { SwitchProps } from './Switch';
 export { Card, CardHeader, CardBody, Stat } from './Card';
-export { Badge, StatusBadge } from './Badge';
+export { Badge, StatusBadge, humanizeStatus } from './Badge';
+export { Callout } from './Callout';
+export { CopyButton } from './CopyButton';
+export { FileDropzone } from './FileDropzone';
 export { Table } from './Table';
 export type { Column } from './Table';
 export { Modal } from './Modal';

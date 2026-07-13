@@ -1,5 +1,5 @@
 {
-  "description": "Golden memory set for recall@k + helpfulness eval. Each memory has a deterministic bag-of-words embedding (computed by the runner from `content`). For every query a STALE, low-importance DISTRACTOR is engineered to have a HIGHER pure-cosine similarity than the truly-needed memory (it matches the query words more tightly), and the distractor is listed first so a stable cosine sort ranks it on top. The composite score (relevance + importance + recency) is what recovers the memory the user actually needs. recall@1 therefore directly measures the re-rank improvement.",
+  "description": "Golden memory set for recall@k + helpfulness eval. Each memory has a deterministic bag-of-words embedding (computed by the runner from `content`). For every query a STALE, low-importance DISTRACTOR is engineered to have a HIGHER pure-cosine similarity than the truly-needed memory (it matches the query words more tightly), and the distractor is listed first so a stable cosine sort ranks it on top. The composite score (relevance + importance + recency) is what recovers the memory the user actually needs. recall@1 therefore directly measures the re-rank improvement. `access_count` is the ACT-R (B4) retrieval-frequency input: durable current facts are retrieved often, stale one-off distractors rarely. The extra sections (frequency/extraction/mmr/linking) drive the B4/B5/B6/B7 eval extensions with their own isolated vocabularies so the primary cosine-vs-composite guard is untouched.",
   "memories": [
     {
       "id": "m-color-old",
@@ -7,6 +7,7 @@
       "type": "note",
       "importance": 0.05,
       "age_days": 400,
+      "access_count": 1,
       "note": "distractor: exact query phrasing -> highest cosine, but stale + trivial"
     },
     {
@@ -14,7 +15,8 @@
       "content": "user favorite color is teal as of this week",
       "type": "preference",
       "importance": 0.95,
-      "age_days": 2
+      "age_days": 2,
+      "access_count": 30
     },
     {
       "id": "m-allergy-old",
@@ -22,6 +24,7 @@
       "type": "note",
       "importance": 0.05,
       "age_days": 500,
+      "access_count": 1,
       "note": "distractor: exact phrasing of an outdated mention"
     },
     {
@@ -29,7 +32,8 @@
       "content": "user peanut allergy is now severe carry epipen",
       "type": "fact",
       "importance": 0.98,
-      "age_days": 5
+      "age_days": 5,
+      "access_count": 42
     },
     {
       "id": "m-city-old",
@@ -37,6 +41,7 @@
       "type": "note",
       "importance": 0.05,
       "age_days": 600,
+      "access_count": 0,
       "note": "distractor: bare phrasing, no current value"
     },
     {
@@ -44,7 +49,8 @@
       "content": "user lives city berlin since last month",
       "type": "fact",
       "importance": 0.9,
-      "age_days": 10
+      "age_days": 10,
+      "access_count": 18
     },
     {
       "id": "m-deadline-old",
@@ -52,6 +58,7 @@
       "type": "note",
       "importance": 0.05,
       "age_days": 120,
+      "access_count": 2,
       "note": "distractor: stale, no actual date"
     },
     {
@@ -59,7 +66,8 @@
       "content": "project apollo deadline is this friday must ship",
       "type": "fact",
       "importance": 0.92,
-      "age_days": 1
+      "age_days": 1,
+      "access_count": 25
     },
     {
       "id": "m-pet-old",
@@ -67,6 +75,7 @@
       "type": "note",
       "importance": 0.05,
       "age_days": 700,
+      "access_count": 1,
       "note": "distractor: stale bare phrasing"
     },
     {
@@ -74,7 +83,8 @@
       "content": "user dog named biscuit a golden retriever",
       "type": "fact",
       "importance": 0.8,
-      "age_days": 14
+      "age_days": 14,
+      "access_count": 12
     }
   ],
   "queries": [
@@ -102,6 +112,78 @@
       "query": "user dog named",
       "expected": "m-pet-current",
       "why": "stale distractor wins on cosine; the current pet fact must surface"
+    }
+  ],
+  "frequency_memories": [
+    {
+      "id": "m-freq-rare",
+      "content": "database migration status is pending review",
+      "importance": 0.5,
+      "age_days": 5,
+      "access_count": 1,
+      "note": "B4: listed FIRST so a cosine tie keeps it on top; retrieved only once"
+    },
+    {
+      "id": "m-freq-hot",
+      "content": "database migration status is pending review",
+      "importance": 0.5,
+      "age_days": 5,
+      "access_count": 90,
+      "note": "B4: identical content+recency+importance, retrieved 90x -> ACT-R must promote it"
+    }
+  ],
+  "frequency_queries": [
+    {
+      "query": "database migration status",
+      "expected": "m-freq-hot",
+      "why": "recency + importance + cosine are all TIED; only retrieval frequency differs, so a high-frequency target must overtake a rarely-used one under power_actr"
+    }
+  ],
+  "extraction_items": [
+    {
+      "id": "profile-1",
+      "source": "user favorite color is teal. user has a severe peanut allergy so must carry an epipen. user lives in berlin germany. user works as a data engineer.",
+      "facts": [
+        "user favorite color is teal",
+        "user has a severe peanut allergy so must carry an epipen",
+        "user lives in berlin germany",
+        "user works as a data engineer"
+      ],
+      "queries": [
+        { "query": "favorite color teal", "expected_fact_index": 0 },
+        { "query": "peanut allergy epipen", "expected_fact_index": 1 },
+        { "query": "lives berlin germany", "expected_fact_index": 2 },
+        { "query": "works data engineer", "expected_fact_index": 3 }
+      ]
+    }
+  ],
+  "mmr_memories": [
+    { "id": "mmr-cache-1", "content": "python performance tip use a cache", "importance": 0.5, "age_days": 3 },
+    { "id": "mmr-cache-2", "content": "python performance tip use a cache", "importance": 0.5, "age_days": 3 },
+    { "id": "mmr-cache-3", "content": "python performance tip use a cache", "importance": 0.5, "age_days": 3 },
+    { "id": "mmr-profile", "content": "python performance tip run the profiler tool", "importance": 0.5, "age_days": 3 }
+  ],
+  "mmr_queries": [
+    {
+      "query": "python performance tip",
+      "targets": ["mmr-cache-1", "mmr-profile"],
+      "why": "three IDENTICAL caching tips crowd the top; at top_k=2 pure cosine returns two redundant caches, MMR spends the budget to also surface the complementary profiling tip"
+    }
+  ],
+  "linked_memories": [
+    { "id": "lnk-apollo", "content": "project apollo is led by alice", "importance": 0.6, "age_days": 2 },
+    { "id": "lnk-contact", "content": "alice can be reached at alice at corp dot com", "importance": 0.6, "age_days": 2 },
+    { "id": "lnk-noise", "content": "the weather today is sunny and warm", "importance": 0.3, "age_days": 2 }
+  ],
+  "link_edges": [
+    ["lnk-apollo", "lnk-contact"]
+  ],
+  "link_queries": [
+    {
+      "query": "project apollo lead",
+      "expected": "lnk-contact",
+      "seed": "lnk-apollo",
+      "why": "the contact fact is reachable only THROUGH the apollo->contact link; single-shot cosine on the query never surfaces it"
     }
   ]
 }
