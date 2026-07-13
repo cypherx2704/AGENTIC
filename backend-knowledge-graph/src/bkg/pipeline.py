@@ -32,6 +32,11 @@ from .engine import Cx, Engine
 
 ROOT = "graph:all"
 
+# A router mounted N times under a parent mounted M times is exposed N*M times. Real apps
+# mount once; this bounds a pathological cartesian blow-up (the fan-out degrades to
+# `truncated` -> `partial` rather than exploding).
+_MAX_MOUNT_CHAINS = 64
+
 
 def _route_id(file: str, route: dict[str, Any]) -> str:
     return f"{file}:{route['router_local']}:{route['method']}:{route['path']}"
@@ -186,16 +191,44 @@ def install(engine: Engine) -> None:
         return [m for m in _resolved_mounts(cx) if m["target"] not in cyclic]
 
     def mount_chain(key: str, cx: Cx) -> Any:
+        """EVERY resolved mount chain for a router — a LIST, not one chain.
+
+        A router mounted twice (``include_router(r, prefix='/v1')`` +
+        ``include_router(r, prefix='/v2')``) is genuinely exposed twice, and each exposure
+        is a distinct concrete endpoint. Chains compose across nesting (a router mounted
+        twice under a parent mounted twice yields four), so this is a cartesian product —
+        bounded by ``_MAX_MOUNT_CHAINS`` and flagged ``truncated`` if it ever hits the cap,
+        so a pathological project degrades honestly instead of exploding.
+        """
         router_id = key.split(":", 1)[1]  # "{file}:{router_local}"
+        chains: list[dict[str, Any]] = []
         for m in cx.read("allMounts"):
-            if m["target"] == router_id:
-                parent = cx.read(f"mountChain:{m['owner']}:{m['router_local']}")
-                return {
-                    "prefix": _join_prefix(parent["prefix"], m["prefix"]),
-                    "middleware": [*parent["middleware"], *m["middleware"]],
-                    "tags": sorted(set([*parent["tags"], *m["tags"]])),  # nested chains union tags
-                    "cyclic": parent["cyclic"],  # a truncated ancestor taints the whole chain
-                }
+            if m["target"] != router_id:
+                continue
+            for parent in cx.read(f"mountChain:{m['owner']}:{m['router_local']}"):
+                chains.append(
+                    {
+                        "prefix": _join_prefix(parent["prefix"], m["prefix"]),
+                        "middleware": [*parent["middleware"], *m["middleware"]],
+                        "tags": sorted(set([*parent["tags"], *m["tags"]])),  # nested chains union tags
+                        "cyclic": parent["cyclic"],  # a truncated ancestor taints the whole chain
+                        "truncated": parent["truncated"],
+                    }
+                )
+        if chains:
+            chains.sort(key=lambda c: (c["prefix"], c["middleware"], c["tags"]))
+            deduped: list[dict[str, Any]] = []
+            seen: set[tuple[str, tuple[str, ...], tuple[str, ...]]] = set()
+            for c in chains:  # two mounts with the same prefix are ONE exposure
+                sig = (c["prefix"], tuple(c["middleware"]), tuple(c["tags"]))
+                if sig not in seen:
+                    seen.add(sig)
+                    deduped.append(c)
+            if len(deduped) > _MAX_MOUNT_CHAINS:
+                deduped = deduped[:_MAX_MOUNT_CHAINS]
+                for c in deduped:
+                    c["truncated"] = True
+            return deduped
         # base case: an unmounted top-level app — its own add_middleware applies to every
         # route it (transitively) mounts, so seed the chain with this router's middleware.
         # A router on a mount CYCLE also lands here (its mount was pruned) — flag it, so the
@@ -204,12 +237,15 @@ def install(engine: Engine) -> None:
         file, router_local = router_id.rsplit(":", 1)
         decls = cx.read(f"middlewareDeclList:{file}")
         own_mw = [m["name"] for m in decls if m["router_local"] == router_local]
-        return {
-            "prefix": "",
-            "middleware": own_mw,
-            "tags": [],
-            "cyclic": router_id in set(cx.read("mountCycles:all")),
-        }
+        return [
+            {
+                "prefix": "",
+                "middleware": own_mw,
+                "tags": [],
+                "cyclic": router_id in set(cx.read("mountCycles:all")),
+                "truncated": False,
+            }
+        ]
 
     def route_fact(key: str, cx: Cx) -> Any:
         route_id = key.split(":", 1)[1]
@@ -373,18 +409,27 @@ def install(engine: Engine) -> None:
         }
 
     def endpoint(key: str, cx: Cx) -> Any:
-        route_id = key.split(":", 1)[1]
+        # key = endpoint:{route_id}#{ordinal} — ONE concrete exposure of a route
+        # declaration through ONE of its mount chains. The memo key stays anchored on the
+        # declaration (not the resolved path) so this node depends only on its own route +
+        # chain: keying it on the resolved path would need a global path->route index, and
+        # adding a single route anywhere would then recompute every endpoint.
+        route_id, _, ordinal_text = key.split(":", 1)[1].rpartition("#")
+        ordinal = int(ordinal_text)
         parts = route_id.split(":")
         path, router = parts[0], parts[1]
         rf = cx.read(f"routeFact:{route_id}")
         if rf is None:
             return None
-        chain = cx.read(f"mountChain:{path}:{router}")
+        chains = cx.read(f"mountChain:{path}:{router}")
+        if ordinal >= len(chains):
+            return None  # the router lost a mount — this exposure no longer exists
+        chain = chains[ordinal]
         files = set(cx.read("files:all"))
         path_params = _path_param_names(rf["path"])
-        # a mount cycle truncated this route's prefix — the resolved_path below is
-        # incomplete, so say so instead of serving it as certain
-        partial = bool(chain["cyclic"])
+        # a mount cycle or a truncated fan-out means the resolved_path below is incomplete,
+        # so say so instead of serving it as certain
+        partial = bool(chain["cyclic"]) or bool(chain["truncated"])
 
         def resolve_dto(candidates: list[str]) -> str | None:
             # returns an in-project DTO id, or None. Sets `partial` when a reference LOOKS
@@ -435,9 +480,17 @@ def install(engine: Engine) -> None:
         # the assembled endpoint is 'inferred' when it required cross-file resolution
         # (a mount prefix or a DTO ref) or dropped a DTO ref; else it's 'static-certain'
         certain = not (chain["prefix"] or body or response or partial)
+        resolved_path = _join_path(chain["prefix"], rf["path"])
         return {
+            # IDENTITY = the fully resolved route: one id per CONCRETE EXPOSURE. A router
+            # mounted at /v1 and /v2 yields two endpoints with distinct ids that share one
+            # declaration (`route`) and one implementation (`handler_id`) — the graph keeps
+            # both the implementation and every concrete exposure of it.
+            "id": f"{rf['method']}:{resolved_path}",
+            "route": route_id,  # the shared route DECLARATION this exposure came from
+            "handler_id": f"{path}#{rf['handler']}",  # the shared implementation
             "method": rf["method"],
-            "resolved_path": _join_path(chain["prefix"], rf["path"]),
+            "resolved_path": resolved_path,
             "params": params_out,
             "body": body,
             "response": response,
@@ -458,13 +511,22 @@ def install(engine: Engine) -> None:
         }
 
     def graph_all(key: str, cx: Cx) -> Any:
-        keys: list[str] = []
+        """Every CONCRETE endpoint: the cross product of route declarations and the mount
+        chains that expose them. Deduped by resolved identity — two declarations resolving
+        to the same ``{METHOD}:{path}`` are a real routing collision in the app, and the
+        first wins exactly as the framework's first-match-wins router does, so served ids
+        stay unique (everything downstream relies on that)."""
+        by_id: dict[str, str] = {}
         for path in cx.read("files:all"):
             for r in cx.read(f"routeDeclList:{path}"):
-                ekey = f"endpoint:{_route_id(path, r)}"
-                cx.read(ekey)  # force assembly
-                keys.append(ekey)
-        return sorted(keys)
+                route_id = _route_id(path, r)
+                for ordinal, chain in enumerate(cx.read(f"mountChain:{path}:{r['router_local']}")):
+                    endpoint_id = f"{r['method']}:{_join_path(chain['prefix'], r['path'])}"
+                    by_id.setdefault(endpoint_id, f"endpoint:{route_id}#{ordinal}")
+        keys = sorted(by_id.values())
+        for key_ in keys:
+            cx.read(key_)  # force assembly
+        return keys
 
     engine.define_query("fileFacts", file_facts)
     engine.define_query("routeDeclList", route_decl_list)

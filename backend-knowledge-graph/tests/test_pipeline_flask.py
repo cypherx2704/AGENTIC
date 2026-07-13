@@ -22,8 +22,8 @@ USERS = (
     "def create_user(): ...\n"
 )
 
-GET = "endpoint:app/users.py:users_bp:GET:/{user_id}"
-POST = "endpoint:app/users.py:users_bp:POST:/"
+GET = "endpoint:app/users.py:users_bp:GET:/{user_id}#0"
+POST = "endpoint:app/users.py:users_bp:POST:/#0"
 
 
 def _app(sources: dict[str, str]) -> Engine:

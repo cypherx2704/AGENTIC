@@ -129,8 +129,8 @@ _MIXED = {
 
 def test_mixed_framework_project_builds_and_stays_deterministic() -> None:
     engine = _app(_MIXED)
-    fa = engine.query("endpoint:app/fastapi_users.py:router:GET:/{uid}")
-    fl = engine.query("endpoint:app/flask_users.py:bp:GET:/{uid}")
+    fa = engine.query("endpoint:app/fastapi_users.py:router:GET:/{uid}#0")
+    fl = engine.query("endpoint:app/flask_users.py:bp:GET:/{uid}#0")
     assert fa["resolved_path"] == "/fa/{uid}"
     assert fl["resolved_path"] == "/fl/{uid}"
 
@@ -138,7 +138,7 @@ def test_mixed_framework_project_builds_and_stays_deterministic() -> None:
     edited = dict(_MIXED)
     edited["app/flask_main.py"] = _MIXED["app/flask_main.py"].replace("/fl", "/flask")
     engine.set_input("fileText:app/flask_main.py", edited["app/flask_main.py"])
-    assert engine.query("endpoint:app/flask_users.py:bp:GET:/{uid}")["resolved_path"] == "/flask/{uid}"
+    assert engine.query("endpoint:app/flask_users.py:bp:GET:/{uid}#0")["resolved_path"] == "/flask/{uid}"
     fresh = _app(edited)
     assert engine.snapshot_digest(ROOT) == fresh.snapshot_digest(ROOT)
     assert engine.dep_map(ROOT) == fresh.dep_map(ROOT)
@@ -157,5 +157,5 @@ def test_path_converter_survives_extraction() -> None:
         ),
     }
     engine = _app(src)
-    ep = engine.query("endpoint:app/f.py:bp:GET:/files/{name:path}")
+    ep = engine.query("endpoint:app/f.py:bp:GET:/files/{name:path}#0")
     assert ep["resolved_path"] == "/files/{name:path}"

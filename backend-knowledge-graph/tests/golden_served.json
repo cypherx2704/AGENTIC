@@ -1,11 +1,11 @@
 {
   "_blast": {
     "full_depth/UserBase": [
-      "app/routers/users.py:router:GET:/{user_id}",
-      "app/routers/users.py:router:POST:/"
+      "GET:/api/users/{user_id}",
+      "POST:/api/users/"
     ],
     "full_depth/UserCreate": [
-      "app/routers/users.py:router:POST:/"
+      "POST:/api/users/"
     ]
   },
   "dto_seed0": {
@@ -23,8 +23,9 @@
         "confidence": "inferred",
         "handler": "create_user",
         "handler_file": "app/routers/users.py",
+        "handler_id": "app/routers/users.py#create_user",
         "handler_line": 6,
-        "id": "app/routers/users.py:router:POST:/",
+        "id": "POST:/api/users/",
         "method": "POST",
         "middleware_chain": [
           "A"
@@ -33,6 +34,7 @@
         "partial": false,
         "resolved_path": "/api/users/",
         "response": null,
+        "route": "app/routers/users.py:router:POST:/",
         "source": "static",
         "tags": [
           "a"
@@ -104,8 +106,9 @@
         "confidence": "inferred",
         "handler": "get_user",
         "handler_file": "app/routers/users.py",
+        "handler_id": "app/routers/users.py#get_user",
         "handler_line": 6,
-        "id": "app/routers/users.py:router:GET:/{user_id}",
+        "id": "GET:/api/users/{user_id}",
         "method": "GET",
         "middleware_chain": [],
         "params": [
@@ -119,6 +122,7 @@
         "partial": false,
         "resolved_path": "/api/users/{user_id}",
         "response": "app/schemas.py:UserCreate",
+        "route": "app/routers/users.py:router:GET:/{user_id}",
         "source": "static",
         "tags": [
           "x",
@@ -138,14 +142,16 @@
         "confidence": "inferred",
         "handler": "create_user",
         "handler_file": "app/routers/users.py",
+        "handler_id": "app/routers/users.py#create_user",
         "handler_line": 9,
-        "id": "app/routers/users.py:router:POST:/",
+        "id": "POST:/api/users/",
         "method": "POST",
         "middleware_chain": [],
         "params": [],
         "partial": false,
         "resolved_path": "/api/users/",
         "response": "app/schemas.py:UserOut",
+        "route": "app/routers/users.py:router:POST:/",
         "source": "static",
         "tags": [
           "x",
@@ -218,8 +224,9 @@
         "confidence": "inferred",
         "handler": "h2",
         "handler_file": "app/routers/users.py",
+        "handler_id": "app/routers/users.py#h2",
         "handler_line": 9,
-        "id": "app/routers/users.py:router:GET:/r2",
+        "id": "GET:/api/users/r2",
         "method": "GET",
         "middleware_chain": [
           "B",
@@ -229,6 +236,7 @@
         "partial": false,
         "resolved_path": "/api/users/r2",
         "response": null,
+        "route": "app/routers/users.py:router:GET:/r2",
         "source": "static",
         "tags": [
           "x",
@@ -248,8 +256,9 @@
         "confidence": "inferred",
         "handler": "create_user",
         "handler_file": "app/routers/users.py",
+        "handler_id": "app/routers/users.py#create_user",
         "handler_line": 6,
-        "id": "app/routers/users.py:router:POST:/",
+        "id": "POST:/api/users/",
         "method": "POST",
         "middleware_chain": [
           "B",
@@ -259,6 +268,7 @@
         "partial": false,
         "resolved_path": "/api/users/",
         "response": "app/schemas.py:UserOut",
+        "route": "app/routers/users.py:router:POST:/",
         "source": "static",
         "tags": [
           "x",
@@ -337,8 +347,9 @@
         "confidence": "inferred",
         "handler": "get_user",
         "handler_file": "app/routers/users.py",
+        "handler_id": "app/routers/users.py#get_user",
         "handler_line": 6,
-        "id": "app/routers/users.py:router:GET:/{user_id}",
+        "id": "GET:/api/users/{user_id}",
         "method": "GET",
         "middleware_chain": [
           "A"
@@ -354,6 +365,7 @@
         "partial": true,
         "resolved_path": "/api/users/{user_id}",
         "response": null,
+        "route": "app/routers/users.py:router:GET:/{user_id}",
         "source": "static",
         "tags": [
           "x",
@@ -400,8 +412,9 @@
         "confidence": "inferred",
         "handler": "create_user",
         "handler_file": "app/routers/users.py",
+        "handler_id": "app/routers/users.py#create_user",
         "handler_line": 6,
-        "id": "app/routers/users.py:router:POST:/",
+        "id": "POST:/",
         "method": "POST",
         "middleware_chain": [
           "A",
@@ -411,6 +424,7 @@
         "partial": false,
         "resolved_path": "/",
         "response": "app/schemas.py:UserOut",
+        "route": "app/routers/users.py:router:POST:/",
         "source": "static",
         "tags": [],
         "verification_status": "unverified"
@@ -486,8 +500,9 @@
         "confidence": "inferred",
         "handler": "h1",
         "handler_file": "app/routers/users.py",
+        "handler_id": "app/routers/users.py#h1",
         "handler_line": 12,
-        "id": "app/routers/users.py:router:GET:/r1",
+        "id": "GET:/r1",
         "method": "GET",
         "middleware_chain": [
           "B",
@@ -497,6 +512,7 @@
         "partial": false,
         "resolved_path": "/r1",
         "response": "app/schemas.py:UserOut",
+        "route": "app/routers/users.py:router:GET:/r1",
         "source": "static",
         "tags": [
           "x",
@@ -516,8 +532,9 @@
         "confidence": "static-certain",
         "handler": "h2",
         "handler_file": "app/routers/users.py",
+        "handler_id": "app/routers/users.py#h2",
         "handler_line": 15,
-        "id": "app/routers/users.py:router:GET:/r2",
+        "id": "GET:/r2",
         "method": "GET",
         "middleware_chain": [
           "B",
@@ -527,6 +544,7 @@
         "partial": false,
         "resolved_path": "/r2",
         "response": null,
+        "route": "app/routers/users.py:router:GET:/r2",
         "source": "static",
         "tags": [
           "x",
@@ -546,8 +564,9 @@
         "confidence": "inferred",
         "handler": "get_user",
         "handler_file": "app/routers/users.py",
+        "handler_id": "app/routers/users.py#get_user",
         "handler_line": 6,
-        "id": "app/routers/users.py:router:GET:/{user_id}",
+        "id": "GET:/{user_id}",
         "method": "GET",
         "middleware_chain": [
           "B",
@@ -564,6 +583,7 @@
         "partial": false,
         "resolved_path": "/{user_id}",
         "response": "app/schemas.py:UserOut",
+        "route": "app/routers/users.py:router:GET:/{user_id}",
         "source": "static",
         "tags": [
           "x",
@@ -583,8 +603,9 @@
         "confidence": "inferred",
         "handler": "create_user",
         "handler_file": "app/routers/users.py",
+        "handler_id": "app/routers/users.py#create_user",
         "handler_line": 9,
-        "id": "app/routers/users.py:router:POST:/",
+        "id": "POST:/",
         "method": "POST",
         "middleware_chain": [
           "B",
@@ -594,6 +615,7 @@
         "partial": false,
         "resolved_path": "/",
         "response": "app/schemas.py:UserOut",
+        "route": "app/routers/users.py:router:POST:/",
         "source": "static",
         "tags": [
           "a",
@@ -669,8 +691,9 @@
         "confidence": "inferred",
         "handler": "h1",
         "handler_file": "app/routers/users.py",
+        "handler_id": "app/routers/users.py#h1",
         "handler_line": 12,
-        "id": "app/routers/users.py:router:GET:/r1",
+        "id": "GET:/api/users/r1",
         "method": "GET",
         "middleware_chain": [
           "A",
@@ -680,6 +703,7 @@
         "partial": false,
         "resolved_path": "/api/users/r1",
         "response": null,
+        "route": "app/routers/users.py:router:GET:/r1",
         "source": "static",
         "tags": [
           "a",
@@ -700,8 +724,9 @@
         "confidence": "inferred",
         "handler": "get_user",
         "handler_file": "app/routers/users.py",
+        "handler_id": "app/routers/users.py#get_user",
         "handler_line": 6,
-        "id": "app/routers/users.py:router:GET:/{user_id}",
+        "id": "GET:/api/users/{user_id}",
         "method": "GET",
         "middleware_chain": [
           "A",
@@ -718,6 +743,7 @@
         "partial": false,
         "resolved_path": "/api/users/{user_id}",
         "response": "app/schemas.py:UserOut",
+        "route": "app/routers/users.py:router:GET:/{user_id}",
         "source": "static",
         "tags": [
           "users"
@@ -736,8 +762,9 @@
         "confidence": "inferred",
         "handler": "create_user",
         "handler_file": "app/routers/users.py",
+        "handler_id": "app/routers/users.py#create_user",
         "handler_line": 9,
-        "id": "app/routers/users.py:router:POST:/",
+        "id": "POST:/api/users/",
         "method": "POST",
         "middleware_chain": [
           "A",
@@ -747,6 +774,7 @@
         "partial": false,
         "resolved_path": "/api/users/",
         "response": "app/schemas.py:UserOut",
+        "route": "app/routers/users.py:router:POST:/",
         "source": "static",
         "tags": [
           "users"
@@ -824,14 +852,16 @@
         "confidence": "inferred",
         "handler": "h3",
         "handler_file": "app/routers/users.py",
+        "handler_id": "app/routers/users.py#h3",
         "handler_line": 5,
-        "id": "app/routers/users.py:router:GET:/r3",
+        "id": "GET:/api/users/r3",
         "method": "GET",
         "middleware_chain": [],
         "params": [],
         "partial": false,
         "resolved_path": "/api/users/r3",
         "response": null,
+        "route": "app/routers/users.py:router:GET:/r3",
         "source": "static",
         "tags": [
           "users"
@@ -909,14 +939,16 @@
         "confidence": "inferred",
         "handler": "create_user",
         "handler_file": "app/routers/users.py",
+        "handler_id": "app/routers/users.py#create_user",
         "handler_line": 6,
-        "id": "app/routers/users.py:router:POST:/",
+        "id": "POST:/u/",
         "method": "POST",
         "middleware_chain": [],
         "params": [],
         "partial": true,
         "resolved_path": "/u/",
         "response": null,
+        "route": "app/routers/users.py:router:POST:/",
         "source": "static",
         "tags": [
           "a",
@@ -989,8 +1021,9 @@
         "confidence": "inferred",
         "handler": "h2",
         "handler_file": "app/routers/users.py",
+        "handler_id": "app/routers/users.py#h2",
         "handler_line": 12,
-        "id": "app/routers/users.py:router:GET:/r2",
+        "id": "GET:/api/users/r2",
         "method": "GET",
         "middleware_chain": [
           "A"
@@ -999,6 +1032,7 @@
         "partial": false,
         "resolved_path": "/api/users/r2",
         "response": "app/schemas.py:UserOut",
+        "route": "app/routers/users.py:router:GET:/r2",
         "source": "static",
         "tags": [],
         "verification_status": "unverified"
@@ -1015,8 +1049,9 @@
         "confidence": "inferred",
         "handler": "get_user",
         "handler_file": "app/routers/users.py",
+        "handler_id": "app/routers/users.py#get_user",
         "handler_line": 6,
-        "id": "app/routers/users.py:router:GET:/{user_id}",
+        "id": "GET:/api/users/{user_id}",
         "method": "GET",
         "middleware_chain": [
           "A"
@@ -1032,6 +1067,7 @@
         "partial": false,
         "resolved_path": "/api/users/{user_id}",
         "response": "app/schemas.py:UserOut",
+        "route": "app/routers/users.py:router:GET:/{user_id}",
         "source": "static",
         "tags": [
           "a"
@@ -1050,8 +1086,9 @@
         "confidence": "inferred",
         "handler": "create_user",
         "handler_file": "app/routers/users.py",
+        "handler_id": "app/routers/users.py#create_user",
         "handler_line": 9,
-        "id": "app/routers/users.py:router:POST:/",
+        "id": "POST:/api/users/",
         "method": "POST",
         "middleware_chain": [
           "A"
@@ -1060,6 +1097,7 @@
         "partial": false,
         "resolved_path": "/api/users/",
         "response": "app/schemas.py:UserOut",
+        "route": "app/routers/users.py:router:POST:/",
         "source": "static",
         "tags": [
           "a"
@@ -1137,14 +1175,16 @@
         "confidence": "inferred",
         "handler": "h1",
         "handler_file": "app/routers/users.py",
+        "handler_id": "app/routers/users.py#h1",
         "handler_line": 12,
-        "id": "app/routers/users.py:router:GET:/r1",
+        "id": "GET:/api/users/r1",
         "method": "GET",
         "middleware_chain": [],
         "params": [],
         "partial": false,
         "resolved_path": "/api/users/r1",
         "response": null,
+        "route": "app/routers/users.py:router:GET:/r1",
         "source": "static",
         "tags": [
           "a"
@@ -1163,8 +1203,9 @@
         "confidence": "inferred",
         "handler": "get_user",
         "handler_file": "app/routers/users.py",
+        "handler_id": "app/routers/users.py#get_user",
         "handler_line": 6,
-        "id": "app/routers/users.py:router:GET:/{user_id}",
+        "id": "GET:/api/users/{user_id}",
         "method": "GET",
         "middleware_chain": [],
         "params": [
@@ -1178,6 +1219,7 @@
         "partial": false,
         "resolved_path": "/api/users/{user_id}",
         "response": "app/schemas.py:UserOut",
+        "route": "app/routers/users.py:router:GET:/{user_id}",
         "source": "static",
         "tags": [
           "a",
@@ -1197,14 +1239,16 @@
         "confidence": "inferred",
         "handler": "create_user",
         "handler_file": "app/routers/users.py",
+        "handler_id": "app/routers/users.py#create_user",
         "handler_line": 9,
-        "id": "app/routers/users.py:router:POST:/",
+        "id": "POST:/api/users/",
         "method": "POST",
         "middleware_chain": [],
         "params": [],
         "partial": false,
         "resolved_path": "/api/users/",
         "response": "app/schemas.py:UserOut",
+        "route": "app/routers/users.py:router:POST:/",
         "source": "static",
         "tags": [],
         "verification_status": "unverified"
@@ -1274,14 +1318,16 @@
         "confidence": "inferred",
         "handler": "create_user",
         "handler_file": "app/routers/users.py",
+        "handler_id": "app/routers/users.py#create_user",
         "handler_line": 6,
-        "id": "app/routers/users.py:router:POST:/",
+        "id": "POST:/api/users/",
         "method": "POST",
         "middleware_chain": [],
         "params": [],
         "partial": false,
         "resolved_path": "/api/users/",
         "response": "app/schemas.py:UserOut",
+        "route": "app/routers/users.py:router:POST:/",
         "source": "static",
         "tags": [
           "a",
@@ -1339,8 +1385,9 @@
         "confidence": "inferred",
         "handler": "item",
         "handler_file": "app/views.py",
+        "handler_id": "app/views.py#item",
         "handler_line": 4,
-        "id": "app/views.py:bp:DELETE:/items/{item_id}",
+        "id": "DELETE:/api/items/{item_id}",
         "method": "DELETE",
         "middleware_chain": [],
         "params": [
@@ -1354,6 +1401,7 @@
         "partial": false,
         "resolved_path": "/api/items/{item_id}",
         "response": null,
+        "route": "app/views.py:bp:DELETE:/items/{item_id}",
         "source": "static",
         "tags": [],
         "verification_status": "unverified"
@@ -1368,8 +1416,9 @@
         "confidence": "inferred",
         "handler": "download",
         "handler_file": "app/views.py",
+        "handler_id": "app/views.py#download",
         "handler_line": 6,
-        "id": "app/views.py:bp:GET:/files/{name:path}",
+        "id": "GET:/api/files/{name:path}",
         "method": "GET",
         "middleware_chain": [],
         "params": [
@@ -1383,6 +1432,7 @@
         "partial": false,
         "resolved_path": "/api/files/{name:path}",
         "response": null,
+        "route": "app/views.py:bp:GET:/files/{name:path}",
         "source": "static",
         "tags": [],
         "verification_status": "unverified"
@@ -1397,8 +1447,9 @@
         "confidence": "inferred",
         "handler": "item",
         "handler_file": "app/views.py",
+        "handler_id": "app/views.py#item",
         "handler_line": 4,
-        "id": "app/views.py:bp:GET:/items/{item_id}",
+        "id": "GET:/api/items/{item_id}",
         "method": "GET",
         "middleware_chain": [],
         "params": [
@@ -1412,6 +1463,7 @@
         "partial": false,
         "resolved_path": "/api/items/{item_id}",
         "response": null,
+        "route": "app/views.py:bp:GET:/items/{item_id}",
         "source": "static",
         "tags": [],
         "verification_status": "unverified"
@@ -1439,8 +1491,9 @@
         "confidence": "inferred",
         "handler": "get_user",
         "handler_file": "app/routers/users.py",
+        "handler_id": "app/routers/users.py#get_user",
         "handler_line": 6,
-        "id": "app/routers/users.py:router:GET:/{user_id}",
+        "id": "GET:/api/users/{user_id}",
         "method": "GET",
         "middleware_chain": [
           "CORSMiddleware"
@@ -1456,6 +1509,7 @@
         "partial": false,
         "resolved_path": "/api/users/{user_id}",
         "response": "app/schemas.py:UserOut",
+        "route": "app/routers/users.py:router:GET:/{user_id}",
         "source": "static",
         "tags": [
           "users"
@@ -1476,8 +1530,9 @@
         "confidence": "inferred",
         "handler": "create_user",
         "handler_file": "app/routers/users.py",
+        "handler_id": "app/routers/users.py#create_user",
         "handler_line": 8,
-        "id": "app/routers/users.py:router:POST:/",
+        "id": "POST:/api/users/",
         "method": "POST",
         "middleware_chain": [
           "CORSMiddleware"
@@ -1486,6 +1541,7 @@
         "partial": false,
         "resolved_path": "/api/users/",
         "response": "app/schemas.py:UserOut",
+        "route": "app/routers/users.py:router:POST:/",
         "source": "static",
         "tags": [
           "users"
@@ -1555,8 +1611,9 @@
         "confidence": "inferred",
         "handler": "get_user",
         "handler_file": "app/routers/users.py",
+        "handler_id": "app/routers/users.py#get_user",
         "handler_line": 4,
-        "id": "app/routers/users.py:router:GET:/{user_id}",
+        "id": "GET:/api/users/{user_id}",
         "method": "GET",
         "middleware_chain": [],
         "params": [
@@ -1570,6 +1627,7 @@
         "partial": false,
         "resolved_path": "/api/users/{user_id}",
         "response": null,
+        "route": "app/routers/users.py:router:GET:/{user_id}",
         "source": "static",
         "tags": [],
         "verification_status": "unverified"
@@ -1584,14 +1642,16 @@
         "confidence": "inferred",
         "handler": "create_user",
         "handler_file": "app/routers/users.py",
+        "handler_id": "app/routers/users.py#create_user",
         "handler_line": 6,
-        "id": "app/routers/users.py:router:POST:/",
+        "id": "POST:/api/users/",
         "method": "POST",
         "middleware_chain": [],
         "params": [],
         "partial": false,
         "resolved_path": "/api/users/",
         "response": null,
+        "route": "app/routers/users.py:router:POST:/",
         "source": "static",
         "tags": [],
         "verification_status": "unverified"

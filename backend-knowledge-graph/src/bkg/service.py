@@ -107,14 +107,20 @@ class GraphService:
     def apply_change(self, path: str, text: str) -> None:  # backwards-compatible alias
         self.update_file(path, text)
 
-    def list_endpoints(self) -> list[dict[str, Any]]:
-        endpoints: list[dict[str, Any]] = []
+    def _endpoints_by_key(self) -> dict[str, dict[str, Any]]:
+        """{memo key -> endpoint}. The memo key (``endpoint:{route}#{ordinal}``) is an
+        engine-internal anchor; the endpoint's own ``id`` is the fully resolved route."""
+        out: dict[str, dict[str, Any]] = {}
         for key in self._engine.query(ROOT):
             ep = self._engine.query(key)
-            if ep is None:
-                continue
-            endpoints.append({"id": key[len("endpoint:") :], **ep})
-        return endpoints
+            if ep is not None:
+                out[key] = ep
+        return out
+
+    def list_endpoints(self) -> list[dict[str, Any]]:
+        """Every CONCRETE endpoint. A router mounted at /v1 and /v2 appears twice — same
+        ``route`` + ``handler_id``, different ``id``/``resolved_path``."""
+        return list(self._endpoints_by_key().values())
 
     def get_endpoint(self, method: str, path: str) -> dict[str, Any] | None:
         method = method.upper()
@@ -196,11 +202,11 @@ class GraphService:
         2. union those schemas' engine reverse-dependency closures to reach the endpoints
            (this is what picks up EVERY model-typed param, not just the primary body).
         """
-        # The live endpoint set. reverse_dependencies walks the store's reverse-dep rows,
-        # which still contain nodes for routes that have since been DELETED (the engine
-        # keeps unreachable memo rows and relies on reachability-from-root for liveness).
-        # Intersecting with the root keeps deleted routes out of the answer.
-        live: set[str] = set(self._engine.query(ROOT))
+        # The live endpoints, keyed by memo key. reverse_dependencies walks the store's
+        # reverse-dep rows, which still contain nodes for routes that have since been
+        # DELETED (the engine keeps unreachable memo rows and relies on
+        # reachability-from-root for liveness), so resolve against the live root only.
+        live = self._endpoints_by_key()
         deps: dict[str, list[str]] = self._engine.query("schemaDeps:all")
 
         referencing: dict[str, list[str]] = {}
@@ -219,8 +225,9 @@ class GraphService:
         endpoints: set[str] = set()
         for sid in affected:
             for key in self._engine.reverse_dependencies(f"schemaRef:{sid}"):
-                if key in live:  # `live` already restricts to endpoint: keys still in the graph
-                    endpoints.add(key[len("endpoint:") :])
+                ep = live.get(key)  # None for a stale / non-endpoint node
+                if ep is not None:
+                    endpoints.add(ep["id"])  # answer in resolved-route ids, as clients hold them
         return sorted(endpoints)
 
     def trust_summary(self) -> dict[str, Any]:

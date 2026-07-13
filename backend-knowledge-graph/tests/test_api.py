@@ -95,7 +95,7 @@ def test_schemas_and_blast_radius() -> None:
     schemas = client.get("/graph/schemas").json()["data"]
     assert any(s["id"] == "app/schemas.py:UserCreate" for s in schemas)
     blast = client.get("/graph/blast-radius/app/schemas.py:UserCreate").json()["data"]
-    assert "app/routers/users.py:router:POST:/" in blast
+    assert "POST:/" in blast  # DTO_MAIN mounts without a prefix -> resolved-route id
     empty = client.get("/graph/blast-radius/app/schemas.py:Missing")  # unreferenced -> 200 empty
     assert empty.status_code == 200 and empty.json()["data"] == []
 

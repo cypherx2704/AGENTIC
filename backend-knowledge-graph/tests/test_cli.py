@@ -48,7 +48,7 @@ def test_schemas(fastapi_dto_project: str, capsys: pytest.CaptureFixture[str]) -
 def test_blast(fastapi_dto_project: str, capsys: pytest.CaptureFixture[str]) -> None:
     rc = main(["blast", fastapi_dto_project, "app/schemas.py:UserCreate"])
     assert rc == 0
-    assert "app/routers/users.py:router:POST:/" in capsys.readouterr().out
+    assert "POST:/api/users/" in capsys.readouterr().out
 
 
 def test_blast_no_match(fastapi_dto_project: str, capsys: pytest.CaptureFixture[str]) -> None:

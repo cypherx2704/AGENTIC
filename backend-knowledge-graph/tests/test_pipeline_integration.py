@@ -40,8 +40,8 @@ def _fresh(sources: dict[str, str]) -> tuple[str, dict[str, list[str]]]:
     return engine.snapshot_digest(ROOT), engine.dep_map(ROOT)
 
 
-GET_EP = "endpoint:app/routers/users.py:router:GET:/{user_id}"
-POST_EP = "endpoint:app/routers/users.py:router:POST:/"
+GET_EP = "endpoint:app/routers/users.py:router:GET:/{user_id}#0"
+POST_EP = "endpoint:app/routers/users.py:router:POST:/#0"
 
 
 def test_assembles_endpoints_from_real_source() -> None:
@@ -95,7 +95,7 @@ def test_route_edit_updates_only_its_endpoint() -> None:
     sources = {"app/main.py": MAIN, "app/routers/users.py": edited}
     engine.set_input("fileText:app/routers/users.py", edited)
 
-    new_get = "endpoint:app/routers/users.py:router:GET:/{uid}"
+    new_get = "endpoint:app/routers/users.py:router:GET:/{uid}#0"
     assert engine.query(new_get)["resolved_path"] == "/api/users/{uid}"
     assert engine.query(POST_EP)["resolved_path"] == "/api/users/"  # sibling intact
     assert engine.snapshot_digest(ROOT) == _fresh(sources)[0]

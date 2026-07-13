@@ -192,11 +192,19 @@ class SecuritySchemeNode(_NodeBase):
 
 class EndpointNode(_NodeBase):
     """The denormalized "hero" payload the product exists to serve — assembled by
-    the core from Route + HANDLES + VALIDATES_WITH/RETURNS + GUARDED_BY + mounts."""
+    the core from Route + HANDLES + VALIDATES_WITH/RETURNS + GUARDED_BY + mounts.
+
+    Identity is the fully RESOLVED route (``endpoint:{METHOD}:{resolved_path}``), so one
+    node exists per CONCRETE EXPOSURE: a router mounted at ``/v1`` and ``/v2`` yields two
+    endpoints. ``route`` and ``handler`` point back at the single shared declaration and
+    implementation, so the graph holds both the implementation and every exposure of it.
+    """
 
     kind: NodeKind = NodeKind.ENDPOINT
     method: HttpMethod
     resolved_path: str
+    route: str = ""  # the shared route declaration id this exposure resolved from
+    handler: str = ""  # the shared handler symbol ({file}#{symbol} via handler_file)
     params: tuple[Param, ...] = ()
     body: str | None = None  # SchemaRef node id
     response: str | None = None  # SchemaRef node id

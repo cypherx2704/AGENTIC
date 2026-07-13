@@ -41,8 +41,8 @@ def test_bidirectional_dtos_resolve() -> None:
     assert ep["response"] == "app/schemas.py:User"
     assert ep["partial"] is False  # both models resolve; nothing is missing
     # editing either side of the cycle blasts the endpoint
-    assert svc.blast_radius("app/schemas.py:User") == ["app/main.py:app:POST:/u"]
-    assert svc.blast_radius("app/schemas.py:Post") == ["app/main.py:app:POST:/u"]
+    assert svc.blast_radius("app/schemas.py:User") == ["POST:/u"]
+    assert svc.blast_radius("app/schemas.py:Post") == ["POST:/u"]
 
 
 def test_three_way_cycle_resolves() -> None:
@@ -57,7 +57,7 @@ def test_three_way_cycle_resolves() -> None:
     (ep,) = svc.list_endpoints()
     assert ep["body"] == "app/schemas.py:User" and ep["partial"] is False
     for model in ("User", "A", "B"):
-        assert svc.blast_radius(f"app/schemas.py:{model}") == ["app/main.py:app:POST:/u"]
+        assert svc.blast_radius(f"app/schemas.py:{model}") == ["POST:/u"]
 
 
 def test_self_referencing_dto_resolves() -> None:
@@ -80,7 +80,7 @@ def test_nested_dto_blast_radius_preserved() -> None:
         "class User(BaseModel):\n    home: Address\n"
     )
     svc = GraphService.from_sources(src)
-    assert svc.blast_radius("app/schemas.py:Address") == ["app/main.py:app:POST:/u"]
+    assert svc.blast_radius("app/schemas.py:Address") == ["POST:/u"]
 
 
 def test_transitively_nested_dto_blast_radius_preserved() -> None:
@@ -94,7 +94,7 @@ def test_transitively_nested_dto_blast_radius_preserved() -> None:
     )
     svc = GraphService.from_sources(src)
     for model in ("Deep", "Mid", "User"):
-        assert svc.blast_radius(f"app/schemas.py:{model}") == ["app/main.py:app:POST:/u"]
+        assert svc.blast_radius(f"app/schemas.py:{model}") == ["POST:/u"]
 
 
 def test_every_model_param_blasts_not_just_the_body() -> None:
@@ -118,7 +118,7 @@ def test_every_model_param_blasts_not_just_the_body() -> None:
     svc = GraphService.from_sources(src)
     (ep,) = svc.list_endpoints()
     assert ep["body"] == "app/schemas.py:ModelA"  # first model param is the body
-    assert svc.blast_radius("app/schemas.py:ModelB") == ["app/main.py:app:POST:/x"]
+    assert svc.blast_radius("app/schemas.py:ModelB") == ["POST:/x"]
 
 
 def test_unresolvable_body_dto_marks_endpoint_partial() -> None:
@@ -236,7 +236,7 @@ def test_duplicate_class_name_does_not_hide_nested_blast() -> None:
     users = [s for s in svc.list_schemas() if s["name"] == "User"]
     assert len(users) == 2
     assert [f["name"] for f in users[0]["fields"]] == ["home"]  # first declaration nests Address
-    assert svc.blast_radius("app/schemas.py:Address") == ["app/main.py:app:POST:/u"]
+    assert svc.blast_radius("app/schemas.py:Address") == ["POST:/u"]
 
 
 def test_blast_radius_excludes_deleted_endpoints() -> None:
@@ -256,13 +256,13 @@ def test_blast_radius_excludes_deleted_endpoints() -> None:
         {"app/__init__.py": "", "app/main.py": two, "app/schemas.py": schemas}
     )
     assert svc.blast_radius("app/schemas.py:User") == [
-        "app/main.py:app:POST:/a",
-        "app/main.py:app:POST:/b",
+        "POST:/a",
+        "POST:/b",
     ]
     # delete route /b on the same (warm) engine
     svc.update_file("app/main.py", two[: two.index("@app.post('/b'")])
     assert [ep["resolved_path"] for ep in svc.list_endpoints()] == ["/a"]
-    assert svc.blast_radius("app/schemas.py:User") == ["app/main.py:app:POST:/a"]
+    assert svc.blast_radius("app/schemas.py:User") == ["POST:/a"]
 
 
 def test_cyclic_project_is_incrementally_deterministic() -> None:

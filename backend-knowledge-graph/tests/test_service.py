@@ -49,9 +49,9 @@ def test_list_schemas(fastapi_dto_sources: dict[str, str]) -> None:
 
 def test_blast_radius(fastapi_dto_sources: dict[str, str]) -> None:
     service = GraphService.from_sources(fastapi_dto_sources)
-    assert service.blast_radius("app/schemas.py:UserCreate") == ["app/routers/users.py:router:POST:/"]
+    assert service.blast_radius("app/schemas.py:UserCreate") == ["POST:/api/users/"]
     affected = set(service.blast_radius("app/schemas.py:UserOut"))
-    assert affected == {"app/routers/users.py:router:GET:/{user_id}", "app/routers/users.py:router:POST:/"}
+    assert affected == {"GET:/api/users/{user_id}", "POST:/api/users/"}
     assert service.blast_radius("app/schemas.py:DoesNotExist") == []
 
 

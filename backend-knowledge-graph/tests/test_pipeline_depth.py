@@ -41,8 +41,8 @@ MAIN = (
     "app.include_router(users.router, prefix='/api/users')\n"
 )
 
-GET = "endpoint:app/routers/users.py:router:GET:/{user_id}"
-POST = "endpoint:app/routers/users.py:router:POST:/"
+GET = "endpoint:app/routers/users.py:router:GET:/{user_id}#0"
+POST = "endpoint:app/routers/users.py:router:POST:/#0"
 USER_CREATE = "schemaRef:app/schemas.py:UserCreate"
 USER_OUT = "schemaRef:app/schemas.py:UserOut"
 
@@ -133,7 +133,7 @@ def test_return_annotation_serves_as_response_model() -> None:
         "app.include_router(users.router)\n"
     )
     engine = _app({"app/main.py": main, "app/routers/users.py": users, "app/schemas.py": schemas})
-    ep = engine.query("endpoint:app/routers/users.py:router:GET:/x")
+    ep = engine.query("endpoint:app/routers/users.py:router:GET:/x#0")
     assert ep["response"] == "app/schemas.py:UserOut"  # from the `-> UserOut` return annotation
 
 
@@ -166,7 +166,7 @@ def test_generic_response_model_resolves() -> None:
         "def list_users(): ...\n"
     )
     engine = _app({"app/main.py": _MAIN_NOPREFIX, "app/routers/users.py": users, "app/schemas.py": schemas})
-    ep = engine.query("endpoint:app/routers/users.py:router:GET:/")
+    ep = engine.query("endpoint:app/routers/users.py:router:GET:/#0")
     assert ep["response"] == "app/schemas.py:UserOut"  # peeled out of list[UserOut]
 
 
@@ -183,7 +183,7 @@ def test_package_dto_via_init_resolves_and_blasts() -> None:
     engine = _app(
         {"app/main.py": _MAIN_NOPREFIX, "app/routers/users.py": users, "app/schemas/__init__.py": schemas}
     )
-    ep = engine.query("endpoint:app/routers/users.py:router:POST:/")
+    ep = engine.query("endpoint:app/routers/users.py:router:POST:/#0")
     assert ep["body"] == "app/schemas/__init__.py:UserCreate"
     engine.query(ROOT)
     closure = engine.reverse_dependencies("schemaRef:app/schemas/__init__.py:UserCreate")
@@ -237,7 +237,7 @@ def test_endpoint_confidence_static_certain_vs_inferred() -> None:
     # app-root route, no derivation (no prefix, no DTO) -> static-certain
     users = "from fastapi import APIRouter\nrouter = APIRouter()\n@router.get('/ping')\ndef ping(): ...\n"
     engine = _app({"app/main.py": _MAIN_NOPREFIX, "app/routers/users.py": users})
-    ping = engine.query("endpoint:app/routers/users.py:router:GET:/ping")
+    ping = engine.query("endpoint:app/routers/users.py:router:GET:/ping#0")
     assert ping["confidence"] == "static-certain"
     assert ping["partial"] is False
     assert ping["source"] == "static"
@@ -258,7 +258,7 @@ def test_partial_flag_on_unresolved_dto() -> None:
         "def create(payload: ExternalModel): ...\n"
     )
     engine = _app({"app/main.py": _MAIN_NOPREFIX, "app/routers/users.py": users})
-    ep = engine.query("endpoint:app/routers/users.py:router:POST:/")
+    ep = engine.query("endpoint:app/routers/users.py:router:POST:/#0")
     assert ep["partial"] is True  # model-typed refs we couldn't resolve to a project schema
     assert ep["confidence"] == "inferred"
     assert ep["body"] is None
@@ -275,7 +275,7 @@ def test_schema_ref_carries_confidence() -> None:
 def test_websocket_endpoint_is_assembled() -> None:
     users = "from fastapi import APIRouter\nrouter = APIRouter()\n@router.websocket('/ws')\ndef ws(): ...\n"
     engine = _app({"app/main.py": _MAIN_NOPREFIX, "app/routers/users.py": users})
-    ep = engine.query("endpoint:app/routers/users.py:router:WEBSOCKET:/ws")
+    ep = engine.query("endpoint:app/routers/users.py:router:WEBSOCKET:/ws#0")
     assert ep["method"] == "WEBSOCKET"
     assert ep["resolved_path"] == "/ws"
 
@@ -296,8 +296,8 @@ def test_endpoint_unions_route_and_router_tags() -> None:
         "app.include_router(users.router, prefix='/u', tags=['users'])\n"
     )
     engine = _app({"app/main.py": main, "app/routers/users.py": users})
-    a = engine.query("endpoint:app/routers/users.py:router:GET:/a")
-    b = engine.query("endpoint:app/routers/users.py:router:POST:/b")
+    a = engine.query("endpoint:app/routers/users.py:router:GET:/a#0")
+    b = engine.query("endpoint:app/routers/users.py:router:POST:/b#0")
     assert a["tags"] == ["read", "users"]  # route ∪ router-chain, sorted + deduped
     assert b["tags"] == ["users"]  # include_router tags apply to every route it mounts
 
@@ -305,7 +305,7 @@ def test_endpoint_unions_route_and_router_tags() -> None:
 def test_endpoint_without_tags_is_empty_list() -> None:
     users = "from fastapi import APIRouter\nrouter = APIRouter()\n@router.get('/ping')\ndef ping(): ...\n"
     engine = _app({"app/main.py": _MAIN_NOPREFIX, "app/routers/users.py": users})
-    assert engine.query("endpoint:app/routers/users.py:router:GET:/ping")["tags"] == []
+    assert engine.query("endpoint:app/routers/users.py:router:GET:/ping#0")["tags"] == []
 
 
 def test_app_middleware_populates_mounted_routes_chain() -> None:
@@ -320,7 +320,7 @@ def test_app_middleware_populates_mounted_routes_chain() -> None:
         "app.include_router(users.router, prefix='/u')\n"
     )
     engine = _app({"app/main.py": main, "app/routers/users.py": users})
-    ep = engine.query("endpoint:app/routers/users.py:router:GET:/x")
+    ep = engine.query("endpoint:app/routers/users.py:router:GET:/x#0")
     assert ep["middleware_chain"] == ["CORSMiddleware", "GZipMiddleware"]  # app middleware, source order
 
 
@@ -332,7 +332,7 @@ def test_app_route_gets_its_own_middleware() -> None:
         "@app.get('/ping')\n"
         "def ping(): ...\n"
     )
-    ep = _app({"app/main.py": main}).query("endpoint:app/main.py:app:GET:/ping")
+    ep = _app({"app/main.py": main}).query("endpoint:app/main.py:app:GET:/ping#0")
     assert ep["middleware_chain"] == ["GZipMiddleware"]
     assert ep["confidence"] == "static-certain"  # middleware excluded from certainty (like tags)
 
@@ -340,7 +340,7 @@ def test_app_route_gets_its_own_middleware() -> None:
 def test_no_middleware_is_empty_chain() -> None:
     users = "from fastapi import APIRouter\nrouter = APIRouter()\n@router.get('/ping')\ndef ping(): ...\n"
     engine = _app({"app/main.py": _MAIN_NOPREFIX, "app/routers/users.py": users})
-    assert engine.query("endpoint:app/routers/users.py:router:GET:/ping")["middleware_chain"] == []
+    assert engine.query("endpoint:app/routers/users.py:router:GET:/ping#0")["middleware_chain"] == []
 
 
 def test_auth_scheme_inline_constructor() -> None:
@@ -352,7 +352,7 @@ def test_auth_scheme_inline_constructor() -> None:
         "def h(cred=Depends(HTTPBearer())): ...\n"
     )
     ep = _app({"app/main.py": _MAIN_NOPREFIX, "app/routers/users.py": users}).query(
-        "endpoint:app/routers/users.py:router:GET:/x"
+        "endpoint:app/routers/users.py:router:GET:/x#0"
     )
     assert ep["auth"]["schemes"] == ["bearer"]
 
@@ -367,7 +367,7 @@ def test_auth_scheme_same_file_variable() -> None:
         "def h(token: str = Depends(oauth2_scheme)): ...\n"
     )
     ep = _app({"app/main.py": _MAIN_NOPREFIX, "app/routers/users.py": users}).query(
-        "endpoint:app/routers/users.py:router:GET:/x"
+        "endpoint:app/routers/users.py:router:GET:/x#0"
     )
     assert ep["auth"]["schemes"] == ["oauth2"]
 
@@ -387,11 +387,11 @@ def test_auth_scheme_resolved_cross_file() -> None:
     engine = _app(
         {"app/main.py": _MAIN_NOPREFIX, "app/routers/users.py": users, "app/security.py": security}
     )
-    ep = engine.query("endpoint:app/routers/users.py:router:GET:/x")
+    ep = engine.query("endpoint:app/routers/users.py:router:GET:/x#0")
     assert ep["auth"]["schemes"] == ["api-key"]  # resolved from the imported scheme var
     # editing the scheme definition blasts the endpoint (cross-file edge recorded)
     engine.query(ROOT)
-    assert "endpoint:app/routers/users.py:router:GET:/x" in engine.reverse_dependencies(
+    assert "endpoint:app/routers/users.py:router:GET:/x#0" in engine.reverse_dependencies(
         "securityMap:app/security.py"
     )
 
@@ -404,7 +404,7 @@ def test_no_auth_scheme_when_dependency_is_not_a_scheme() -> None:
         "def h(user=Depends(get_current_user)): ...\n"
     )
     ep = _app({"app/main.py": _MAIN_NOPREFIX, "app/routers/users.py": users}).query(
-        "endpoint:app/routers/users.py:router:GET:/x"
+        "endpoint:app/routers/users.py:router:GET:/x#0"
     )
     assert ep["auth"]["schemes"] == []  # get_current_user isn't a recognized scheme
 
@@ -432,7 +432,7 @@ def test_tags_do_not_change_confidence() -> None:
         "def ping(): ...\n"
     )
     engine = _app({"app/main.py": _MAIN_NOPREFIX, "app/routers/users.py": users})
-    ep = engine.query("endpoint:app/routers/users.py:router:GET:/ping")
+    ep = engine.query("endpoint:app/routers/users.py:router:GET:/ping#0")
     assert ep["tags"] == ["health"]
     assert ep["confidence"] == "static-certain"
 
@@ -456,5 +456,5 @@ def test_nested_dto_edit_blasts_the_containing_endpoint() -> None:
     # editing Address must blast the endpoint that uses User (which contains an Address).
     # Asserted through the public surface, not a specific engine edge: the DTO reference
     # graph may be cyclic, so the transitive walk (not dep-reachability) answers this.
-    assert svc.blast_radius("app/schemas.py:Address") == ["app/routers/users.py:router:POST:/"]
-    assert svc.blast_radius("app/schemas.py:User") == ["app/routers/users.py:router:POST:/"]
+    assert svc.blast_radius("app/schemas.py:Address") == ["POST:/"]
+    assert svc.blast_radius("app/schemas.py:User") == ["POST:/"]
