@@ -16,7 +16,7 @@
 The canonical manifest is [`manifest.json`](manifest.json) (validates against `contracts/mcp/manifest.schema.json`).
 
 ## Endpoints (Contract 4 + 7)
-- `POST /mcp/v1/invoke` — `{ "tool": "who_owns", "args": { "target": "owner/name" } }` → `{tool, output, citations, duration_ms, trace_id}`.
+- `POST /mcp` — real MCP (JSON-RPC 2.0 / Streamable HTTP): `initialize` / `tools/list` / `tools/call {name, arguments}`. A `tools/call` result's `structuredContent` is `{output, citations, duration_ms, trace_id}`.
 - `GET /manifest` — Contract-4 manifest with strong `ETag` + `If-None-Match` → 304.
 - `GET /livez` / `GET /readyz` / `GET /metrics`.
 

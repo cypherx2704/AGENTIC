@@ -14,6 +14,7 @@ directly — they are a hard dependency of the app, not optional.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -27,7 +28,7 @@ if sys.platform == "win32":
 import structlog
 from fastapi import FastAPI
 
-from .api import agents, capabilities, health, tasks
+from .api import agents, capabilities, health, orchestrations, tasks
 from .core.auth import warm_jwks
 from .core.config import get_settings
 from .core.errors import install_exception_handlers
@@ -37,6 +38,8 @@ from .core.stages import deps as stage_deps
 from .core.trace import TraceContextMiddleware, init_tracing, shutdown_tracing
 from .db import pool as db_pool
 from .db.outbox import OutboxPublisher
+from .orchestration.service import OrchestrationCoordinator
+from .services.auth_client import AuthClient
 from .services.guardrails_client import GuardrailsClient
 from .services.hil_client import HilClient
 from .services.llms_client import LlmsClient
@@ -128,6 +131,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # the handle via stage_deps (set below), and the cache bypasses cleanly without it.
     stage_deps.set_valkey(app.state.valkey)
 
+    # ── Orchestration coordinator (B5 — PROMPT -> ORCHESTRATOR -> SUB-AGENTS) ────
+    # ADDITIVE: the single-agent task path is untouched. Reuses the SAME clients built above
+    # (llms/valkey/hil) + a shared AuthClient for the sub-agent delegation-mint. The api/tasks +
+    # api/agents lazy `_auth_client` helpers reuse this same app.state.auth_client instance.
+    app.state.auth_client = AuthClient(settings, token_provider)
+    app.state.orchestration_coordinator = OrchestrationCoordinator(
+        pool=pool,
+        settings=settings,
+        valkey=app.state.valkey,
+        llms_client=app.state.llms_client,
+        auth_client=app.state.auth_client,
+        hil_client=app.state.hil_client,
+    )
+
     # ── Outbox publisher (Kafka connect is lazy + fail-soft) ────────────────────
     publisher = OutboxPublisher(pool, settings.kafka_brokers)
     app.state.outbox_publisher = publisher
@@ -153,6 +170,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        # Drain in-flight orchestration drives FIRST (before the pool/clients close) so a shutdown
+        # mid-run finalises the workflow row — each drive catches CancelledError and marks itself failed
+        # while the pool is still open — rather than stranding it non-terminal. Bounded so a hung drive
+        # cannot block shutdown forever.
+        runs = getattr(app.state, "_orchestration_runs", None)
+        if runs:
+            for run_task in list(runs):
+                run_task.cancel()
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(asyncio.gather(*runs, return_exceptions=True), timeout=10.0)
         await shutdown_tracing()
         # Release the lifespan-scoped Valkey handle from the stage deps holder so the
         # module global can never leak a (now-closed) client into a later direct-stage
@@ -174,6 +201,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await app.state.skill_registry_client.aclose()
         if app.state.hil_client is not None:
             await app.state.hil_client.aclose()
+        await app.state.auth_client.aclose()
         await token_provider.aclose()
         try:
             await pool.close()
@@ -195,6 +223,7 @@ def create_app() -> FastAPI:
     app.include_router(tasks.router)
     app.include_router(agents.router)
     app.include_router(capabilities.router)
+    app.include_router(orchestrations.router)
     return app
 
 

@@ -105,6 +105,64 @@ class NoderedAdmin:
         metrics.nodered_admin_total.labels("get_flow", "ok").inc()
         return resp.json()
 
+    async def create_flow(
+        self, *, internal_host: str, admin_token: str, flow: dict[str, Any]
+    ) -> str:
+        """POST /flow — create a NEW flow tab on this runtime (the re-home target). Node-RED assigns
+        a fresh id, so we strip the source ``id`` and return the new one. Used by ``promote_mcp`` to
+        copy each member flow into the singleton platform runtime (the http-in URL path is preserved,
+        so the tool's ``http_path`` is unchanged). Raises on a transport/HTTP failure so the caller
+        can roll back cleanly (no partial re-home)."""
+        url = self._admin_url(internal_host, "/flow")
+        headers = {**self._headers(admin_token), "Content-Type": "application/json"}
+        payload = {k: v for k, v in flow.items() if k != "id"}
+        try:
+            resp = await self._client.post(
+                url, json=payload, headers=headers,
+                timeout=self._settings.nodered_admin_timeout_seconds,
+            )
+        except httpx.HTTPError as exc:
+            metrics.nodered_admin_total.labels("create_flow", "error").inc()
+            raise ApiError(
+                ErrorCode.SERVICE_UNAVAILABLE, f"Node-RED runtime unreachable: {exc}"
+            ) from exc
+        if resp.status_code >= 400:
+            metrics.nodered_admin_total.labels("create_flow", "error").inc()
+            raise ApiError(
+                ErrorCode.SERVICE_UNAVAILABLE, f"Node-RED Admin API error ({resp.status_code})."
+            )
+        metrics.nodered_admin_total.labels("create_flow", "ok").inc()
+        body = resp.json()
+        new_id = body.get("id") if isinstance(body, dict) else None
+        if not isinstance(new_id, str) or not new_id:
+            metrics.nodered_admin_total.labels("create_flow", "error").inc()
+            raise ApiError(
+                ErrorCode.SERVICE_UNAVAILABLE, "Node-RED Admin API returned no flow id on create."
+            )
+        return new_id
+
+    async def delete_flow(
+        self, *, internal_host: str, admin_token: str, flow_id: str
+    ) -> bool:
+        """DELETE /flow/:id — remove a flow tab (BEST-EFFORT rollback of a ``create_flow`` when a
+        later promote step fails). A failure is logged, never raised. Returns True on success."""
+        url = self._admin_url(internal_host, f"/flow/{flow_id}")
+        try:
+            resp = await self._client.delete(
+                url, headers=self._headers(admin_token),
+                timeout=self._settings.nodered_admin_timeout_seconds,
+            )
+        except httpx.HTTPError as exc:
+            metrics.nodered_admin_total.labels("delete_flow", "error").inc()
+            logger.warning("nodered_delete_flow_unreachable", flow_id=flow_id, error=str(exc))
+            return False
+        if resp.status_code >= 400:
+            metrics.nodered_admin_total.labels("delete_flow", "error").inc()
+            logger.warning("nodered_delete_flow_failed", flow_id=flow_id, status=resp.status_code)
+            return False
+        metrics.nodered_admin_total.labels("delete_flow", "ok").inc()
+        return True
+
     async def redeploy_flow(
         self, *, internal_host: str, admin_token: str, flow_id: str, flow: dict[str, Any]
     ) -> bool:

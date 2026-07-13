@@ -205,6 +205,93 @@ class TokenMintService(
         )
     }
 
+    /**
+     * Mint an agent JWT WITHOUT an api_key (delegation mint) — the exchange flow minus step 1-2 (no
+     * key lookup / binding). Used by the orchestrator to obtain a scoped token FOR one of its
+     * sub-agents so the sub-agent's downstream confinement (LLMs alias allowlist, tool access) is
+     * enforced against the SUB-AGENT's agent_id (the confinement key is the forwarded JWT's agent_id).
+     *
+     * The CALLER is responsible for authorising this (ownership / agent-type) — this method only does
+     * the mint mechanics: ACTIVE check, tokens-issued-per-min quota, effective-scope resolution
+     * (requested ∩ agent.allowed_scopes), the Contract-1 claims (incl. agent_type / parent) and the
+     * jti + audit bookkeeping. It is NOT permit-all and never authenticates a credential itself.
+     */
+    fun mintForAgent(
+        tenantId: UUID,
+        agentId: UUID,
+        requestedScopes: List<String>,
+    ): MintedAccessToken {
+        val agent = loadAgent(tenantId, agentId)
+            ?: throw ApiException.notFound("Agent not found", mapOf("agent_id" to agentId.toString()))
+        if (agent.status != AgentStatus.ACTIVE.value) {
+            throw ApiException.forbidden(
+                "Agent is not active",
+                mapOf("agent_id" to agentId.toString(), "status" to agent.status),
+            )
+        }
+
+        val resolution = runCatching { quotaService.resolve(tenantId) }
+            .onFailure { log.debug("quota resolve skipped for tenant {}: {}", tenantId, it.message) }
+            .getOrNull()
+        if (resolution != null) {
+            val tokensPerMin = resolution.effective.path("auth").path("tokens_issued_per_min").asInt(0)
+            enforceTokenRateQuota(tenantId, tokensPerMin)
+        }
+        val tenantPlan: String? = resolution?.plan
+
+        val cleanRequested = requestedScopes.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        val granted = agent.allowedScopes.toSet()
+        val effective: List<String> = if (cleanRequested.isEmpty()) {
+            granted.toList()
+        } else {
+            val missing = cleanRequested.filter { it !in granted }
+            if (missing.isNotEmpty()) {
+                throw ApiException.forbidden(
+                    "Requested scope(s) not granted by the agent",
+                    mapOf("missing" to missing),
+                )
+            }
+            cleanRequested
+        }
+        if (effective.isEmpty()) {
+            throw ApiException.forbidden(
+                "No effective scopes (agent has no allowed_scopes)",
+                mapOf("agent_allowed_scopes" to agent.allowedScopes),
+            )
+        }
+
+        val extra = buildMap<String, Any?> {
+            agent.version.let { put("agent_version", it) }
+            (tenantPlan ?: agent.plan)?.let { put("plan", it) }
+            agent.region?.let { put("region", it) }
+            put("agent_type", agent.agentType)
+            agent.parentOrchestratorId?.let { put("parent_orchestrator_id", it.toString()) }
+        }
+
+        val minted = jwtMintService.mintAgentToken(
+            agentId = agentId,
+            tenantId = tenantId,
+            scopes = effective,
+            ttlSeconds = props.agentTokenTtlSeconds,
+            extraClaims = extra,
+        )
+
+        recordActiveJti(agentId, minted.jti, minted.expiresAt)
+        runCatching {
+            auditService.record(
+                eventType = "token.issued",
+                tenantId = tenantId,
+                agentId = agentId,
+                action = "token:issue",
+                resource = "jti:${minted.jti}",
+                decision = "allow",
+            )
+        }.onFailure { log.warn("audit write failed for token.issued jti {}: {}", minted.jti, it.message) }
+
+        val expiresIn = Duration.between(Instant.now(), minted.expiresAt).seconds.coerceAtLeast(1)
+        return MintedAccessToken(token = minted.token, expiresIn = expiresIn, scopes = effective)
+    }
+
     // ── helpers ───────────────────────────────────────────────────────────────────────────
 
     /**

@@ -94,6 +94,10 @@ module.exports = {
       title: "CypherX Tool Builder",
       favicon: undefined,
       css: "/config/cypherx-theme.css",
+      // Client-side autosave/recovery of undeployed flows (survives reload / session expiry). Runs in
+      // the editor page (has `RED`); progressive enhancement — no-ops if anything is unavailable.
+      // Absolute /config path (image layer) for the same reason as css: /data would shadow it.
+      scripts: "/config/cypherx-autosave.js",
     },
     header: { title: "CypherX Tool Builder", url: false },
     palette: { editable: ALLOW_PALETTE },

@@ -280,6 +280,7 @@ function AgentActions({ agent, onChanged }: { agent: Agent; onChanged: (agent: A
             onChange={setSelected}
           />
           {editError ? <ErrorBanner error={editError} /> : null}
+          {/* Tool + MCP access is managed by the Agent Builder's tool picker below the Identity card. */}
         </form>
       </Modal>
 

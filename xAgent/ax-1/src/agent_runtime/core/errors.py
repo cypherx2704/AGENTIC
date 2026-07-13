@@ -47,6 +47,13 @@ class ErrorCode:
     CONFLICT = "CONFLICT"
     GUARDRAIL_VIOLATION = "GUARDRAIL_VIOLATION"
     BUDGET_EXCEEDED = "BUDGET_EXCEEDED"
+    # Orchestration (0008) — the decomposed workflow graph is not a valid DAG (a dependency
+    # cycle, or an edge referencing an unknown node). A planning/client error (422): the run
+    # fails with error_code=INVALID_DAG and no sub-agent nodes are spawned.
+    INVALID_DAG = "INVALID_DAG"
+    # Orchestration — a DAG node could not be bound to a concrete sub-agent (its preset has no
+    # roster entry and it has no assigned_agent_id). An operator/config gap, not a client error.
+    UNASSIGNED_NODE = "UNASSIGNED_NODE"
     RATE_LIMIT_EXCEEDED = "RATE_LIMIT_EXCEEDED"
     SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"
     INTERNAL_ERROR = "INTERNAL_ERROR"
@@ -68,6 +75,8 @@ _DEFAULT_STATUS: dict[str, int] = {
     ErrorCode.CONFLICT: 409,
     ErrorCode.GUARDRAIL_VIOLATION: 422,
     ErrorCode.BUDGET_EXCEEDED: 402,
+    ErrorCode.INVALID_DAG: 422,
+    ErrorCode.UNASSIGNED_NODE: 503,
     ErrorCode.RATE_LIMIT_EXCEEDED: 429,
     ErrorCode.SERVICE_UNAVAILABLE: 503,
     ErrorCode.INTERNAL_ERROR: 500,

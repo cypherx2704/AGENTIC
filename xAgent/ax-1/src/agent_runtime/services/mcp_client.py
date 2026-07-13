@@ -1,10 +1,10 @@
 """MCP tool-invocation client (tool-loop stage, WP12).
 
-Invokes an MCP tool (e.g. tool-web-search) at the ``invoke_url`` resolved from the Tool
-Registry:
+Invokes an MCP tool (e.g. tool-web-search) over real MCP (JSON-RPC 2.0 / Streamable HTTP) at
+the ``invoke_url`` resolved from the Tool Registry:
 
-  * ``GET  {invoke_url}/manifest``        -> the tool's MCP manifest
-  * ``POST {invoke_url}/mcp/v1/invoke``   body ``{ tool, args }`` -> ``{ tool, result }``
+  * ``GET  {invoke_url}/manifest``   -> the tool's MCP manifest
+  * ``POST {mcp_url}`` (``initialize`` -> ``tools/call``) -> the tool result
 
 Identity flows via HEADERS only (Contract 13) — no identity in the body:
 
@@ -41,6 +41,7 @@ SERVICE_UNAVAILABLE. The stage decides whether a failed tool call is fatal to th
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -186,9 +187,9 @@ class McpClient:
             raise ApiError(ErrorCode.SERVICE_UNAVAILABLE, f"MCP tool returned {resp.status_code}.")
         return resp.json()
 
-    async def invoke(
+    async def invoke_mcp(
         self,
-        invoke_url: str,
+        mcp_url: str,
         tool: str,
         args: dict[str, Any],
         *,
@@ -197,86 +198,172 @@ class McpClient:
         agent_jwt: str,
         on_behalf_of: str | None = None,
     ) -> McpResult:
-        """Invoke ``tool`` with ``args`` at ``invoke_url`` (``POST .../mcp/v1/invoke``).
+        """Invoke ``tool`` over real MCP (JSON-RPC 2.0 / Streamable HTTP) at ``mcp_url``.
 
-        Idempotency-Key = ``{task_id}:{tool_call_id}`` (same on every retry). Guarded by
-        the per-(endpoint, agent) circuit breaker; retries a connection error / 5xx up to
-        ``mcp_retry_attempts`` but NEVER a 4xx. Raises SERVICE_UNAVAILABLE when the breaker
-        is open or transport/5xx persists; VALIDATION_ERROR (with ``details.status``) on a
-        terminal 4xx.
+        Performs the MCP handshake (``initialize`` -> ``tools/call``) per call and maps the
+        result back to :class:`McpResult`, carrying the SAME identity headers, Idempotency-Key
+        (``{task_id}:{tool_call_id}``), per-(endpoint, agent) circuit breaker, and conn/5xx-only
+        retry as :meth:`get_manifest` — MCP is the sole tool wire (the legacy direct-HTTP invoke
+        endpoint was removed). A tool-level ``isError`` result is raised as an ApiError
+        (SERVICE_UNAVAILABLE when ``_meta.retryable`` else VALIDATION_ERROR) so the tool-loop
+        stage handles it exactly like a legacy failure.
         """
         agent_key = on_behalf_of or agent_jwt
-        breaker = self._breaker_for(invoke_url, agent_key)
-
-        if self._is_open(breaker, invoke_url):
+        breaker = self._breaker_for(mcp_url, agent_key)
+        if self._is_open(breaker, mcp_url):
             metrics.mcp_invocations_total.labels("circuit_open").inc()
-            logger.warning("mcp_circuit_open_fastfail", endpoint=invoke_url, tool=tool)
-            raise ApiError(
-                ErrorCode.SERVICE_UNAVAILABLE,
-                f"MCP tool circuit open for {invoke_url!r}.",
-            )
+            logger.warning("mcp_circuit_open_fastfail", endpoint=mcp_url, tool=tool)
+            raise ApiError(ErrorCode.SERVICE_UNAVAILABLE, f"MCP tool circuit open for {mcp_url!r}.")
 
         idempotency_key = f"{task_id}:{tool_call_id}"
         headers = await self._headers(
             agent_jwt=agent_jwt, on_behalf_of=on_behalf_of, idempotency_key=idempotency_key
         )
-        body = {"tool": tool, "args": args}
-        url = f"{invoke_url.rstrip('/')}/mcp/v1/invoke"
+        headers["Accept"] = "application/json, text/event-stream"
+        init_body = _initialize_request(self._settings.service_version)
+        call_body = _tools_call_request(tool, args, tool_call_id)
 
         attempts = max(1, self._settings.mcp_retry_attempts + 1)
         last_exc: httpx.HTTPError | None = None
         for attempt in range(attempts):
             try:
-                resp = await self._http().post(url, headers=headers, json=body)
+                init_resp = await self._http().post(mcp_url, headers=headers, json=init_body)
+                _raise_for_mcp_transport(init_resp, tool)  # 4xx terminal; 5xx -> _RetryableHttp
+                session = init_resp.headers.get("mcp-session-id")
+                call_headers = {**headers, "Mcp-Session-Id": session} if session else headers
+                resp = await self._http().post(mcp_url, headers=call_headers, json=call_body)
+                _raise_for_mcp_transport(resp, tool)
             except httpx.HTTPError as exc:
-                # Connection/transport error — retryable; counts as a breaker failure.
                 last_exc = exc
-                self._record_failure(breaker, invoke_url)
+                self._record_failure(breaker, mcp_url)
                 logger.warning(
-                    "mcp_invoke_attempt_failed", endpoint=invoke_url, attempt=attempt, error=str(exc)
+                    "mcp_invoke_attempt_failed", endpoint=mcp_url, attempt=attempt, error=str(exc)
                 )
-                if self._is_open(breaker, invoke_url):
-                    break  # breaker tripped mid-loop -> stop retrying
+                if self._is_open(breaker, mcp_url):
+                    break
                 continue
-
-            if 400 <= resp.status_code < 500:
-                # CLIENT fault — terminal, NEVER retried, does NOT trip the breaker.
-                metrics.mcp_invocations_total.labels("rejected").inc()
-                logger.warning("mcp_invoke_rejected_4xx", endpoint=invoke_url, status=resp.status_code)
-                raise ApiError(
-                    ErrorCode.VALIDATION_ERROR,
-                    f"MCP tool rejected the call ({resp.status_code}).",
-                    details={"status": resp.status_code, "tool": tool},
-                )
-            if resp.status_code >= 500:
-                # SERVER fault — retryable; counts as a breaker failure.
-                self._record_failure(breaker, invoke_url)
-                logger.warning(
-                    "mcp_invoke_5xx", endpoint=invoke_url, attempt=attempt, status=resp.status_code
-                )
-                if attempt < attempts - 1 and not self._is_open(breaker, invoke_url):
+            except _RetryableHttp as exc:
+                self._record_failure(breaker, mcp_url)
+                logger.warning("mcp_invoke_5xx", endpoint=mcp_url, attempt=attempt, status=exc.status)
+                if attempt < attempts - 1 and not self._is_open(breaker, mcp_url):
                     continue
                 metrics.mcp_invocations_total.labels("error").inc()
                 raise ApiError(
-                    ErrorCode.SERVICE_UNAVAILABLE,
-                    f"MCP tool returned {resp.status_code}.",
-                )
+                    ErrorCode.SERVICE_UNAVAILABLE, f"MCP tool returned {exc.status}."
+                ) from exc
 
-            # 2xx — success: close/reset the breaker, normalise the result.
-            self._record_success(breaker, invoke_url)
+            # 2xx on both initialize + tools/call — parse the JSON-RPC result.
+            self._record_success(breaker, mcp_url)
             metrics.mcp_invocations_total.labels("ok").inc()
-            return self._parse(tool, resp.json())
+            return _parse_tools_call(tool, resp)
 
-        # Fell out of the loop on a transport error (retries exhausted or breaker opened).
         metrics.mcp_invocations_total.labels("error").inc()
         raise ApiError(ErrorCode.SERVICE_UNAVAILABLE, "MCP tool unavailable.") from last_exc
 
-    @staticmethod
-    def _parse(tool: str, data: dict[str, Any]) -> McpResult:
-        if not isinstance(data, dict):
-            return McpResult(tool=tool, result=data, raw={})
-        return McpResult(
-            tool=str(data.get("tool", tool)),
-            result=data.get("result"),
-            raw=data,
+
+# ── MCP (JSON-RPC 2.0 / Streamable HTTP) wire helpers ───────────────────────────────────────
+_MCP_PROTOCOL_VERSION = "2025-06-18"
+
+
+class _RetryableHttp(Exception):
+    """Internal signal: an MCP POST returned a retryable 5xx (server fault)."""
+
+    def __init__(self, status: int) -> None:
+        super().__init__(f"HTTP {status}")
+        self.status = status
+
+
+def _initialize_request(client_version: str) -> dict[str, Any]:
+    return {
+        "jsonrpc": "2.0",
+        "id": "mcp-init",
+        "method": "initialize",
+        "params": {
+            "protocolVersion": _MCP_PROTOCOL_VERSION,
+            "capabilities": {},
+            "clientInfo": {"name": "xagent", "version": client_version},
+        },
+    }
+
+
+def _tools_call_request(tool: str, args: dict[str, Any], req_id: str) -> dict[str, Any]:
+    return {
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "method": "tools/call",
+        "params": {"name": tool, "arguments": args},
+    }
+
+
+def _raise_for_mcp_transport(resp: httpx.Response, tool: str) -> None:
+    """Classify an MCP POST's HTTP status: 4xx terminal (ApiError), 5xx -> retryable signal."""
+    if 400 <= resp.status_code < 500:
+        # CLIENT fault (auth/forbidden/bad request) — terminal, NEVER retried, no breaker trip.
+        metrics.mcp_invocations_total.labels("rejected").inc()
+        raise ApiError(
+            ErrorCode.VALIDATION_ERROR,
+            f"MCP tool rejected the call ({resp.status_code}).",
+            details={"status": resp.status_code, "tool": tool},
         )
+    if resp.status_code >= 500:
+        raise _RetryableHttp(resp.status_code)
+
+
+def _read_jsonrpc(resp: httpx.Response) -> dict[str, Any]:
+    """Read a single JSON-RPC message from a JSON or Streamable-HTTP (SSE) response body."""
+    ctype = resp.headers.get("content-type", "")
+    if ctype.startswith("text/event-stream"):
+        message: str | None = None
+        for line in resp.text.splitlines():
+            if line.startswith("data:"):
+                message = line[len("data:") :].strip()  # last data: line is the response
+        try:
+            return json.loads(message) if message else {}
+        except (ValueError, TypeError):
+            return {}
+    try:
+        data = resp.json()
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _first_text(content: Any) -> str | None:
+    """Return the first ``text`` block of an MCP content array, if any."""
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                return str(block.get("text", ""))
+    return None
+
+
+def _parse_tools_call(tool: str, resp: httpx.Response) -> McpResult:
+    """Map an MCP ``tools/call`` JSON-RPC response to :class:`McpResult` (or raise ApiError).
+
+    Protocol errors and tool ``isError`` results raise a typed ApiError so the tool-loop stage
+    handles them identically to a legacy failure; ``_meta.retryable`` preserves retryability.
+    """
+    data = _read_jsonrpc(resp)
+    if data.get("error"):
+        err = data["error"]
+        raise ApiError(
+            ErrorCode.VALIDATION_ERROR,
+            f"MCP protocol error: {err.get('message', 'unknown')}",
+            details={"jsonrpc_code": err.get("code"), "tool": tool},
+        )
+    result = data.get("result") or {}
+    if result.get("isError"):
+        meta = result.get("_meta") or {}
+        message = _first_text(result.get("content")) or "MCP tool reported an error."
+        if meta.get("retryable"):
+            raise ApiError(ErrorCode.SERVICE_UNAVAILABLE, message, details={"code": meta.get("code")})
+        raise ApiError(ErrorCode.VALIDATION_ERROR, message, details={"code": meta.get("code")})
+    structured = result.get("structuredContent")
+    if structured is None:
+        text = _first_text(result.get("content"))
+        if text is not None:
+            try:
+                structured = json.loads(text)
+            except (ValueError, TypeError):
+                structured = {"output": text}
+    return McpResult(tool=tool, result=structured, raw=data)

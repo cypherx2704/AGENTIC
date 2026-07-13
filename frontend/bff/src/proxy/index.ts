@@ -38,7 +38,12 @@ export function parseProxyPath(url: string): { service: string; rest: string } |
 
 /** Detect the xagent SSE stream route so we can switch to a streaming relay. */
 function isStreamRoute(service: string, rest: string): boolean {
-  return service === 'xagent' && /^\/v1\/tasks\/[^/]+\/stream\/?$/.test(rest);
+  // xAgent SSE streams that must be relayed UNBUFFERED (live frames): a single task's step
+  // stream, and an orchestration run's execution-tree stream (PROMPT -> ORCHESTRATOR -> SUB-AGENTS).
+  return (
+    service === 'xagent' &&
+    (/^\/v1\/tasks\/[^/]+\/stream\/?$/.test(rest) || /^\/v1\/orchestrations\/[^/]+\/stream\/?$/.test(rest))
+  );
 }
 
 export function registerProxy(app: FastifyInstance): void {

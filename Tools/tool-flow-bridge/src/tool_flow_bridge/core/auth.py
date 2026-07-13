@@ -8,7 +8,7 @@ Two accepted authentication modes, both feeding the SAME downstream Principal:
 * **INTERNAL** — service JWT (``sub`` = ``svc:*``) in ``Authorization`` PLUS an
   ``X-Forwarded-Agent-JWT`` header carrying the agent JWT. BOTH are verified and the
   service token's ``on_behalf_of`` MUST equal the forwarded agent JWT's ``agent_id``
-  (Contract 12). This is what xAgent uses when calling ``/w/<slug>/mcp/v1/invoke``.
+  (Contract 12). This is what xAgent uses when calling ``/w/<slug>/mcp``.
 
 In both modes: ``iss`` == ``auth_issuer_url``, ``aud`` contains ``auth_platform_audience``
 (or the service-token wildcard ``*``), ``exp`` valid, RS256 only. ``tenant_id`` /

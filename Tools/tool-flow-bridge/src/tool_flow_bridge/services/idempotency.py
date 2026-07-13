@@ -1,4 +1,4 @@
-"""Idempotency-Key replay for POST /w/<slug>/mcp/v1/invoke (Contract-9 style, fail-open).
+"""Idempotency-Key replay for the /w/<slug>/mcp tools/call path (Contract-9 style, fail-open).
 
 Valkey-backed, keyed by the client ``Idempotency-Key`` header + tenant + slug. This is
 LOAD-BEARING for the bridge: workflow executions have side effects, and xAgent retries

@@ -183,3 +183,50 @@ def fastapi_project(tmp_path) -> str:
     (tmp_path / "app" / "routers" / "__init__.py").write_text("", encoding="utf-8")
     (tmp_path / "app" / "routers" / "users.py").write_text(FASTAPI_USERS, encoding="utf-8")
     return str(tmp_path)
+
+
+# --- FastAPI + Pydantic (P4 depth) fixtures ---
+FASTAPI_SCHEMAS = (
+    "from pydantic import BaseModel\n"
+    "\n"
+    "class UserCreate(BaseModel):\n"
+    "    email: str\n"
+    "    age: int = 0\n"
+    "\n"
+    "class UserOut(BaseModel):\n"
+    "    id: int\n"
+    "    email: str\n"
+)
+FASTAPI_USERS_DTO = (
+    "from fastapi import APIRouter, Depends\n"
+    "from app.schemas import UserCreate, UserOut\n"
+    "router = APIRouter()\n"
+    "\n"
+    "@router.get('/{user_id}', response_model=UserOut)\n"
+    "def get_user(user_id: int):\n"
+    "    ...\n"
+    "\n"
+    "@router.post('/', response_model=UserOut)\n"
+    "def create_user(payload: UserCreate, token: str = Depends(auth)):\n"
+    "    ...\n"
+)
+
+
+@pytest.fixture
+def fastapi_dto_sources() -> dict[str, str]:
+    return {
+        "app/main.py": FASTAPI_MAIN,
+        "app/routers/users.py": FASTAPI_USERS_DTO,
+        "app/schemas.py": FASTAPI_SCHEMAS,
+    }
+
+
+@pytest.fixture
+def fastapi_dto_project(tmp_path) -> str:
+    (tmp_path / "app" / "routers").mkdir(parents=True)
+    (tmp_path / "app" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "app" / "main.py").write_text(FASTAPI_MAIN, encoding="utf-8")
+    (tmp_path / "app" / "schemas.py").write_text(FASTAPI_SCHEMAS, encoding="utf-8")
+    (tmp_path / "app" / "routers" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "app" / "routers" / "users.py").write_text(FASTAPI_USERS_DTO, encoding="utf-8")
+    return str(tmp_path)

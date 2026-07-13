@@ -47,6 +47,7 @@ CREATE SCHEMA IF NOT EXISTS memory;
 CREATE SCHEMA IF NOT EXISTS rag;
 CREATE SCHEMA IF NOT EXISTS xagent;
 CREATE SCHEMA IF NOT EXISTS platform;
+CREATE SCHEMA IF NOT EXISTS flow_tools;
 
 -- ---------------------------------------------------------------------------------------------------------------------
 -- Runtime users (least privilege) + DDL users (CREATEROLE for Atlas RLS roles).
@@ -68,7 +69,8 @@ BEGIN
       ('rag',        'rag',        'rag_user',    'rag_ddl'),
       ('xagent',     'xagent',     'xagent_user', 'xagent_ddl'),
       ('platform',   'platform',   'plat_user',   'plat_ddl'),
-      ('cypherx-a1', 'cypherx_a1', 'cxa1_user',   'cxa1_ddl')
+      ('cypherx-a1', 'cypherx_a1', 'cxa1_user',   'cxa1_ddl'),
+      ('tool-flow-bridge', 'flow_tools', 'flow_tools_user', 'flow_tools_ddl')
     ) AS t(svc, schema_name, runtime_user, ddl_user)
   LOOP
     -- Runtime user (login, no CREATEROLE, no superuser).

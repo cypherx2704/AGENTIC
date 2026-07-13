@@ -65,9 +65,18 @@ def _to_memo(row: tuple) -> MemoRow:
 
 class SqliteGraphStore(GraphStore):
     def __init__(self, path: str | PathLike[str]) -> None:
-        self._conn = sqlite3.connect(str(path))
+        # check_same_thread=False: the connection may be created in one thread and
+        # served from another (the HTTP API runs sync handlers in a threadpool). The
+        # single-owner design guarantees serialized access — the CLI/MCP/daemon are
+        # single-threaded and the API holds a per-request lock — so cross-thread use
+        # never overlaps. sqlite3 otherwise pins a connection to its creating thread.
+        self._conn = sqlite3.connect(str(path), check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
+        # If another connection briefly holds the write lock, wait instead of
+        # failing immediately. The single-owner design (one Daemon per project)
+        # means real contention is rare; this only smooths accidental overlap.
+        self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_SCHEMA)
         self._conn.execute("INSERT OR IGNORE INTO meta (k, v) VALUES ('global_revision', 0)")
         self._conn.commit()

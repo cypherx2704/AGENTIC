@@ -103,7 +103,7 @@ async def test_put_create_returns_201_and_busts_cache(client, monkeypatch: Any) 
     async def _no_existing(pool: Any, tenant_id: str, agent_id: str) -> None:
         return None
 
-    async def _insert(pool: Any, tenant_id: str, agent_id: str, body: Any) -> AgentRuntime:
+    async def _insert(pool: Any, tenant_id: str, agent_id: str, body: Any, **_kw: Any) -> AgentRuntime:
         return _runtime(status=body.status, version=body.runtime_version)
 
     monkeypatch.setattr(agents_repo, "get_agent", _no_existing)
@@ -133,7 +133,7 @@ async def test_put_update_bumps_version_on_valid_transition(client, monkeypatch:
         return _runtime(status="active", version="1.0.4")
 
     async def _update(
-        pool: Any, tenant_id: str, agent_id: str, body: Any, *, runtime_version: str, status: str
+        pool: Any, tenant_id: str, agent_id: str, body: Any, *, runtime_version: str, status: str, **_kw: Any
     ) -> AgentRuntime:
         captured["runtime_version"] = runtime_version
         captured["status"] = status

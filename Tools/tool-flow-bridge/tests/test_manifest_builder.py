@@ -78,3 +78,71 @@ def test_build_manifest_shape():
     ]
     assert manifest["tools"][0]["name"] == "sync_invoices"
     assert manifest["tools"][0]["input_schema"] == schema
+
+
+# ── Aggregating MCP manifest ─────────────────────────────────────────────────────
+
+
+def _mcp_row(**over):
+    row = {
+        "mcp_id": "m1",
+        "tenant_id": TENANT,
+        "slug": "mcp-math-1234abcd",
+        "server_name": "mcp-math-1234abcd",
+        "display_name": "Math",
+        "description": "Math tools.",
+        "visibility": "protected",
+        "version": "2.1.0",
+    }
+    row.update(over)
+    return row
+
+
+def _tool_row(name, **over):
+    row = {
+        "snake_name": name,
+        "display_name": name.title(),
+        "description": f"{name} numbers.",
+        "input_schema": {"type": "object", "properties": {"a": {"type": "integer"}}},
+        "output_schema": {"type": "object", "properties": {"value": {"type": "integer"}}},
+    }
+    row.update(over)
+    return row
+
+
+def test_build_mcp_manifest_aggregates_members():
+    settings = get_settings()
+    mcp = _mcp_row()
+    manifest = mb.build_mcp_manifest(
+        settings, mcp=mcp, member_tools=[_tool_row("add"), _tool_row("mul", output_schema=None)]
+    )
+    assert manifest["name"] == "mcp-math-1234abcd"
+    assert manifest["base_url"].endswith("/m/mcp-math-1234abcd")
+    assert manifest["visibility"] == "protected"
+    assert manifest["author"] == f"tenant:{TENANT}"
+    assert manifest["required_scopes"] == [
+        "tool:invoke",
+        "tool:mcp-math-1234abcd:invoke",
+    ]
+    assert [t["name"] for t in manifest["tools"]] == ["add", "mul"]
+    # output_schema is carried only when present.
+    assert "output_schema" in manifest["tools"][0]
+    assert "output_schema" not in manifest["tools"][1]
+    # Reuses the same real-MCP transport descriptor as the single-tool builder.
+    assert manifest["mcp"]["transport"] == "streamable-http"
+    assert manifest["mcp"]["endpoint"] == "/mcp"
+
+
+def test_build_mcp_manifest_platform_author():
+    settings = get_settings()
+    manifest = mb.build_mcp_manifest(settings, mcp=_mcp_row(tenant_id=None), member_tools=[])
+    assert manifest["author"] == "platform"
+
+
+def test_mcp_manifest_from_row_is_stable():
+    settings = get_settings()
+    mcp, members = _mcp_row(), [_tool_row("add")]
+    a = mb.mcp_manifest_from_row(settings, mcp, members)
+    b = mb.mcp_manifest_from_row(settings, mcp, members)
+    assert a == b
+    assert a["version"] == "2.1.0"  # carried straight from the mcp row

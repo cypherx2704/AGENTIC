@@ -100,6 +100,9 @@ class SecurityConfig {
                 // End-user auth (email/password + Google) — body-authenticates via password/OAuth code.
                 authorize(HttpMethod.POST, "/v1/auth/register", permitAll)
                 authorize(HttpMethod.POST, "/v1/auth/login", permitAll)
+                // Session refresh/logout body-authenticate via the opaque refresh token (not a Bearer JWT).
+                authorize(HttpMethod.POST, "/v1/auth/refresh", permitAll)
+                authorize(HttpMethod.POST, "/v1/auth/logout", permitAll)
                 authorize(HttpMethod.GET, "/v1/auth/oauth2/google", permitAll)
                 authorize(HttpMethod.GET, "/v1/auth/oauth2/google/callback", permitAll)
                 authorize(HttpMethod.POST, "/v1/auth/oauth2/google/callback", permitAll)

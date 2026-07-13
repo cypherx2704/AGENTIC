@@ -62,7 +62,7 @@ inside the `cypherx` network only (host-published on 6379 for dev convenience).
 
 **Auth hardening — when & how (REQUIRED outside local).**
 1. Set a password: `--requirepass "${VALKEY_PASSWORD}"` and update every consumer's `VALKEY_URL` to
-   `redis://:${VALKEY_PASSWORD}@valkey:6379` (auth, xagent, rag, memory, tool-registry, tool-web-search, frontend-bff).
+   `redis://:${VALKEY_PASSWORD}@valkey:6379` (auth, xagent, rag, memory, tool-registry, frontend-bff).
 2. Use `rediss://` (TLS) in cloud (ElastiCache in-transit encryption).
 3. Disable/rename dangerous commands (`FLUSHALL`, `CONFIG`, `KEYS`) via ACL.
 4. Do NOT publish 6379 to the host in shared/cloud envs — keep it network-internal.
@@ -100,7 +100,7 @@ should return `NOAUTH`. After enabling AOF, restart the container and confirm se
 ## 4. Signing-key rotation rehearsal (Auth JWKS)
 
 **What.** Auth signs platform/agent JWTs with a rotating signing key; verifiers (llms / guardrails / xagent / rag /
-tool-registry / tool-web-search) fetch the public keys from `GET /.well-known/jwks.json` and cache them. Rotation must be
+tool-registry) fetch the public keys from `GET /.well-known/jwks.json` and cache them. Rotation must be
 **overlapping**: publish the new key, let verifiers pick it up, then retire the old `kid` — no downtime.
 
 **When.** Scheduled (e.g. quarterly), on suspected key compromise, or as a rehearsal before a real rotation.
@@ -151,7 +151,7 @@ the new key becomes primary while the old key stays valid for verification until
 | auth-service | 8080 | 8080 | rag | 8087 | 8080 |
 | llms-gateway | 8085 | 8080 | memory | 8088 | 8080 |
 | guardrails-service | 8086 | 8080 | tool-registry | 8089 | 8080 |
-| xagent | 8083 | 8080 | tool-web-search | 8091 | 8080 |
+| xagent | 8083 | 8080 | *(8091 freed — tool-web-search removed)* | — | — |
 | demo (profile) | 8090 | 8090 | frontend-bff | 8092 | 8088 |
 | frontend-app (SPA) | 3000 | 3000 | **edge (entrypoint)** | **8000** | 8000 |
 | redpanda (Kafka) | 9092 | 9092 | redpanda (admin) | 9644 | 9644 |

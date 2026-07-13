@@ -136,6 +136,31 @@ async def test_register_version_retires_oldest_beyond_three(make_client) -> None
 
 
 @pytest.mark.asyncio
+async def test_register_same_version_refreshes_in_place(make_client) -> None:  # type: ignore[no-untyped-def]
+    """Re-registering an EXISTING (tool_id, version) refreshes the manifest + capabilities
+    in place (the stable-version MCP auto-refresh path) instead of 409-ing on the dup key."""
+    app, ac = await make_client(_admin_principal)
+    pool = FakePool()
+    pool.on("FROM tools WHERE name = %s",
+            [{"tool_id": "tid", "name": "tool-mine", "tenant_id": TENANT,
+              "status": "active", "latest_version": "1.0.0", "is_platform": False}])
+    # The version already exists -> take the in-place refresh branch.
+    pool.on("SELECT 1 FROM tool_versions WHERE tool_id", [{"exists": 1}])
+    app.state.db_pool = pool
+
+    resp = await ac.post("/v1/tools/tool-mine/versions", json=_manifest("tool-mine", "1.0.0"))
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["version"] == "1.0.0"
+    assert body["retired_versions"] == []  # a refresh never churns the version chain
+    # Refresh path: UPDATE the version's manifest + re-replace capabilities; NO new version row.
+    assert any("UPDATE tool_versions SET manifest" in w[0] for w in pool.writes)
+    assert any("DELETE FROM tool_capabilities" in w[0] for w in pool.writes)
+    assert any("INSERT INTO tool_capabilities" in w[0] for w in pool.writes)
+    assert not any("INSERT INTO tool_versions" in w[0] for w in pool.writes)
+
+
+@pytest.mark.asyncio
 async def test_register_version_unknown_tool_404(make_client) -> None:  # type: ignore[no-untyped-def]
     app, ac = await make_client(_admin_principal)
     pool = FakePool().on("FROM tools WHERE name = %s", [])  # no such tenant tool

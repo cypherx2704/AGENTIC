@@ -50,9 +50,17 @@ import type {
   TaskListResponse,
   TaskResponse,
   ToolView,
+  ToolVisibility,
   FlowTool,
   PublishFlowToolRequest,
   PublishFlowToolResult,
+  BridgeTool,
+  CreateBridgeToolRequest,
+  CreateBridgeToolResult,
+  Mcp,
+  CreateMcpRequest,
+  UpdateMcpRequest,
+  UnpublishMcpResult,
   EditorSession,
   NoderedFlow,
   UsageRow,
@@ -523,6 +531,84 @@ export function deactivateSubAgent(agentId: string): Promise<unknown> {
   return api('auth', `/v1/orchestrator/sub-agents/${agentId}`, { method: 'DELETE' });
 }
 
+// ── Orchestrations (PROMPT → ORCHESTRATOR → SUB-AGENTS runs) ────────────────────────────────
+// These live on the xAgent service (POST /v1/orchestrations …); the generic BFF proxy routes them,
+// and the run SSE stream is relayed unbuffered (isStreamRoute covers /v1/orchestrations/{id}/stream).
+export interface OrchestrationRun {
+  workflow_id: string;
+  tenant_id?: string;
+  root_agent_id?: string;
+  goal: string;
+  status: string; // pending | planning | running | awaiting_approval | completed | failed | cancelled | timeout
+  mode: string; // subagents | solo
+  decomposition?: string | null; // template | llm
+  output?: { message?: string } | null;
+  error_code?: string | null;
+  error_msg?: string | null;
+  tokens_used?: number | null;
+  cost_usd?: number | null;
+  cost_budget_usd?: number | null;
+  created_at?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+}
+
+export interface OrchestrationNode {
+  node_id: string;
+  node_type: string;
+  status: string;
+  assigned_agent_id?: string | null;
+  preset?: string | null;
+  depends_on: string[];
+  task_id?: string | null;
+  output?: { summary?: string; citations?: string[] } | null;
+  tokens_used?: number | null;
+  cost_usd?: number | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+}
+
+export interface OrchestrationGraph {
+  workflow: OrchestrationRun;
+  nodes: OrchestrationNode[];
+}
+
+/** Submit a goal to the orchestrator; it decomposes + fans out to sub-agents. Returns 202 + workflow_id. */
+export function submitOrchestration(body: {
+  goal: string;
+  mode?: 'subagents' | 'solo';
+  cost_budget_usd?: number;
+  timeout_seconds?: number;
+}): Promise<{ workflow_id: string; status: string; mode: string; trace_id?: string }> {
+  return api('xagent', '/v1/orchestrations', { method: 'POST', body });
+}
+
+export function listOrchestrations(
+  params: { limit?: number; status?: string } = {},
+  signal?: AbortSignal,
+): Promise<{ items: OrchestrationRun[] }> {
+  return api('xagent', '/v1/orchestrations', { query: { ...params }, signal });
+}
+
+export function getOrchestration(workflowId: string, signal?: AbortSignal): Promise<OrchestrationRun> {
+  return api<OrchestrationRun>('xagent', `/v1/orchestrations/${workflowId}`, { signal });
+}
+
+/** The run + its node tree (the execution graph the UI renders). */
+export function getOrchestrationGraph(workflowId: string, signal?: AbortSignal): Promise<OrchestrationGraph> {
+  return api<OrchestrationGraph>('xagent', `/v1/orchestrations/${workflowId}/graph`, { signal });
+}
+
+/** Signal a run to cancel (terminal runs are a no-op). */
+export function cancelOrchestration(workflowId: string): Promise<unknown> {
+  return api('xagent', `/v1/orchestrations/${workflowId}`, { method: 'DELETE' });
+}
+
+/** Absolute URL for the run's SSE execution-tree stream (used with EventSource + credentials). */
+export function orchestrationStreamUrl(workflowId: string): string {
+  return streamUrl('xagent', `/v1/orchestrations/${workflowId}/stream`);
+}
+
 // ── HIL: approvals + orchestrator mode config ──────────────────────────────────────────────
 export interface HilApproval {
   request_id: string;
@@ -652,9 +738,26 @@ export function deleteLlmRule(ruleId: string): Promise<void> {
 }
 
 // ── Tools registry (MCP tool servers) ──────────────────────────────────────────────────────
-/** List tools visible to the tenant (platform + own, tenant-priority shadowed). */
-export async function listTools(signal?: AbortSignal): Promise<ToolView[]> {
-  const r = await api<{ data?: ToolView[] } | ToolView[]>('tools', '/v1/tools', { signal });
+/** Options for {@link listTools} — currently the optional Marketplace visibility filter. */
+export interface ListToolsParams {
+  /**
+   * Narrow to these Marketplace visibility sections (`public`|`private`|`protected`). A single
+   * value or an array (joined comma-separated on the wire, matching the registry's `?visibility=`
+   * filter). Omit for all visible tools.
+   */
+  visibility?: ToolVisibility | ToolVisibility[];
+}
+
+/**
+ * List tools visible to the tenant (platform + own, tenant-priority shadowed). Pass
+ * `{ visibility }` to filter to Marketplace sections via the registry's `?visibility=` filter.
+ */
+export async function listTools(params: ListToolsParams = {}, signal?: AbortSignal): Promise<ToolView[]> {
+  const visibility = Array.isArray(params.visibility) ? params.visibility.join(',') : params.visibility;
+  const r = await api<{ data?: ToolView[] } | ToolView[]>('tools', '/v1/tools', {
+    query: visibility ? { visibility } : undefined,
+    signal,
+  });
   return Array.isArray(r) ? r : (r.data ?? []);
 }
 
@@ -707,6 +810,56 @@ export function testFlowTool(
     method: 'POST',
     body: { args },
   });
+}
+
+// ── Tool + MCP workflow (flow-tool-bridge control plane: atomic tools + MCP collections) ──────
+// The "atomic tool + aggregating MCP" model. All routes live under the generic `toolbuilder`
+// upstream (auto-proxied by the BFF). Scopes are enforced server-side (`tool:admin`, plus
+// `tenant:admin` for restricted defaults and `platform:admin` for promote). These wrappers cover
+// the whole feature so Tool Builder (4B) + Agent picker (4C) only touch their own page files.
+
+/** Create an atomic tool from a Node-RED flow (`POST /v1/tools`). Requires `tool:admin`.
+ *  Without `mcp_ids` the tool gets an auto-created singleton MCP (`tool-<slug>`). */
+export function createBridgeTool(body: CreateBridgeToolRequest): Promise<CreateBridgeToolResult> {
+  return api<CreateBridgeToolResult>('toolbuilder', '/v1/tools', { method: 'POST', body });
+}
+
+/** List this tenant's atomic tools + their MCP memberships (`GET /v1/tools`). */
+export async function listBridgeTools(signal?: AbortSignal): Promise<BridgeTool[]> {
+  const r = await api<{ data?: BridgeTool[] } | BridgeTool[]>('toolbuilder', '/v1/tools', { signal });
+  return Array.isArray(r) ? r : (r.data ?? []);
+}
+
+/** Create an MCP collection (`POST /v1/mcps`); every `tool_ids` is ownership-validated + registered. */
+export function createMcp(body: CreateMcpRequest): Promise<Mcp> {
+  return api<Mcp>('toolbuilder', '/v1/mcps', { method: 'POST', body });
+}
+
+/** List this tenant's MCP collections + their member tools (`GET /v1/mcps`). */
+export async function listMcps(signal?: AbortSignal): Promise<Mcp[]> {
+  const r = await api<{ data?: Mcp[] } | Mcp[]>('toolbuilder', '/v1/mcps', { signal });
+  return Array.isArray(r) ? r : (r.data ?? []);
+}
+
+/** Update an MCP's metadata/membership (`PUT /v1/mcps/{id}`) → regenerate + re-register (version STABLE). */
+export function updateMcp(mcpId: string, body: UpdateMcpRequest): Promise<Mcp> {
+  return api<Mcp>('toolbuilder', `/v1/mcps/${encodeURIComponent(mcpId)}`, { method: 'PUT', body });
+}
+
+/** (Re)register/refresh an MCP in the registry (`POST /v1/mcps/{id}/publish`). */
+export function publishMcp(mcpId: string): Promise<Mcp> {
+  return api<Mcp>('toolbuilder', `/v1/mcps/${encodeURIComponent(mcpId)}/publish`, { method: 'POST', body: {} });
+}
+
+/** Unpublish (retire) an MCP + its exclusively-owned tools (`DELETE /v1/mcps/{id}`). */
+export function unpublishMcp(mcpId: string): Promise<UnpublishMcpResult> {
+  return api<UnpublishMcpResult>('toolbuilder', `/v1/mcps/${encodeURIComponent(mcpId)}`, { method: 'DELETE' });
+}
+
+/** Promote an MCP to Public — the SOLE path to public (`POST /v1/mcps/{id}/promote`). Requires
+ *  `platform:admin`; re-registers under the platform (tenant_id NULL) namespace. */
+export function promoteMcp(mcpId: string): Promise<Mcp> {
+  return api<Mcp>('toolbuilder', `/v1/mcps/${encodeURIComponent(mcpId)}/promote`, { method: 'POST', body: {} });
 }
 
 export function getToolAccess(

@@ -10,6 +10,11 @@
   "tags": ["engineering-memory", "knowledge-graph", "code-ownership", "impact-analysis"],
   "auth_required": true,
   "required_scopes": ["tool:invoke", "tool:mcp-eng-memory:invoke"],
+  "mcp": {
+    "transport": "streamable-http",
+    "endpoint": "/mcp",
+    "protocol_versions": ["2025-06-18", "2025-03-26", "2024-11-05"]
+  },
   "health_endpoint": "/livez",
   "metrics_endpoint": "/metrics",
   "tools": [

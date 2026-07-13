@@ -10,6 +10,7 @@ USER root
 # always present at runtime — a /data path would be shadowed by the named volume).
 COPY settings.js /config/settings.js
 COPY cypherx-theme.css /config/cypherx-theme.css
+COPY cypherx-autosave.js /config/cypherx-autosave.js
 COPY flows/tool-template.json /config/tool-template.json
 COPY docker-entrypoint.sh /config/docker-entrypoint.sh
 RUN chown -R node-red:node-red /config && chmod +x /config/docker-entrypoint.sh

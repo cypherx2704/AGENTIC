@@ -15,7 +15,7 @@
 #
 # Profiles:
 #   (default)            redpanda, valkey, minio, minio-init, topics-init + the full platform:
-#                        auth/llms/guardrails/xagent + rag/memory/tool-registry/tool-web-search (WP09-11) +
+#                        auth/llms/guardrails/xagent + rag/memory/tool-registry (WP09-11) + nodered/tool-flow-bridge +
 #                        frontend-bff/frontend-app (WP13) + the always-on 'edge' reverse proxy (Kong substitute).
 #   --profile demo       adds the legacy demo BFF (opt-in; superseded by frontend-bff/app).
 #   --profile migrate    one-shot 'migrate' job: applies every service's db/migrations + provisions the new
@@ -498,8 +498,9 @@ services:
       retries: 3
 
   # ===================================================================================================================
-  # WP09-11 DATA + TOOL SERVICES — rag / memory / tool-registry (Python data svcs, own Neon runtime role) and the
-  # tool-web-search MCP server (no DB). All listen on 8080 in-container; host maps avoid the 8080-8089 collisions.
+  # WP09-11 DATA + TOOL SERVICES — rag / memory / tool-registry (Python data svcs, own Neon runtime role). Tool
+  # servers are now flow-tools served via nodered + tool-flow-bridge. All listen on 8080 in-container; host maps
+  # avoid the 8080-8089 collisions.
   # ===================================================================================================================
 
   # -------------------------------------------------------------------------------------------------------------------
@@ -604,7 +605,7 @@ services:
 
   # -------------------------------------------------------------------------------------------------------------------
   # tool-registry — Python (uv). Tool manifest registry + health poll (WP11). Listens on 8080. Host map 8089->8080.
-  # Runtime role tool_user (Neon POOLED, search_path=tools). Seeds the platform tool-web-search at startup.
+  # Runtime role tool_user (Neon POOLED, search_path=tools). No startup platform seed (public tools register via the API).
   # -------------------------------------------------------------------------------------------------------------------
   tool-registry:
     build:
@@ -622,8 +623,6 @@ services:
       AUTH_JWKS_URL: ${AUTH_JWKS_URL:-http://auth-service:8080/.well-known/jwks.json}
       AUTH_ISSUER_URL: ${AUTH_ISSUER_URL:-http://auth-service:8080}
       AUTH_PLATFORM_AUDIENCE: ${AUTH_PLATFORM_AUDIENCE:-cypherx-platform}
-      SEED_PLATFORM_TOOLS: ${SEED_PLATFORM_TOOLS:-true}
-      TOOL_WEB_SEARCH_BASE_URL: ${TOOL_WEB_SEARCH_BASE_URL:-http://tool-web-search:8080}
       ENVIRONMENT: ${ENVIRONMENT:-local}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     ports:
@@ -677,44 +676,6 @@ services:
       interval: 15s
       timeout: 5s
       start_period: 30s
-      retries: 5
-
-  # -------------------------------------------------------------------------------------------------------------------
-  # tool-web-search — Python (uv) MCP server (WP11). NO DB. Listens on 8080. Host map 8091->8080 (8090 = demo).
-  # SEARCH_PROVIDER=mock => deterministic, keyless, no outbound network.
-  # -------------------------------------------------------------------------------------------------------------------
-  tool-web-search:
-    build:
-      context: ../../Tools/tool-web-search
-      dockerfile: Dockerfile
-    image: cypherx/tool-web-search:local
-    container_name: cypherx-tool-web-search
-    restart: unless-stopped
-    networks: [cypherx]
-    environment:
-      PORT: "8080"
-      HOST: "0.0.0.0"
-      VALKEY_URL: ${VALKEY_URL:-redis://valkey:6379}
-      AUTH_JWKS_URL: ${AUTH_JWKS_URL:-http://auth-service:8080/.well-known/jwks.json}
-      AUTH_ISSUER_URL: ${AUTH_ISSUER_URL:-http://auth-service:8080}
-      AUTH_PLATFORM_AUDIENCE: ${AUTH_PLATFORM_AUDIENCE:-cypherx-platform}
-      SEARCH_PROVIDER: ${SEARCH_PROVIDER:-mock}
-      SERPAPI_API_KEY: ${SERPAPI_API_KEY:-}
-      BRAVE_API_KEY: ${BRAVE_API_KEY:-}
-      ENVIRONMENT: ${ENVIRONMENT:-local}
-      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
-    ports:
-      - "8091:8080"
-    depends_on:
-      valkey:
-        condition: service_healthy
-      auth-service:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/livez',timeout=3).status==200 else 1)\""]
-      interval: 15s
-      timeout: 5s
-      start_period: 20s
       retries: 5
 
   # -------------------------------------------------------------------------------------------------------------------

@@ -32,6 +32,21 @@ data class AuthProperties(
     /** Agent token TTL. MUST be <= 3600s (Contract 1). */
     val agentTokenTtlSeconds: Long = 3600,
 
+    /**
+     * End-user Console login session — idle timeout (seconds) of the refresh token the BFF holds.
+     * The short-lived access token stays <= [agentTokenTtlSeconds] (Contract 1); the BFF silently
+     * re-mints it via `POST /v1/auth/refresh` while the user is active. This is the SLIDING window:
+     * each refresh moves it forward, so a user is auto-logged-out only after this long of inactivity.
+     * Default 8h (a working day). Must be > [agentTokenTtlSeconds] to be useful.
+     */
+    val userRefreshIdleTtlSeconds: Long = 28_800,
+
+    /**
+     * End-user Console login session — absolute maximum lifetime (seconds), regardless of activity.
+     * A refresh past this hard cap is rejected and the user must sign in again. Default 7 days.
+     */
+    val userRefreshAbsoluteTtlSeconds: Long = 604_800,
+
     /** Internal service token TTL = 300s (Contract 12). */
     val serviceTokenTtlSeconds: Long = 300,
 

@@ -129,6 +129,78 @@ async def test_post_version_404_falls_back_to_create():
     assert create.called
 
 
+# ── register_platform(): platform-namespace create + 409→version fallback ─────
+@respx.mock
+async def test_register_platform_create_201():
+    route = respx.post(f"{REGISTRY}/v1/platform/tools").mock(
+        return_value=httpx.Response(201, json={"tool_id": "p1", "name": NAME, "owner": "platform"})
+    )
+    async with httpx.AsyncClient() as http:
+        client, tokens = _make_client(http)
+        result = await client.register_platform(
+            user_jwt="user-jwt", agent_id="agent-1", name=NAME, manifest=MANIFEST
+        )
+    assert result == {"tool_id": "p1", "name": NAME, "owner": "platform"}
+    assert route.called
+    # Hits the PLATFORM namespace, not the tenant register path.
+    assert route.calls.last.request.url.path == "/v1/platform/tools"
+
+
+@respx.mock
+async def test_register_platform_409_falls_through_to_version():
+    create = respx.post(f"{REGISTRY}/v1/platform/tools").mock(return_value=httpx.Response(409))
+    version = respx.post(f"{REGISTRY}/v1/platform/tools/{NAME}/versions").mock(
+        return_value=httpx.Response(201, json={"version": "1.0.1", "owner": "platform"})
+    )
+    async with httpx.AsyncClient() as http:
+        client, _ = _make_client(http)
+        result = await client.register_platform(
+            user_jwt="user-jwt", agent_id="agent-1", name=NAME, manifest=MANIFEST
+        )
+    assert result == {"version": "1.0.1", "owner": "platform"}
+    assert create.called
+    assert version.called
+
+
+@respx.mock
+async def test_register_platform_403_maps_to_forbidden():
+    respx.post(f"{REGISTRY}/v1/platform/tools").mock(
+        return_value=httpx.Response(403, json={"error": {"message": "platform:admin required"}})
+    )
+    async with httpx.AsyncClient() as http:
+        client, _ = _make_client(http)
+        with pytest.raises(ApiError) as exc:
+            await client.register_platform(
+                user_jwt="user-jwt", agent_id="agent-1", name=NAME, manifest=MANIFEST
+            )
+    assert exc.value.code == ErrorCode.FORBIDDEN
+
+
+# ── retire(): de-register a tool; 404 is idempotent (already gone) ────────────
+@respx.mock
+async def test_retire_200_returns_json():
+    route = respx.post(f"{REGISTRY}/v1/tools/{NAME}/retire").mock(
+        return_value=httpx.Response(200, json={"name": NAME, "status": "retired"})
+    )
+    async with httpx.AsyncClient() as http:
+        client, _ = _make_client(http)
+        result = await client.retire(user_jwt="user-jwt", agent_id="agent-1", name=NAME)
+    assert result == {"name": NAME, "status": "retired"}
+    assert route.called
+
+
+@respx.mock
+async def test_retire_404_is_idempotent():
+    respx.post(f"{REGISTRY}/v1/tools/{NAME}/retire").mock(
+        return_value=httpx.Response(404, json={"error": {"message": "not found"}})
+    )
+    async with httpx.AsyncClient() as http:
+        client, _ = _make_client(http)
+        result = await client.retire(user_jwt="user-jwt", agent_id="agent-1", name=NAME)
+    # A missing/already-retired tool must NOT fail promote.
+    assert result == {"name": NAME, "status": "not_found"}
+
+
 # ── mark_restricted(): posts the expected body and tolerates 200/201/409 ─────
 @pytest.mark.parametrize("status", [200, 201, 409])
 @respx.mock

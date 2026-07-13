@@ -82,6 +82,9 @@ def build_tool_view(
         "tool_id": tool_row.get("tool_id"),
         "name": name,
         "owner": "platform" if tool_row.get("is_platform") else "tenant",
+        # Marketplace label (private|protected|public). Platform rows are public; a tenant
+        # tool defaults to private. This is a filterable label, not an RLS boundary.
+        "visibility": tool_row.get("visibility"),
         "status": tool_row.get("status"),
         "version": resolved_version,
         "invoke_url": resolve_invoke_url(manifest, name),

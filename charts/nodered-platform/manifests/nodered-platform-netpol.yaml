@@ -1,0 +1,52 @@
+# Egress-ALLOW NetworkPolicy for the SINGLETON platform (public) Node-RED runtime.
+#
+# UNLIKE the per-tenant runtimes (egress-DENY except DNS), the platform runtime hosts public tools
+# (e.g. web_search) that MUST reach external search providers — so this policy ALLOWS egress to the
+# public internet. It still subtracts (ipBlock.except) the cloud metadata endpoint + all internal /
+# RFC-1918 ranges, so the platform runtime can reach EXTERNAL providers but can NEVER reach the
+# metadata endpoint, other tenants' pods, or internal platform services (the SSRF / lateral-movement
+# guard). Ingress is restricted to the Flow-Tool-Bridge, exactly like the tenant policy.
+#
+# This overrides the namespace baseline default-deny (charts/nodered-tenant/manifests/
+# baseline-default-deny.yaml) for the nodered-platform pod only, additively.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nodered-platform
+  namespace: cypherx-tools
+  labels:
+    app: nodered-platform
+    app.kubernetes.io/part-of: cypherx-flow-tools
+    cypherx.ai/role: platform
+spec:
+  podSelector:
+    matchLabels:
+      app: nodered-platform
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    # Only the bridge may invoke / administer the platform runtime.
+    - from:
+        - podSelector:
+            matchLabels:
+              app: tool-flow-bridge
+      ports:
+        - protocol: TCP
+          port: 1880
+  egress:
+    # DNS.
+    - to: []
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # External providers: allow the public internet MINUS metadata + internal/RFC-1918 ranges.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 169.254.169.254/32
+              - 169.254.0.0/16
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16

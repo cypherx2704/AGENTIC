@@ -29,7 +29,7 @@ CypherX AI is a **multi-tenant, language-agnostic agentic platform** built as a 
 **Overall verdict: the platform is well past "first cycle."** The proven four-service spine (Auth → xAgent → Guardrails → LLMs) is real and green — the canonical Contract-15 end-to-end suite passes **59/59** (2026-06-14). Beyond the spine, five Shared Core services, the agent runtime, both registries, two products, and the full Console frontend are all **genuine, tested implementations** — not scaffolds.
 
 **What is solidly built and tested today:**
-Auth, LLMs Gateway, Guardrails, Memory, RAG, xAgent/ax-1 (incl. reliability layer + async/SSE + coded-but-gated enhancement stages), Tool Registry, tool-web-search, Skill Registry, the Console (Next.js SPA + Fastify BFF + demo harness), cypherx-a1 + its MCP facade, the entire `contracts/` repo, the 27-service Docker-Compose runtime, the base Helm chart, and the Terraform module library (as code).
+Auth, LLMs Gateway, Guardrails, Memory, RAG, xAgent/ax-1 (incl. reliability layer + async/SSE + coded-but-gated enhancement stages), Tool Registry, the Flow-Tool-Bridge + Node-RED (incl. the public `web_search` flow-tool that replaced the retired `tool-web-search` service), Skill Registry, the Console (Next.js SPA + Fastify BFF + demo harness), cypherx-a1 + its MCP facade, the entire `contracts/` repo, the 27-service Docker-Compose runtime, the base Helm chart, and the Terraform module library (as code).
 
 **The genuine greenfield gaps (0%–low):**
 
@@ -66,7 +66,7 @@ Every app service listens on **`8080` in-container** by convention; `/livez` is 
 |---|---|---|---|---|
 | Edge (Caddy) | `:8000` | | tool-registry | `:8089` |
 | auth | `:8080` | | demo (opt-in) | `:8090` |
-| frontend-app | `:3000` | | tool-web-search | `:8091` |
+| frontend-app | `:3000` | | *(8091 freed — tool-web-search removed)* | |
 | xagent (ax-1) | `:8083` | | frontend-bff | `:8092` → 8088 |
 | llms-gateway | `:8085` | | cypherx-a1 | `:8093` |
 | guardrails | `:8086` | | mcp-eng-memory | `:8094` |
@@ -91,7 +91,7 @@ Backing infra ports: Redpanda `:9092`, Valkey `:6379`, MinIO `:9000`/`:9001`, Ma
 | 6 | **xAgent / ax-1** | `xAgent/ax-1` | Python/FastAPI | P09 (9A) | ✅ ~100% (9A) | **~60%** | 9A done + reliability + async/SSE; enhancement stages coded, gated off |
 | 7 | **xAgent / ax-2** | `xAgent/ax-2` | — (empty) | P10 | n/a (📋) | **0%** 🔴 | A2A router + orchestrator — **no code anywhere** |
 | 8 | **Tool Registry** | `Tools/tool-registry` | Python/FastAPI | P07 C1 | ✅ core complete | **~65%** | Discovery/versioning/health/access done; no capability-resolver/quotas |
-| 9 | **tool-web-search** | `Tools/tool-web-search` | Python/FastAPI | P07 C3 | ✅ complete | **~90%** | Genuine MCP server; only S3 large-output offload missing |
+| 9 | **web_search (flow-tool)** | `Tools/tool-flow-bridge` | Node-RED flow | P07 C3 → Phase 5 | ✅ replaced | — | Bespoke `tool-web-search` **decommissioned/removed**; capability now a Public `web_search` flow-tool (server `mcp-web-search`) |
 | 10 | **Skill Registry** | `Skills/skill-registry` | Python/FastAPI | P08 | n/a (📋) | **~30%** 🟡 | Real service but **re-scoped** to catalogue+access only |
 | 11 | **cypherx-a1 (+mcp)** | `CoreProjects/cypherx-a1` | Python/FastAPI | *(product, no phase)* | ✅ MVP complete | **~45%** (own roadmap) | GitHub ingest + graph + hybrid copilot + MCP facade |
 | 12 | **Frontend (app+bff+demo)** | `frontend/` | Next/Fastify/Py | P12 | 🟡 ~85% | **~40–45%** | Full Console + BFF trust boundary; enterprise/px0 half deferred |
@@ -214,16 +214,12 @@ Contains **only `CLAUDE.md`** (design placeholder) and `.git`. No `src/`, tests,
 #### Tool Registry — `Tools/tool-registry` (Phase 07 C1) — ~65%
 **Footprint:** Python 3.12 / FastAPI. **23 source files**, ~12 test modules, **4 migrations**, Dockerfile. A real service (the in-repo `REPO_ANALYSIS_2026-06-11.md` describing a stub is **stale**).
 
-**Implemented:** `GET /v1/tools` + `GET /v1/tools/{name}` (tenant-priority shadowing + `?version=` pinning), `POST /v1/tools` + `/versions` (Contract-4 validation, retention max 3), per-agent access control (`none|ask|automated`), restricted-tools registry, dual-mode JWT + revocation, **marketplace-hole split RLS with `WITH CHECK`**, 30s ETag-aware health poll with degrade/offline state machine + eager register poll, platform seed of `tool-web-search`.
+**Implemented:** `GET /v1/tools` + `GET /v1/tools/{name}` (tenant-priority shadowing + `?version=` pinning), `POST /v1/tools` + `/versions` (Contract-4 validation, retention max 3), per-agent access control (`none|ask|automated`), restricted-tools registry, dual-mode JWT + revocation, **marketplace-hole split RLS with `WITH CHECK`**, 30s ETag-aware health poll with degrade/offline state machine + eager register poll. (The startup platform seed of `tool-web-search` was removed — public tools now register via the API; see migration `20260712_0008`.)
 
 **Missing vs spec:** capability-resolver layer (`registry.capabilities` + `tenant_capability_bindings`); per-tenant quotas (`private_tools_max`/`invocations_per_min`); external-publisher submission (Trivy/Snyk scan, `pending_review→active`); S3 large-output offload; cosign image signing.
 
-#### tool-web-search — `Tools/tool-web-search` (Phase 07 C3) — ~90% ✅
-**Footprint:** Python 3.12 / FastAPI. **25 source files**, 9 test modules, Dockerfile. Boots keyless (`SEARCH_PROVIDER=mock`). A **genuine, complete MCP server**.
-
-**Implemented (`api/invoke.py`):** full Contract-4 invoke — dual-mode auth + revocation, **dual scope** (`tool:invoke` AND `tool:tool-web-search:invoke`), idempotency replay, fail-open rate limit (429 + Retry-After), `input_schema` validation (422 + JSON-Pointer), provider call (mock/serpapi/brave), **10 MiB output cap (413)**, 1 MiB body cap, `GET /manifest` (ETag/304), health.
-
-**Missing vs spec:** the S3-reference pattern (`output.ref`) for payloads >10 MiB — impl rejects with 413 instead of offloading. Real serpapi/brave exercised only via mocked HTTP.
+#### web_search flow-tool — `Tools/tool-flow-bridge` (Phase 07 C3 → Phase 5) — replaces the retired `tool-web-search`
+The bespoke `tool-web-search` FastAPI service has been **decommissioned and removed** from the monorepo (service directory, compose service, registry platform seed, ECR/Doppler entries). Its `web_search` capability is now a **Public flow-tool**: a Node-RED flow (`Tools/tool-flow-bridge/src/tool_flow_bridge/assets/web_search_flow.json`) hosted on the singleton platform Node-RED runtime and exposed through the Flow-Tool-Bridge as the public MCP server **`mcp-web-search`** (tool `web_search`). Same contract (`{query, count?/max_results}` → `{results:[{title,url,snippet,rank}]}`), same providers (mock/serpapi/brave). Cutover + bootstrap: `Tools/tool-flow-bridge/docs/web-search-public-tool.md`.
 
 #### Skill Registry — `Skills/skill-registry` (Phase 08) — ~30% 🟡 re-scoped
 **Footprint:** Python 3.12 / FastAPI. **23 source files**, ~12 test modules, **4 migrations**, Dockerfile. Built as a near-mechanical **mirror of tool-registry** over a `skills` schema.
@@ -333,7 +329,7 @@ Small, high-leverage items to make "first cycle" airtight:
 - **Settle the frontend login drift** — run the stack, confirm the live login path, fix `frontend/CLAUDE.md` + BFF provider docs.
 - **Run Contract-15 2× cold** as the formal DoD gate; re-run the Playwright E2E after a fresh `frontend-app` rebuild.
 - **Verify WP12 enhancement stages end-to-end** in a real-embeddings profile (flip the `stage_enable_*` flags, exercise RAG_QUERY/MEMORY/TOOL_LOOP against the live stack).
-- **tool-registry:** add capability-resolver + per-tenant quotas. **tool-web-search:** add S3 `output.ref` offload for >10 MiB.
+- **tool-registry:** add capability-resolver + per-tenant quotas.
 - **Stale-doc cleanup** (see §8).
 
 ### Phase B — Big net-new builds *(the real "next phase")*
@@ -375,7 +371,6 @@ Jira/Slack connectors, the live Kafka async worker for at-scale ingestion, and e
 - `frontend/CLAUDE.md` — describes a platform-credential login the code appears to have replaced with email/password + Google OAuth (§5.5).
 - `Shared Core/memory/CLAUDE.md` — documents the intentional-but-unblessed API divergence from `phase-06` (§5.1).
 - `Tools/tool-registry/REPO_ANALYSIS_2026-06-11.md` — describes a stub; the service is real.
-- `Tools/tool-web-search/REPO_ANALYSIS_*.md` — predates the shipped wire format (real body key is `args`, not `input`).
 - `Skills/skill-registry/db/migrations/README.md` — lists 2 old migrations; 4 exist.
 - `Shared Core/llms/README.md` + `db/migrations/README.md` — call BYOK/SSRF "deferred" though both are built.
 - `CoreProjects/cypherx-a1/openapi.yaml` — omits `/v1/graph/activity`, which is live and used by the MCP manifest.
@@ -395,7 +390,7 @@ Jira/Slack connectors, the live Kafka async worker for at-scale ingestion, and e
 | 4 | SharedCore / Guardrails | `Shared Core/guardrails` | ✅ first-cycle · ~50% |
 | 5 | SharedCore / RAG | `Shared Core/rag` | ✅ first-cycle · ~50% |
 | 6 | SharedCore / Memory | `Shared Core/memory` | 🟡 functional, spec-divergent · ~35% |
-| 7 | Tools (MCP) | `Tools/tool-registry` · `Tools/tool-web-search` | ✅ registry ~65% · web-search ~90% |
+| 7 | Tools (MCP) | `Tools/tool-registry` · `Tools/tool-flow-bridge` | ✅ registry ~65% · flow-tools + public `web_search` (replaced `tool-web-search`) |
 | 8 | Skills System | `Skills/skill-registry` | 🟡 re-scoped ~30% |
 | 9 | xAgent Core | `xAgent/ax-1` | ✅ 9A ~100% · full P09 ~60% |
 | 10 | A2A & Orchestration | `xAgent/ax-2` | 🔴 0% (empty) |
@@ -414,7 +409,7 @@ All present with concrete artifacts (§5.6). Doc-type by design (Markdown, not p
 |---|---|---|---|---|
 | auth | 30 `@Test` / 10 suites | | ax-1 | 34 test files |
 | llms | ~200 fns / 27 files | | tool-registry | ~12 modules |
-| guardrails | ~201 fns / 29 files | | tool-web-search | 9 modules |
+| guardrails | ~201 fns / 29 files | | tool-flow-bridge | (flow-tools + web_search) |
 | rag | ~88 fns / 15 files | | skill-registry | ~12 modules |
 | memory | ~96 fns / 20 files | | cypherx-a1 | 11 files |
 | frontend/bff | ~69 cases / 10 files | | frontend/app | 4 files |

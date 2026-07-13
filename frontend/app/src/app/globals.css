@@ -126,6 +126,28 @@ body {
   background: transparent;
 }
 
+/* Sidebar nav: auto-hiding scrollbar — invisible at rest, revealed only on hover or while
+   actively scrolling (the `.is-scrolling` class is toggled by AppShell on scroll). A thin
+   reserved gutter (scrollbar-width: thin) keeps it from shifting the layout when it appears. */
+.sidebar-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+.sidebar-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+.sidebar-scroll::-webkit-scrollbar-thumb {
+  background: transparent;
+}
+.sidebar-scroll:hover,
+.sidebar-scroll.is-scrolling {
+  scrollbar-color: rgb(var(--border-2)) transparent;
+}
+.sidebar-scroll:hover::-webkit-scrollbar-thumb,
+.sidebar-scroll.is-scrolling::-webkit-scrollbar-thumb {
+  background: rgb(var(--border-2));
+}
+
 /* Subtle accent ring on the active pipeline stage. In the palette, never neon.
    The reduced-motion block below disables it. */
 @keyframes cx-ring {

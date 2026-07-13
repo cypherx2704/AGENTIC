@@ -10,7 +10,8 @@ from tool_flow_bridge.db import queries
 from tool_flow_bridge.services import publisher as pub
 
 SLUG = "sum-tool"
-BINDING = {
+MCP_ROW = {"slug": SLUG, "status": "active", "server_name": f"tool-{SLUG}"}
+TOOL_ROW = {
     "status": "active",
     "snake_name": "add",
     "internal_host": "http://nodered:1880",
@@ -32,14 +33,14 @@ def wire(monkeypatch):
     async def fake_in_tenant(pool, tenant_id, fn):
         return await fn(None)
 
-    async def fake_binding(conn, slug):
-        return BINDING if slug == SLUG else None
+    async def fake_mcp(conn, slug):
+        return (MCP_ROW, [TOOL_ROW]) if slug == SLUG else None
 
     async def fake_invoke_workflow(client, **kw):
         return {"sum": kw["args"]["a"] + kw["args"]["b"]}
 
     monkeypatch.setattr(db_pool, "in_tenant", fake_in_tenant)
-    monkeypatch.setattr(queries, "get_binding_with_runtime", fake_binding)
+    monkeypatch.setattr(queries, "get_mcp_with_members", fake_mcp)
     monkeypatch.setattr(pub, "invoke_workflow", fake_invoke_workflow)
 
 

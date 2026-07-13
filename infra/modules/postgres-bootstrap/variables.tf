@@ -56,8 +56,9 @@ variable "sslmode" {
 #   runtime -> db/<service>/runtime_password   (Contract 14, Component 14)
 #   ddl     -> db/<service>/ddl_password        (Contract 14, Component 14)
 # Injected as TF_VAR_runtime_passwords / TF_VAR_ddl_passwords (maps) — no defaults, so a missing value fails loudly.
-# Keys MUST match the service keys in local.services: auth, llms, guardrails, memory, rag, xagent, platform-mgmt
-# (the platform service's Doppler name is "platform-mgmt" per Contract 20, even though its schema is "platform").
+# Keys MUST match the service keys in local.services: auth, llms, guardrails, memory, rag, xagent, platform-mgmt,
+# cypherx-a1, tool-flow-bridge (the platform service's Doppler name is "platform-mgmt" per Contract 20, even
+# though its schema is "platform"; tool-flow-bridge owns schema flow_tools / role flow_tools_user).
 # ---------------------------------------------------------------------------------------------------------------------
 variable "runtime_passwords" {
   description = "Map service-key => runtime user password (db/<svc>/runtime_password from Doppler)."

@@ -9,6 +9,10 @@
 --   20260611_0004__task_lifecycle_sweeper.sql (WP08 — sweeper RLS bypass + retention)
 --   20260611_0005__wp12_enhancement_stages.sql (WP12 — step_type enum + session_id +
 --                                               cost_budget_per_task)
+--   20260623_0006__init.sql                    (orchestrator hierarchy cols on agents)
+--   20260705_0007__agent_tool_loop_toggle.sql  (agents.tool_loop_enabled)
+--   20260712_0008__orchestration.sql           (workflows, workflow_tasks, agent_presets,
+--                                               tasks.parent_task_id + workflow_id)
 -- Keep this file in sync when adding a versioned migration.
 -- =====================================================================================
 
@@ -51,13 +55,20 @@ CREATE TABLE IF NOT EXISTS xagent.agents (
   token_budget_per_task INTEGER      NOT NULL DEFAULT 10000,
   capabilities          JSONB        NOT NULL DEFAULT '[]',
   metadata              JSONB        NOT NULL DEFAULT '{}',
+  -- orchestrator hierarchy (migration 0006; denormalised mirror of auth.agents)
+  agent_type            VARCHAR(20)  NOT NULL DEFAULT 'user_created',
+  parent_orchestrator_id UUID,
+  immutable_llm         BOOLEAN      NOT NULL DEFAULT false,
   created_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
   updated_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
   CONSTRAINT memory_scope_enum CHECK (memory_scope IN ('none','agent','user','tenant','session')),
   CONSTRAINT status_enum       CHECK (status IN ('active','inactive','pending_config')),
-  CONSTRAINT temperature_range CHECK (temperature >= 0.0 AND temperature <= 2.0)
+  CONSTRAINT temperature_range CHECK (temperature >= 0.0 AND temperature <= 2.0),
+  CONSTRAINT xagent_agent_type_enum CHECK (agent_type IN ('orchestrator','sub_agent','user_created'))
 );
 CREATE INDEX IF NOT EXISTS idx_xagent_agents_tenant ON xagent.agents (tenant_id);
+CREATE INDEX IF NOT EXISTS idx_xagent_agents_parent
+  ON xagent.agents (parent_orchestrator_id) WHERE parent_orchestrator_id IS NOT NULL;
 
 -- ── tasks (Component 2) ─────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS xagent.tasks (
@@ -71,6 +82,8 @@ CREATE TABLE IF NOT EXISTS xagent.tasks (
   metadata      JSONB        NOT NULL DEFAULT '{}',
   session_id           VARCHAR(255),    -- WP12 — optional session correlator (not identity)
   cost_budget_per_task NUMERIC(12,8),   -- WP12 — optional per-task USD cost cap (NULL = none)
+  parent_task_id       UUID,            -- 0008 — subtask lineage (NULL for standalone tasks)
+  workflow_id          UUID,            -- 0008 — owning orchestration run (NULL for standalone)
   output        JSONB,
   error_code    VARCHAR(50),
   error_msg     TEXT,
@@ -90,6 +103,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_running_timeout
   ON xagent.tasks (timeout_at) WHERE status IN ('pending','running');
 CREATE INDEX IF NOT EXISTS idx_tasks_session_id
   ON xagent.tasks (session_id) WHERE session_id IS NOT NULL;  -- WP12
+CREATE INDEX IF NOT EXISTS idx_tasks_workflow_id
+  ON xagent.tasks (workflow_id) WHERE workflow_id IS NOT NULL;  -- 0008
 
 -- ── task_steps (Component 6 — audit trail) ────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS xagent.task_steps (
@@ -173,3 +188,118 @@ CREATE INDEX IF NOT EXISTS idx_outbox_published_at
   ON xagent.outbox (published_at) WHERE published_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_task_steps_created_at
   ON xagent.task_steps (created_at);
+
+-- ── orchestration (migration 0008 — sub-agent workflow engine) ─────────────────────────
+CREATE TABLE IF NOT EXISTS xagent.workflows (
+  workflow_id     UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id       UUID         NOT NULL,
+  root_agent_id   UUID         NOT NULL,
+  goal            TEXT         NOT NULL,
+  status          VARCHAR(20)  NOT NULL DEFAULT 'pending',
+  mode            VARCHAR(20)  NOT NULL DEFAULT 'subagents',
+  decomposition   VARCHAR(20),
+  subtask_dag     JSONB,
+  output          JSONB,
+  error_code      VARCHAR(50),
+  error_msg       TEXT,
+  tokens_used     INTEGER,
+  cost_usd        NUMERIC(12,8),
+  cost_budget_usd NUMERIC(12,8),
+  approval_due_at TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  started_at      TIMESTAMPTZ,
+  completed_at    TIMESTAMPTZ,
+  timeout_at      TIMESTAMPTZ,
+  version         INTEGER      NOT NULL DEFAULT 1,
+  CONSTRAINT workflow_status_enum CHECK (status IN
+    ('pending','planning','running','awaiting_approval','completed','failed','cancelled','timeout')),
+  CONSTRAINT workflow_mode_enum CHECK (mode IN ('solo','subagents')),
+  CONSTRAINT workflow_decomposition_enum CHECK (decomposition IS NULL OR decomposition IN ('template','llm'))
+);
+CREATE INDEX IF NOT EXISTS idx_workflows_tenant     ON xagent.workflows (tenant_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflows_root_agent ON xagent.workflows (root_agent_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflows_status     ON xagent.workflows (status);
+CREATE INDEX IF NOT EXISTS idx_workflows_running_timeout
+  ON xagent.workflows (timeout_at) WHERE status IN ('pending','planning','running','awaiting_approval');
+
+CREATE TABLE IF NOT EXISTS xagent.workflow_tasks (
+  id                  UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+  workflow_id         UUID         NOT NULL REFERENCES xagent.workflows(workflow_id) ON DELETE CASCADE,
+  tenant_id           UUID         NOT NULL,
+  node_id             TEXT         NOT NULL,
+  task_id             UUID,
+  parent_node_id      TEXT,
+  description         TEXT         NOT NULL DEFAULT '',
+  node_type           VARCHAR(20)  NOT NULL DEFAULT 'agent',
+  assigned_agent_id   UUID,
+  preset              TEXT,
+  depends_on          TEXT[]       NOT NULL DEFAULT '{}',
+  status              VARCHAR(20)  NOT NULL DEFAULT 'pending',
+  output              JSONB,
+  tokens_used         INTEGER,
+  cost_usd            NUMERIC(12,8),
+  retry_count         INTEGER      NOT NULL DEFAULT 0,
+  retry_max           INTEGER      NOT NULL DEFAULT 1,
+  approval_request_id UUID,
+  created_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  started_at          TIMESTAMPTZ,
+  completed_at        TIMESTAMPTZ,
+  version             INTEGER      NOT NULL DEFAULT 1,
+  CONSTRAINT workflow_task_status_enum CHECK (status IN
+    ('pending','running','awaiting_approval','completed','failed','cancelled','timeout','skipped')),
+  CONSTRAINT workflow_task_node_type_enum CHECK (node_type IN
+    ('task','agent','tool','skill','approval','condition','fanout','join','human')),
+  CONSTRAINT uq_workflow_node UNIQUE (workflow_id, node_id)
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_tasks_workflow ON xagent.workflow_tasks (workflow_id);
+CREATE INDEX IF NOT EXISTS idx_workflow_tasks_tenant   ON xagent.workflow_tasks (tenant_id);
+CREATE INDEX IF NOT EXISTS idx_workflow_tasks_task_id  ON xagent.workflow_tasks (task_id) WHERE task_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS xagent.agent_presets (
+  preset_id      UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id      UUID         NOT NULL,
+  name           VARCHAR(100) NOT NULL,
+  description    TEXT,
+  system_prompt  TEXT,
+  model_alias    VARCHAR(100),
+  allowed_tools  TEXT[]       NOT NULL DEFAULT '{}',
+  allowed_scopes TEXT[]       NOT NULL DEFAULT '{}',
+  metadata       JSONB        NOT NULL DEFAULT '{}',
+  created_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  updated_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  CONSTRAINT uq_agent_preset_name UNIQUE (tenant_id, name)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_presets_tenant ON xagent.agent_presets (tenant_id);
+
+ALTER TABLE xagent.workflows      ENABLE ROW LEVEL SECURITY;
+ALTER TABLE xagent.workflow_tasks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE xagent.agent_presets  ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS xagent_workflows_isolation ON xagent.workflows;
+CREATE POLICY xagent_workflows_isolation ON xagent.workflows FOR ALL
+  USING      (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+  WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+
+DROP POLICY IF EXISTS xagent_workflow_tasks_isolation ON xagent.workflow_tasks;
+CREATE POLICY xagent_workflow_tasks_isolation ON xagent.workflow_tasks FOR ALL
+  USING      (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+  WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+
+DROP POLICY IF EXISTS xagent_agent_presets_isolation ON xagent.agent_presets;
+CREATE POLICY xagent_agent_presets_isolation ON xagent.agent_presets FOR ALL
+  USING      (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+  WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+
+DROP POLICY IF EXISTS xagent_workflows_sweeper ON xagent.workflows;
+CREATE POLICY xagent_workflows_sweeper ON xagent.workflows FOR ALL
+  USING      (current_setting('app.sweeper', true) = 'on')
+  WITH CHECK (current_setting('app.sweeper', true) = 'on');
+
+DROP POLICY IF EXISTS xagent_workflow_tasks_sweeper ON xagent.workflow_tasks;
+CREATE POLICY xagent_workflow_tasks_sweeper ON xagent.workflow_tasks FOR ALL
+  USING      (current_setting('app.sweeper', true) = 'on')
+  WITH CHECK (current_setting('app.sweeper', true) = 'on');
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON xagent.workflows      TO xagent_user;
+GRANT SELECT, INSERT, UPDATE, DELETE ON xagent.workflow_tasks TO xagent_user;
+GRANT SELECT, INSERT, UPDATE, DELETE ON xagent.agent_presets  TO xagent_user;

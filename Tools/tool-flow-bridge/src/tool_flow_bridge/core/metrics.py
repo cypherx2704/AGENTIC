@@ -5,22 +5,26 @@ from __future__ import annotations
 from prometheus_client import Counter, Gauge, Histogram
 
 # ── MCP invoke (agent -> bridge -> Node-RED) ─────────────────────────────────────
+# ``slug`` carries PER-MEMBER attribution on the aggregating wire: it is
+# ``f"{mcp_slug}:{capability}"`` so invocations of different member tools of the same MCP are
+# distinguishable (finding #1). The single-tool wire uses the same encoding for consistency.
 invoke_total = Counter(
     "tfb_invoke_total",
-    "Total MCP tool invocations handled, by tool slug + status.",
+    "Total MCP tool invocations handled, by member slug (mcp_slug:capability) + status.",
     labelnames=("slug", "status"),
 )
 
 invoke_duration_seconds = Histogram(
     "tfb_invoke_duration_seconds",
-    "End-to-end /w/<slug>/mcp/v1/invoke duration in seconds.",
+    "End-to-end /m/<slug>/mcp (and legacy /w/<slug>/mcp) tools/call duration in seconds.",
 )
 
 invoke_rejected_total = Counter(
     "tfb_invoke_rejected_total",
     "Invocations rejected before/after dispatch, by reason "
-    "(scope_denied | schema_invalid | output_too_large | not_found | nodered_error).",
-    labelnames=("reason",),
+    "(access_denied | schema_invalid | output_too_large | not_found | in_flight | nodered_error) "
+    "and member slug (mcp_slug:capability, or the MCP/tool slug for pre-resolution rejections).",
+    labelnames=("reason", "slug"),
 )
 
 manifest_served_total = Counter(

@@ -66,6 +66,11 @@ class UserRepository(private val tenantTx: TenantTx) {
         jdbc.queryForObject(SELECT_BY_ID, ROW_MAPPER, id)!!
     }
 
+    /** Find a user by primary key, or null. Drives session refresh (re-loads the user by session). */
+    fun findById(userId: UUID): UserRecord? = tenantTx.inPlatform { jdbc ->
+        jdbc.query(SELECT_BY_ID, ROW_MAPPER, userId).firstOrNull()
+    }
+
     /** Find a user by (case-insensitive) email, or null. Drives email/password login. */
     fun findByEmail(email: String): UserRecord? = tenantTx.inPlatform { jdbc ->
         jdbc.query("$SELECT_BASE WHERE email = ?", ROW_MAPPER, email).firstOrNull()

@@ -18,7 +18,7 @@ if sys.platform == "win32":
 import structlog
 from fastapi import FastAPI
 
-from .api import health, invoke, manifest
+from .api import health, manifest, mcp
 from .core.auth import warm_jwks
 from .core.config import get_settings
 from .core.errors import install_exception_handlers
@@ -51,7 +51,7 @@ def create_app() -> FastAPI:
     install_exception_handlers(app)
     app.include_router(health.router)
     app.include_router(manifest.router)
-    app.include_router(invoke.router)
+    app.include_router(mcp.router)  # real-MCP Streamable-HTTP (JSON-RPC 2.0) — the sole tool wire
     return app
 
 

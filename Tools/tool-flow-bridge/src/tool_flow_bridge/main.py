@@ -22,7 +22,7 @@ import httpx
 import structlog
 from fastapi import FastAPI
 
-from .api import editor_sessions, flow_tools, health, invoke, manifest
+from .api import editor_sessions, flow_tools, health, manifest, mcp, tools_mcps
 from .core.auth import warm_jwks
 from .core.body_limit import BodySizeLimitMiddleware
 from .core.config import get_settings
@@ -32,7 +32,7 @@ from .core.trace import TraceContextMiddleware
 from .core.valkey import ValkeyClient
 from .db import pool as db_pool
 from .services.nodered_admin import NoderedAdmin
-from .services.provisioner import get_provisioner
+from .services.provisioner import get_platform_provisioner, get_provisioner
 from .services.publisher import Publisher
 from .services.registry_client import RegistryClient
 from .services.service_token import ServiceTokenProvider
@@ -70,7 +70,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.registry = registry
     nodered_admin = NoderedAdmin(http_client, settings)
     provisioner = get_provisioner(settings)
+    platform_provisioner = get_platform_provisioner(settings)
     app.state.provisioner = provisioner
+    app.state.platform_provisioner = platform_provisioner
     app.state.publisher = Publisher(
         settings=settings,
         pool=pool,
@@ -78,6 +80,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         registry=registry,
         nodered_admin=nodered_admin,
         http_client=http_client,
+        platform_provisioner=platform_provisioner,
     )
 
     warm_jwks(settings)
@@ -116,8 +119,10 @@ def create_app() -> FastAPI:
     install_exception_handlers(app)
     app.include_router(health.router)
     app.include_router(manifest.router)
-    app.include_router(invoke.router)
+    app.include_router(mcp.router)  # real-MCP Streamable-HTTP (JSON-RPC 2.0) — the sole tool wire
     app.include_router(flow_tools.router)
+    app.include_router(tools_mcps.tools_router)  # POST/GET /v1/tools
+    app.include_router(tools_mcps.mcps_router)  # /v1/mcps CRUD + publish/promote
     app.include_router(editor_sessions.router)
     return app
 

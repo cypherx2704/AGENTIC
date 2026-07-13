@@ -87,7 +87,7 @@ interface CatalogData {
  * secondary card, so it is settled independently.
  */
 async function loadCatalog(signal: AbortSignal): Promise<CatalogData> {
-  const [toolsR, restrictedR] = await Promise.allSettled([listTools(signal), listRestrictedTools(signal)]);
+  const [toolsR, restrictedR] = await Promise.allSettled([listTools({}, signal), listRestrictedTools(signal)]);
   if (toolsR.status === 'rejected') throw toolsR.reason;
   return {
     tools: toolsR.value,

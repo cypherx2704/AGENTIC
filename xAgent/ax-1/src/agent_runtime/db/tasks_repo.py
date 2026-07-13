@@ -49,12 +49,17 @@ class TaskRow:
     started_at: str | None = None
     completed_at: str | None = None
     timeout_at: str | None = None
+    # Subtask lineage (migration 0008) — set only for orchestration sub-agent tasks;
+    # both NULL for standalone single-agent tasks (the public POST /v1/tasks path).
+    parent_task_id: str | None = None
+    workflow_id: str | None = None
 
 
 _SELECT_COLUMNS = """
     task_id::text AS task_id, agent_id::text AS agent_id, tenant_id::text AS tenant_id,
     user_id::text AS user_id, trace_id::text AS trace_id, status, input, metadata, output,
     session_id, cost_budget_per_task,
+    parent_task_id::text AS parent_task_id, workflow_id::text AS workflow_id,
     error_code, error_msg, tokens_used, cost_usd,
     to_char(created_at,   'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS created_at,
     to_char(started_at,   'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS started_at,
@@ -87,6 +92,8 @@ def _row_to_task(row: dict[str, Any]) -> TaskRow:
         started_at=row.get("started_at"),
         completed_at=row.get("completed_at"),
         timeout_at=row.get("timeout_at"),
+        parent_task_id=row.get("parent_task_id"),
+        workflow_id=row.get("workflow_id"),
     )
 
 
@@ -102,11 +109,16 @@ async def create_task(
     metadata: dict[str, Any] | None = None,
     session_id: str | None = None,
     cost_budget_per_task: float | None = None,
+    parent_task_id: str | None = None,
+    workflow_id: str | None = None,
 ) -> TaskRow:
     """INSERT a new ``pending`` task row and return it (task_id is DB-generated).
 
     ``session_id`` / ``cost_budget_per_task`` (WP12) are OPTIONAL — both default NULL
     (no session correlation / no cost cap) so the first-cycle call path is unchanged.
+    ``parent_task_id`` / ``workflow_id`` (0008) are set ONLY by the orchestration engine
+    when it spawns a sub-agent task; both default NULL so the public POST /v1/tasks path
+    is byte-identical to before.
     """
 
     async def _q(conn: AsyncConnection) -> TaskRow:
@@ -114,8 +126,8 @@ async def create_task(
             f"""
             INSERT INTO xagent.tasks
               (agent_id, tenant_id, user_id, trace_id, status, input, metadata,
-               session_id, cost_budget_per_task, timeout_at)
-            VALUES (%s, %s, %s, %s, 'pending', %s, %s, %s, %s,
+               session_id, cost_budget_per_task, parent_task_id, workflow_id, timeout_at)
+            VALUES (%s, %s, %s, %s, 'pending', %s, %s, %s, %s, %s, %s,
                     NOW() + (%s || ' seconds')::interval)
             RETURNING {_SELECT_COLUMNS}
             """,  # noqa: S608 — static RETURNING columns
@@ -128,6 +140,8 @@ async def create_task(
                 Jsonb(metadata or {}),
                 session_id,
                 cost_budget_per_task,
+                parent_task_id,
+                workflow_id,
                 str(timeout_seconds),
             ),
         )

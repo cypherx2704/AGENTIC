@@ -3,8 +3,9 @@
 import type { ReactNode } from 'react';
 import { useMemo, useState } from 'react';
 import { Pipeline, type PipelineStage, type StageState } from '@/components/Pipeline';
+import { AgentToolPicker, type AgentToolGrant } from '@/components/AgentToolPicker';
 import { Badge, Button, Card, CardBody, CardHeader, ErrorBanner, Input, Select, Switch, Textarea, useToast } from '@/components/ui';
-import { putRuntime } from '@/lib/services';
+import { putRuntime, setToolAccess } from '@/lib/services';
 import type {
   AgentRuntime,
   AgentRuntimeRegistration,
@@ -94,6 +95,15 @@ function toRegistration(f: FormState, status: AgentRuntimeStatus): AgentRuntimeR
   };
 }
 
+/**
+ * A default runtime registration for seeding a brand-new agent's `allowed_tools` from the Create
+ * Agent modal (deferred picker). Shares the Builder's default config so the runtime the detail page
+ * later loads is consistent. Status stays `pending_config` — the user still publishes from the Builder.
+ */
+export function buildInitialRegistration(name: string, allowedTools: string[]): AgentRuntimeRegistration {
+  return { ...toRegistration(toForm(null, name), 'pending_config'), allowed_tools: allowedTools };
+}
+
 /** A titled block within the config card. Dense, typographic, divided by thin rules. */
 function Section({ title, desc, children }: { title: string; desc?: string; children: ReactNode }) {
   return (
@@ -154,6 +164,9 @@ export function AgentBuilder({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [dirty, setDirty] = useState(false);
+  // Staged per-capability tool grants from the picker (LIVE mode). Kept local and flushed to the
+  // tool-registry on Save — right after `allowed_tools` — so the two stores stay consistent.
+  const [stagedGrants, setStagedGrants] = useState<AgentToolGrant[]>([]);
   // Two-step publish tracking: after a successful step-1 save we may still need step 2.
   const [publishStep2Pending, setPublishStep2Pending] = useState(false);
 
@@ -190,6 +203,28 @@ export function AgentBuilder({
     setError(null);
     const status = statusOverride ?? form.status;
     const rt = await putRuntime(agentId, toRegistration(form, status));
+    // Two-store consistency (LIVE): the picker STAGES per-capability grants; apply them to the
+    // tool-registry only AFTER `allowed_tools` is persisted, and force `none` for any grant whose
+    // server is no longer attached (orphan purge) so a removed server can't leave a live grant.
+    if (stagedGrants.length > 0) {
+      const attached = new Set(rt.allowed_tools ?? csv(form.allowed_tools));
+      const results = await Promise.allSettled(
+        stagedGrants.map((g) =>
+          setToolAccess(g.server_name, {
+            agent_id: agentId,
+            access_mode: attached.has(g.server_name) ? g.access_mode : 'none',
+            capability: g.capability,
+          }),
+        ),
+      );
+      const failed = results.filter((r) => r.status === 'rejected').length;
+      if (failed > 0) {
+        throw new Error(
+          `Runtime saved, but ${failed} tool-access grant${failed === 1 ? '' : 's'} failed to save. Re-save to retry.`,
+        );
+      }
+      setStagedGrants([]);
+    }
     setForm(toForm(rt, fallbackName));
     setDirty(false);
     onSaved(rt);
@@ -415,13 +450,21 @@ export function AgentBuilder({
           </Section>
 
           <Section title="Tools & Skills" desc="What the agent may call during the tool loop.">
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              <Input
-                label="Allowed Tools"
-                value={form.allowed_tools}
-                onChange={(e) => patch('allowed_tools', e.target.value)}
-                hint="Comma-separated tool ids enabled for the TOOL_LOOP stage."
-              />
+            {/*
+              The tool picker owns TWO stores: the attached MCP server names land in `allowed_tools`
+              (this form field, saved with the runtime via putRuntime), and per-capability grants
+              persist immediately to the tool-registry (LIVE mode — `agentId` is always set here).
+            */}
+            <AgentToolPicker
+              agentId={agentId}
+              servers={csv(form.allowed_tools)}
+              onServersChange={(next) => patch('allowed_tools', next.join(', '))}
+              onGrantsChange={(g) => {
+                setStagedGrants(g);
+                setDirty(true);
+              }}
+            />
+            <div className="mt-4">
               <Input
                 label="Allowed Skills"
                 value={form.allowed_skills}

@@ -124,6 +124,21 @@ class Settings(BaseSettings):
         "169.254.169.254/32,169.254.0.0/16,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
     )
 
+    # ── Platform (public) Node-RED runtime (Phase 5 · 5-bridge) ────────────────
+    # A SINGLETON, platform-owned Node-RED that hosts PUBLIC (promoted) tools. Distinct from the
+    # per-tenant egress-DENY runtimes: it egresses to external search providers (egress-ALLOW) and
+    # holds a platform provider-key credential. Static mode (local/compose) reuses the single shared
+    # dev Node-RED; docker/k8s address a dedicated `nodered-platform` instance.
+    platform_nodered_name: str = "nodered-platform"
+    static_platform_nodered_internal_host: str = "http://nodered:1880"
+    static_platform_nodered_admin_token: str = "local-dev-nodered-admin-token"
+    static_platform_nodered_invoke_secret: str = "local-dev-nodered-invoke-secret"
+    static_platform_nodered_credential_secret: str = "local-dev-nodered-credential-secret"
+    # Egress-ALLOW: the platform runtime MAY reach external providers. Defaults to the catch-all with
+    # nodered_egress_block_cidrs subtracted (metadata + RFC-1918), so it still can NEVER reach the
+    # cloud metadata endpoint or internal platform services (same SSRF guard as the tenant path).
+    platform_nodered_egress_allow_cidrs: str = "0.0.0.0/0"
+
     # ── Editor session (BFF iframe proxy target) ──────────────────────────────
     editor_session_ttl_seconds: int = 3600
 
@@ -131,6 +146,28 @@ class Settings(BaseSettings):
     # Default access mode applied to a newly published tool when the publisher does not
     # choose one. 'ask' = human-in-the-loop approval per invocation (safe-by-default).
     default_access_mode: str = "ask"
+
+    # ── web_search public-tool bootstrap (Phase 5 · 5-websearch) ───────────────
+    # Identity the one-shot bootstrap CLI (`python -m tool_flow_bridge.services.bootstrap`)
+    # publishes + promotes the PUBLIC web_search flow-tool AS. The user JWT is forwarded to the
+    # Tool Registry (X-Forwarded-Agent-JWT) and MUST carry tool:admin + tenant:admin +
+    # platform:admin (promote is the platform-only path to visibility='public'). Empty by default so
+    # the running service ignores them — they are read only by the bootstrap CLI.
+    bootstrap_tenant_id: str = ""
+    bootstrap_agent_id: str = ""
+    bootstrap_user_jwt: str = ""
+    # NOTE: the public web_search flow selects its provider from the PLATFORM Node-RED runtime's OWN
+    # env (SEARCH_PROVIDER / SERPAPI_API_KEY / BRAVE_SEARCH_API_KEY, delivered by the
+    # nodered-platform-secrets Secret — see charts/nodered-platform). No provider key here in the
+    # bridge; an unset key => deterministic keyless MOCK results. So no new secret ref is needed.
+
+    # ── Invoke authorization ──────────────────────────────────────────────────
+    # Per-tool authorization is governed by the Tool Registry's per-agent ACCESS GRANT
+    # (none|ask|automated), the same model the Publish dialog + the agent's tool-access
+    # toggles write. On invoke the bridge resolves the calling agent's access for the tool and
+    # DENIES only an explicit 'none'. Fail-OPEN on any registry error — xAgent already enforces
+    # access fail-closed before it ever calls, so a registry blip must not break live tools.
+    enforce_registry_access: bool = True
 
     # ── Output cap (Contract 4 invoke) ────────────────────────────────────────
     max_output_bytes: int = 10 * 1024 * 1024  # 10 MiB
@@ -164,6 +201,10 @@ class Settings(BaseSettings):
     @property
     def egress_block_cidr_list(self) -> list[str]:
         return [c.strip() for c in self.nodered_egress_block_cidrs.split(",") if c.strip()]
+
+    @property
+    def platform_egress_allow_cidr_list(self) -> list[str]:
+        return [c.strip() for c in self.platform_nodered_egress_allow_cidrs.split(",") if c.strip()]
 
 
 @lru_cache

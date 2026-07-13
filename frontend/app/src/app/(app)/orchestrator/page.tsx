@@ -22,6 +22,7 @@ import type { Column } from '@/components/ui';
 import { ScopeSelector } from '@/components/ScopeSelector';
 import { useAsync } from '@/lib/useAsync';
 import { createSubAgent, deactivateSubAgent, listSubAgents, updateSubAgent, type SubAgent } from '@/lib/services';
+import { seedDefaultSubAgents } from '@/lib/orchestratorPresets';
 import { useSession } from '@/components/SessionProvider';
 
 export default function OrchestratorPage() {
@@ -33,6 +34,25 @@ export default function OrchestratorPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [editing, setEditing] = useState<SubAgent | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [seeding, setSeeding] = useState(false);
+
+  async function seedRoster() {
+    setSeeding(true);
+    try {
+      const results = await seedDefaultSubAgents(scopes);
+      const failed = results.filter((r) => r.action === 'failed');
+      if (failed.length) {
+        toast.error(`Seeded with ${failed.length} failure(s): ${failed.map((f) => f.preset).join(', ')}.`);
+      } else {
+        toast.success('Seeded researcher, writer, and reviewer sub-agents.');
+      }
+      reload();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Seeding failed.');
+    } finally {
+      setSeeding(false);
+    }
+  }
 
   async function deactivate(a: SubAgent) {
     setBusy(a.agent_id);
@@ -104,9 +124,20 @@ export default function OrchestratorPage() {
             title="Sub-Agents"
             description="Agents created by this orchestrator."
             actions={
-              <Button size="md" onClick={() => setCreateOpen(true)} disabled={!isOrchestrator}>
-                New Sub-Agent
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="md"
+                  variant="secondary"
+                  loading={seeding}
+                  disabled={!isOrchestrator}
+                  onClick={seedRoster}
+                >
+                  Seed Default Roster
+                </Button>
+                <Button size="md" onClick={() => setCreateOpen(true)} disabled={!isOrchestrator}>
+                  New Sub-Agent
+                </Button>
+              </div>
             }
           />
           <CardBody className="min-h-0 flex-1 overflow-y-auto p-0">

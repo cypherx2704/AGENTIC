@@ -731,6 +731,15 @@ dependencies = [
     { name = "uvicorn", extra = ["standard"] },
 ]
 
+[package.optional-dependencies]
+test = [
+    { name = "asgi-lifespan" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "respx" },
+    { name = "ruff" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "asgi-lifespan" },
@@ -742,6 +751,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "asgi-lifespan", marker = "extra == 'test'", specifier = ">=2.1" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "prometheus-client", specifier = ">=0.21" },
@@ -749,10 +759,15 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.9" },
     { name = "pydantic-settings", specifier = ">=2.6" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.9" },
+    { name = "pytest", marker = "extra == 'test'", specifier = ">=8.3" },
+    { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.24" },
     { name = "redis", specifier = ">=5" },
+    { name = "respx", marker = "extra == 'test'", specifier = ">=0.21" },
+    { name = "ruff", marker = "extra == 'test'", specifier = ">=0.7" },
     { name = "structlog", specifier = ">=24.4" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
 ]
+provides-extras = ["test"]
 
 [package.metadata.requires-dev]
 dev = [

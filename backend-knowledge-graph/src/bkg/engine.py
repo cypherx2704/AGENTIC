@@ -144,6 +144,11 @@ class Engine:
             stack.extend(self._store.get_rdeps(node_key))
         return seen
 
+    def reverse_dependencies(self, key: str) -> set[str]:
+        """The transitive reverse-dependency closure of a node (including the node
+        itself) — i.e. its blast radius. Requires the graph to be built first."""
+        return self._rdep_closure(key)
+
     # ------------------------------------------------------------ query / force
     def query(self, key: str) -> Any:
         """Bring ``key`` up to date at the current revision and return its value."""

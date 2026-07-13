@@ -27,6 +27,7 @@ import java.util.UUID
 class OrchestratorService(
     private val agentRepository: AgentRepository,
     private val agentService: AgentService,
+    private val tokenMintService: TokenMintService,
 ) {
 
     /** Resolve + assert the caller is this tenant's orchestrator; returns its record. */
@@ -159,6 +160,36 @@ class OrchestratorService(
             ),
             caller,
         )
+    }
+
+    /**
+     * Mint a short-lived agent JWT FOR one of the calling orchestrator's own sub-agents (delegation
+     * mint — no api_key required). This is how the orchestration engine gives a sub-agent task its
+     * own identity so downstream services (LLMs gateway alias allowlist, Tools registry access)
+     * enforce the SUB-AGENT's confinement, not the orchestrator's.
+     *
+     * Authz (this method): caller MUST be the tenant orchestrator; the target MUST be a `sub_agent`
+     * with `parent_orchestrator_id == caller` (else 404 — invisible). The requested scopes are
+     * intersected with the sub-agent's own `allowed_scopes` by [TokenMintService.mintForAgent] (which
+     * are already a subset of the orchestrator's by the creation-time invariant), so the minted token
+     * can never exceed the sub-agent's persisted authority.
+     */
+    fun mintSubAgentToken(
+        caller: AgentService.Caller,
+        subAgentId: UUID,
+        requestedScopes: List<String>,
+    ): TokenMintService.MintedAccessToken {
+        val orchestrator = requireOrchestrator(caller)
+        val target = agentRepository.findById(orchestrator.tenantId, subAgentId)
+        // Single, IDENTICAL 404 for every not-mintable case (absent / not-a-sub-agent / owned by
+        // another orchestrator) so the response can't distinguish existence from ownership.
+        if (target == null ||
+            target.agentType != AgentType.SUB_AGENT.value ||
+            target.parentOrchestratorId != orchestrator.agentId
+        ) {
+            throw ApiException.notFound("Sub-agent not found", mapOf("agent_id" to subAgentId.toString()))
+        }
+        return tokenMintService.mintForAgent(orchestrator.tenantId, subAgentId, requestedScopes)
     }
 
     /** Deactivate a sub-agent owned by the calling orchestrator (cascade revoke via AgentService). */

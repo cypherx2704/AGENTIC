@@ -459,6 +459,8 @@ export interface RegistryEntry {
   name: string;
   owner?: string; // 'platform' | 'tenant'
   is_platform?: boolean;
+  /** Marketplace visibility section this server belongs to (registry adds it; `public` == platform). */
+  visibility?: ToolVisibility | string;
   version?: string;
   resolved_version?: string;
   latest_version?: string;
@@ -546,6 +548,143 @@ export interface EditorSession {
 export interface NoderedFlow {
   id: string;
   label: string;
+}
+
+// ── Tool + MCP workflow (flow-tool-bridge control plane: /v1/tools + /v1/mcps) ─────────
+// The "atomic tool + aggregating MCP" model (spec Phase 2/4). An MCP is a named collection
+// of tools registered to the registry as ONE server; a tool can belong to MANY MCPs. These
+// types cover the WHOLE feature (Marketplace 4A + Tool Builder 4B + Agent picker 4C) so the
+// later phases only touch their own page files. Shapes mirror flow-bridge `_tool_view` /
+// `_mcp_view` and the `tools_mcps.py` request bodies exactly.
+
+/** Tenant-level visibility label shared by tools, MCPs, and the registry `?visibility=` filter. */
+export type ToolVisibility = 'private' | 'protected' | 'public';
+
+/** Visibility a tenant may self-declare on publish. `public` is reached ONLY via promote. */
+export type TenantVisibility = 'private' | 'protected';
+
+/** Lifecycle status of an atomic tool or an MCP collection. */
+export type ToolLifecycleStatus = 'active' | 'retired';
+
+/** One MCP membership as it appears on an atomic tool (flow-bridge tool view `mcps[]`). */
+export interface ToolMcpMembership {
+  mcp_id: string;
+  slug: string;
+  server_name: string;
+  status?: ToolLifecycleStatus | string;
+}
+
+/**
+ * An atomic flow-tool + its MCP memberships — flow-bridge `GET /v1/tools` item (`_tool_view`).
+ * Named `BridgeTool` to avoid clashing with the legacy single-server {@link FlowTool}.
+ */
+export interface BridgeTool {
+  tool_id: string;
+  snake_name: string; // the MCP tool name (snake_case)
+  display_name: string;
+  description: string;
+  version: string;
+  visibility: ToolVisibility | null;
+  access_mode: AccessMode | null;
+  status: ToolLifecycleStatus | string;
+  node_red_flow_id?: string | null;
+  input_schema?: Record<string, unknown>;
+  output_schema?: Record<string, unknown> | null;
+  /** The MCP(s) this tool belongs to (empty is possible mid-migration; UI shows "standalone"). */
+  mcps: ToolMcpMembership[];
+  updated_at?: string | null;
+}
+
+/** A member tool as it appears inside an MCP view (flow-bridge `_mcp_view` `tools[]`). */
+export interface McpMemberTool {
+  tool_id: string;
+  snake_name: string;
+  display_name: string;
+  /**
+   * The member tool's DEFAULT access mode (from `flow_tools.tools.access_mode`). Seeds the agent
+   * picker's allowed-vs-greyed state when the whole MCP is added: `automated` members are allowed,
+   * `ask`/`none` (restricted) members come in greyed. Optional for back-compat with older bridges.
+   */
+  access_mode?: AccessMode | null;
+}
+
+/** An MCP collection (aggregating server) + its member tools — flow-bridge `_mcp_view`. */
+export interface Mcp {
+  mcp_id: string;
+  slug: string;
+  server_name: string; // == slug; the registry server name
+  display_name: string;
+  description: string;
+  visibility: ToolVisibility;
+  status: ToolLifecycleStatus | string;
+  version: string;
+  tools: McpMemberTool[];
+  updated_at?: string | null;
+  // Present ONLY on the promote response (POST /v1/mcps/{id}/promote):
+  registry_status?: string;
+  runtime_rehomed?: boolean;
+}
+
+/** Body for `POST /v1/tools` — create an atomic tool from a Node-RED flow (auto-singleton MCP). */
+export interface CreateBridgeToolRequest {
+  node_red_flow_id: string;
+  title: string;
+  description: string;
+  snake_name?: string;
+  input_params?: FlowToolParam[];
+  output_params?: FlowToolParam[];
+  access_mode?: AccessMode;
+  /** `private` | `protected` only — `public` is reached solely via promote (registry 400s it here). */
+  visibility?: TenantVisibility;
+  /** Join these existing MCP(s); omit/empty ⇒ auto-create a singleton MCP (`tool-<slug>`). */
+  mcp_ids?: string[];
+}
+
+/** Result of `POST /v1/tools` (create; flow-bridge returns the tool + its memberships). */
+export interface CreateBridgeToolResult {
+  tool_id: string;
+  snake_name: string;
+  display_name: string;
+  description: string;
+  version: string;
+  visibility: ToolVisibility;
+  access_mode: AccessMode;
+  status: ToolLifecycleStatus | string;
+  is_update: boolean;
+  mcp_slug: string | null;
+  server_name: string | null;
+  mcps: Array<{ mcp_id: string; slug: string; server_name: string }>;
+}
+
+/** Body for `POST /v1/mcps` — create an MCP collection (every `tool_ids` is ownership-validated). */
+export interface CreateMcpRequest {
+  display_name: string;
+  description: string;
+  visibility?: TenantVisibility;
+  tool_ids?: string[];
+  /** Optional explicit slug; otherwise derived from `display_name` + tenant suffix. */
+  slug?: string;
+}
+
+/**
+ * Body for `PUT /v1/mcps/{id}` — update metadata/membership (all fields optional). When `tool_ids`
+ * is present it REPLACES the membership set; omit it to leave membership untouched. The MCP version
+ * stays STABLE (the registry picks up the regenerated manifest via its ETag poll).
+ */
+export interface UpdateMcpRequest {
+  display_name?: string;
+  description?: string;
+  visibility?: TenantVisibility;
+  tool_ids?: string[];
+}
+
+/** Result of `DELETE /v1/mcps/{id}` (unpublish/retire the MCP + its exclusively-owned tools). */
+export interface UnpublishMcpResult {
+  mcp_id: string;
+  slug: string;
+  status: ToolLifecycleStatus | string;
+  /** Tool ids that were retired because this MCP was their only home. */
+  retired_tools: string[];
 }
 
 // ── Guardrails: custom rules + check + simulation ────────────────────────────────────

@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useSession } from './SessionProvider';
 import { ThemeToggle } from './ThemeToggle';
@@ -106,6 +106,7 @@ const NAV: NavGroup[] = [
     label: 'Operations',
     items: [
       { href: '/tasks/run', label: 'Task Runner', icon: I.runner },
+      { href: '/orchestrator/run', label: 'Orchestrator Run', icon: I.orchestrator },
       { href: '/tasks', label: 'Task Feed', icon: I.feed },
       { href: '/hil', label: 'Approvals', icon: I.approvals },
     ],
@@ -121,6 +122,7 @@ const NAV: NavGroup[] = [
   {
     label: 'Capabilities',
     items: [
+      { href: '/marketplace', label: 'Marketplace', icon: I.overview },
       { href: '/tools', label: 'Tools', icon: I.tools },
       { href: '/tools/builder', label: 'Tool Builder', icon: I.builder, scope: 'tool:admin' },
       { href: '/skills', label: 'Skills', icon: I.skills },
@@ -224,6 +226,24 @@ export function AppShell({ children }: { children: ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const navScrollRef = useRef<HTMLDivElement>(null);
+
+  // Reveal the sidebar scrollbar only while it is actively being scrolled (then fade it out).
+  useEffect(() => {
+    const el = navScrollRef.current;
+    if (!el) return;
+    let t: ReturnType<typeof setTimeout> | undefined;
+    const onScroll = () => {
+      el.classList.add('is-scrolling');
+      if (t) clearTimeout(t);
+      t = setTimeout(() => el.classList.remove('is-scrolling'), 900);
+    };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      el.removeEventListener('scroll', onScroll);
+      if (t) clearTimeout(t);
+    };
+  }, [session?.authenticated]);
 
   useEffect(() => {
     if (!loading && session && !session.authenticated) {
@@ -292,7 +312,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
       <div className="flex min-h-0 flex-1">
         <nav className="hidden w-[230px] shrink-0 flex-col overflow-hidden border-r border-border bg-surface md:flex" aria-label="Primary">
-          <div className="min-h-0 flex-1 overflow-y-auto p-2.5">
+          <div ref={navScrollRef} className="sidebar-scroll min-h-0 flex-1 overflow-y-auto p-2.5">
             <NavList pathname={pathname} scopes={session.scopes ?? []} />
           </div>
           <div className="flex shrink-0 items-center gap-2 border-t border-border p-2.5">
@@ -329,7 +349,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6 6 18M6 6l12 12" strokeLinecap="round" /></svg>
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto p-2.5">
+            <div className="sidebar-scroll flex-1 overflow-y-auto p-2.5">
               <NavList pathname={pathname} scopes={session.scopes ?? []} onNavigate={() => setDrawerOpen(false)} />
             </div>
           </nav>

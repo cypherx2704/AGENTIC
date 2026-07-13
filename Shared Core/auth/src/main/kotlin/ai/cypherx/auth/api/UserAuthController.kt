@@ -55,7 +55,12 @@ class UserAuthController(
         val password: String? = null,
     )
 
-    /** Login/Google-exchange response. The `token` is consumed by the BFF and stored server-side. */
+    /**
+     * Login/Google-exchange/refresh response. Both `token` (the <=1h access JWT) and `refresh_token`
+     * are consumed by the BFF and stored in its encrypted server-side session — NEITHER reaches the
+     * SPA. The BFF re-mints `token` via `POST /v1/auth/refresh` (sending `refresh_token`) before it
+     * expires, so an active session never hard-expires mid-work.
+     */
     data class SessionResponse(
         @JsonProperty("user_id") val userId: UUID,
         @JsonProperty("tenant_id") val tenantId: UUID,
@@ -63,7 +68,13 @@ class UserAuthController(
         val token: String,
         @JsonProperty("token_type") val tokenType: String = "Bearer",
         @JsonProperty("expires_in") val expiresIn: Long,
+        @JsonProperty("refresh_token") val refreshToken: String,
+        @JsonProperty("refresh_expires_in") val refreshExpiresIn: Long,
         val scopes: List<String>,
+    )
+
+    data class RefreshRequest(
+        @JsonProperty("refresh_token") val refreshToken: String? = null,
     )
 
     data class GoogleCallbackRequest(
@@ -97,6 +108,24 @@ class UserAuthController(
     @PostMapping("/v1/auth/login")
     fun login(@RequestBody body: LoginRequest): SessionResponse =
         userAuthService.login(body.email, body.password).toResponse()
+
+    // ── 2b. Session refresh / logout (BFF-driven; body-authenticate via the refresh token) ──────
+
+    /**
+     * Silently renew the session: exchange a valid refresh token for a fresh <=1h access JWT (and the
+     * same refresh token, with its idle window slid forward). Called by the BFF before the access
+     * token expires. 401 with a Contract-2 envelope if the refresh token is missing/invalid/expired.
+     */
+    @PostMapping("/v1/auth/refresh")
+    fun refresh(@RequestBody body: RefreshRequest): SessionResponse =
+        userAuthService.refresh(body.refreshToken).toResponse()
+
+    /** Revoke a session (logout). Idempotent — a missing/unknown token still returns 204. */
+    @PostMapping("/v1/auth/logout")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    fun logout(@RequestBody(required = false) body: RefreshRequest?) {
+        userAuthService.logout(body?.refreshToken)
+    }
 
     // ── 3. Google OAuth2 ────────────────────────────────────────────────────────────────────────
 
@@ -132,6 +161,8 @@ class UserAuthController(
         agentId = agentId,
         token = token,
         expiresIn = expiresIn,
+        refreshToken = refreshToken,
+        refreshExpiresIn = refreshExpiresIn,
         scopes = scopes,
     )
 }

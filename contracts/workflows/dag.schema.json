@@ -1,0 +1,184 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.cypherx.ai/v1/workflows/dag.schema.json",
+  "title": "Workflow DAG Definition",
+  "x-enforcement-phase": "phase-10",
+  "description": "Contract 3 (orchestration extension) — the STATIC workflow graph an orchestrator agent executes: a set of nodes (subtasks) and directed dependency edges. DEFINED NOW for alignment; ENFORCEMENT TURNS ON in Phase 10 (Orchestrator). The graph MUST be acyclic (validated via Kahn's algorithm before execution; a cycle yields error_code=INVALID_DAG and no nodes are spawned). Internal orchestrator->sub-agent execution runs each node in-tenant on behalf of the assigned sub-agent (no A2A); A2A delegation is reserved for the external/cross-vendor boundary. The `subtask_dag` JSONB column on xagent.workflows serializes a document of this shape.",
+  "type": "object",
+  "properties": {
+    "workflow_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "UUID identifying this workflow run/definition."
+    },
+    "schema_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "description": "Semantic version of this contract schema, e.g. \"1.0.0\"."
+    },
+    "tenant_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Organisation/tenant UUID that owns this workflow."
+    },
+    "name": {
+      "type": "string",
+      "description": "Human-readable workflow name (e.g. the template name, or a slug of the goal)."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "description": "Optional semantic version of the workflow definition itself (for reusable templates)."
+    },
+    "goal": {
+      "type": "string",
+      "description": "The natural-language goal this DAG decomposes."
+    },
+    "decomposition": {
+      "type": "string",
+      "enum": ["template", "llm"],
+      "description": "How this DAG was produced: a deterministic template match, or an LLM decomposition (the plan task-type)."
+    },
+    "nodes": {
+      "type": "array",
+      "description": "The subtask nodes of the DAG.",
+      "items": { "$ref": "#/$defs/node" },
+      "minItems": 1
+    },
+    "edges": {
+      "type": "array",
+      "description": "Directed dependency edges. An edge from A to B means B depends on A (A must complete first).",
+      "items": { "$ref": "#/$defs/edge" }
+    },
+    "constraints": {
+      "type": "object",
+      "description": "Execution caps that bound cost and runaway fan-out.",
+      "properties": {
+        "max_depth": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum delegation depth. Default aligns with MAX_DELEGATION_DEPTH (5)."
+        },
+        "max_fanout": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum concurrent/total sub-agents fanned out from a single node or run."
+        },
+        "max_cost_usd": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Per-workflow cost ceiling in USD; on breach the run is cancelled (early stop)."
+        },
+        "max_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Per-workflow token ceiling; on breach the run is cancelled (early stop)."
+        }
+      },
+      "additionalProperties": true
+    },
+    "hil_gates": {
+      "type": "array",
+      "description": "Nodes that require a human-in-the-loop approval before execution (Auth HIL / Contract 16).",
+      "items": { "$ref": "#/$defs/hil_gate" }
+    }
+  },
+  "required": ["workflow_id", "schema_version", "tenant_id", "nodes"],
+  "$defs": {
+    "node": {
+      "type": "object",
+      "description": "One subtask node in the DAG.",
+      "properties": {
+        "node_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Unique node identifier within this DAG (referenced by edges)."
+        },
+        "node_type": {
+          "type": "string",
+          "enum": ["task", "agent", "tool", "skill", "approval", "condition", "fanout", "join", "human"],
+          "description": "Node kind. `agent`/`task` run a sub-agent pipeline; `tool`/`skill` invoke a capability; `approval`/`human` pause for HIL; `condition`/`fanout`/`join` are control nodes."
+        },
+        "ref": {
+          "type": "string",
+          "description": "What this node runs: a task_type (a2a/task-types.md), a `<server>.<tool>` id, a skill id, or a model alias — interpreted per node_type."
+        },
+        "assigned_agent_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "The sub-agent this node runs as (must be a sub-agent of the orchestrator, same tenant). Resolved from `preset` when omitted."
+        },
+        "preset": {
+          "type": "string",
+          "description": "Name of an agent preset (xagent.agent_presets) bundling {system prompt, tool allowlist, scope subset, model tier} for this node."
+        },
+        "input_bindings": {
+          "type": "object",
+          "description": "Template bindings for this node's input, e.g. {\"context\": \"{{node-a.output}}\"}; resolved from upstream node outputs at execution time.",
+          "additionalProperties": true
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 900,
+          "description": "Per-node timeout in [1, 900]."
+        },
+        "retry": {
+          "type": "object",
+          "description": "Bounded retry policy for this node.",
+          "properties": {
+            "max": { "type": "integer", "minimum": 0, "description": "Maximum retry attempts (default 1)." },
+            "backoff_seconds": { "type": "number", "minimum": 0, "description": "Base backoff between attempts." }
+          },
+          "additionalProperties": true
+        },
+        "on_error": {
+          "type": "string",
+          "enum": ["fail", "skip", "continue"],
+          "description": "What to do when this node fails: `fail` the workflow, `skip` the node (partial result), or `continue` downstream."
+        }
+      },
+      "required": ["node_id", "node_type"],
+      "additionalProperties": true
+    },
+    "edge": {
+      "type": "object",
+      "description": "A directed dependency edge (from must complete before to).",
+      "properties": {
+        "from_node": { "type": "string", "minLength": 1, "description": "Upstream node_id." },
+        "to_node": { "type": "string", "minLength": 1, "description": "Downstream node_id." },
+        "condition": {
+          "type": "string",
+          "description": "Optional guard expression evaluated against the from_node output (conditional edges)."
+        }
+      },
+      "required": ["from_node", "to_node"],
+      "additionalProperties": true
+    },
+    "hil_gate": {
+      "type": "object",
+      "description": "A human-in-the-loop gate on a node.",
+      "properties": {
+        "node_id": { "type": "string", "minLength": 1, "description": "The gated node." },
+        "operation_type": {
+          "type": "string",
+          "minLength": 1,
+          "description": "HIL operation type matched against the orchestrator's ask_on_triggers (known values: tool_execution, sub_agent_creation, llm_restriction, skill_execution). Free string for forward-compatibility."
+        },
+        "approval_scopes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Scopes a Contract-16 step-up token must grant to approve this gate (when step-up is enforced)."
+        },
+        "approval_resource": {
+          "type": "string",
+          "description": "Resource the approval binds to, e.g. workflow:<workflow_id>."
+        }
+      },
+      "required": ["node_id", "operation_type"],
+      "additionalProperties": true
+    }
+  },
+  "$comment": "additionalProperties:true throughout for forward-compatibility — this is an orchestration envelope later phases extend. Enforcement is Phase 10; services MUST accept this shape now and MUST NOT enforce it before then. Cycle detection (Kahn) is mandatory before execution; a cycle yields error_code=INVALID_DAG. Sibling: workflows/run.schema.json (the runtime instance / subtask tree).",
+  "additionalProperties": true
+}

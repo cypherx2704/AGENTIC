@@ -16,10 +16,15 @@ from __future__ import annotations
 
 from tool_flow_bridge.core.config import Settings
 from tool_flow_bridge.services.provisioner import (
+    DockerPlatformProvisioner,
+    KubernetesPlatformProvisioner,
     KubernetesProvisioner,
+    StaticPlatformProvisioner,
     StaticProvisioner,
     _render_objects,
+    _render_platform_objects,
     _tenant_short,
+    get_platform_provisioner,
     get_provisioner,
 )
 
@@ -232,3 +237,90 @@ def test_netpol_egress_appends_explicit_allow_cidrs_after_dns():
     ]
     assert cidrs == ["203.0.113.0/24", "198.51.100.7/32"]
     assert "0.0.0.0/0" not in cidrs
+
+
+# ── platform (public) provisioner — singleton + egress-ALLOW (Phase 5) ────────────
+def test_get_platform_provisioner_selection():
+    static = get_platform_provisioner(Settings(provisioner_mode="static"))
+    docker = get_platform_provisioner(Settings(provisioner_mode="docker"))
+    kube = get_platform_provisioner(Settings(provisioner_mode="kubernetes"))
+    assert isinstance(static, StaticPlatformProvisioner)
+    assert isinstance(docker, DockerPlatformProvisioner)
+    assert isinstance(kube, KubernetesPlatformProvisioner)
+    # Unknown mode falls back to static, mirroring get_provisioner.
+    assert isinstance(get_platform_provisioner(Settings(provisioner_mode="bogus")), StaticPlatformProvisioner)
+
+
+async def test_static_platform_provision_returns_platform_refs():
+    settings = Settings(provisioner_mode="static")
+    spec = await StaticPlatformProvisioner().provision(settings)
+    assert spec.internal_host == settings.static_platform_nodered_internal_host
+    # Distinct platform secret refs (not the per-tenant static:* refs).
+    assert spec.admin_token_ref == "static:platform-admin"
+    assert spec.invoke_secret_ref == "static:platform-invoke"
+    assert spec.credential_secret_ref == "static:platform-credential"
+
+
+async def test_docker_platform_provision_addresses_singleton_host():
+    settings = Settings(provisioner_mode="docker")
+    spec = await DockerPlatformProvisioner().provision(settings)
+    assert spec.internal_host == (
+        f"http://{settings.platform_nodered_name}:{settings.nodered_container_port}"
+    )
+    assert spec.admin_token_ref == "env:PLATFORM_NODERED_ADMIN_TOKEN"
+
+
+def _render_platform(settings: Settings | None = None):
+    settings = settings or Settings(provisioner_mode="kubernetes")
+    return _render_platform_objects(settings), settings
+
+
+def test_render_platform_emits_all_four_kinds():
+    objects, _ = _render_platform()
+    kinds = {o["kind"] for o in objects}
+    assert kinds == {"PersistentVolumeClaim", "Deployment", "Service", "NetworkPolicy"}
+
+
+def test_render_platform_names_singleton():
+    objects, settings = _render_platform()
+    for obj in objects:
+        assert obj["metadata"]["name"] == settings.platform_nodered_name
+        assert obj["metadata"]["namespace"] == settings.nodered_namespace
+
+
+def test_render_platform_deployment_hardened_and_provider_secret():
+    objects, _ = _render_platform()
+    deployment = _by_kind(objects, "Deployment")
+    pod_spec = deployment["spec"]["template"]["spec"]
+    assert pod_spec["securityContext"]["runAsNonRoot"] is True
+    container = pod_spec["containers"][0]
+    assert container["securityContext"]["allowPrivilegeEscalation"] is False
+    assert container["securityContext"]["capabilities"]["drop"] == ["ALL"]
+    # The platform provider-key credential is delivered via the platform Secret (envFrom).
+    assert container["envFrom"] == [{"secretRef": {"name": "nodered-platform-secrets"}}]
+
+
+def test_render_platform_netpol_egress_allows_providers_but_not_metadata():
+    # Default egress-ALLOW = catch-all with the metadata + RFC-1918 block-list subtracted.
+    objects, _ = _render_platform()
+    netpol = _by_kind(objects, "NetworkPolicy")
+    egress = netpol["spec"]["egress"]
+    # DNS first, then the provider allow-list.
+    assert egress[0]["to"] == []
+    catch_all = [
+        peer["ipBlock"]
+        for rule in egress
+        for peer in rule.get("to", [])
+        if peer.get("ipBlock", {}).get("cidr") == "0.0.0.0/0"
+    ]
+    assert len(catch_all) == 1  # egress is ALLOWED to external providers
+    assert "169.254.169.254/32" in catch_all[0]["except"]  # but NEVER the metadata endpoint
+
+
+def test_render_platform_netpol_ingress_bridge_only():
+    objects, settings = _render_platform()
+    netpol = _by_kind(objects, "NetworkPolicy")
+    ingress = netpol["spec"]["ingress"]
+    assert len(ingress) == 1
+    assert ingress[0]["from"] == [{"podSelector": {"matchLabels": {"app": "tool-flow-bridge"}}}]
+    assert ingress[0]["ports"] == [{"protocol": "TCP", "port": settings.nodered_container_port}]

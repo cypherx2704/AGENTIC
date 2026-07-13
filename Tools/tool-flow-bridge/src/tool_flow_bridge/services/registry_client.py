@@ -89,6 +89,70 @@ class RegistryClient:
             self._raise(create, "register")
         self._raise(resp, "version")
 
+    async def register_platform(
+        self,
+        *,
+        user_jwt: str,
+        agent_id: str,
+        name: str,
+        manifest: dict[str, Any],
+        trace_headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Register/version a PLATFORM (public) tool via the registry's platform namespace
+        (``POST /v1/platform/tools`` → creates a ``tenant_id NULL`` / ``visibility=public`` row).
+        Requires the forwarded user JWT to carry ``platform:admin``. Mirrors :meth:`register`'s
+        create-then-version pattern: a 409 (already registered) falls through to
+        ``POST /v1/platform/tools/{name}/versions``. This is the SOLE path to Public — the tenant
+        ``register`` path 400s on ``visibility=public`` (finding #8 GUARD)."""
+        headers = await self._headers(user_jwt=user_jwt, agent_id=agent_id, trace_headers=trace_headers)
+        resp = await self._post(f"{self._base}/v1/platform/tools", manifest, headers)
+        if resp.status_code == 201:
+            metrics.registry_call_total.labels("register_platform", "ok").inc()
+            return resp.json()
+        if resp.status_code == 409:
+            # Already a platform tool with this name — append a version instead.
+            return await self._post_platform_version(name, manifest, headers)
+        self._raise(resp, "register_platform")
+
+    async def _post_platform_version(
+        self, name: str, manifest: dict[str, Any], headers: dict[str, str]
+    ) -> dict[str, Any]:
+        resp = await self._post(f"{self._base}/v1/platform/tools/{name}/versions", manifest, headers)
+        if resp.status_code in (200, 201):
+            metrics.registry_call_total.labels("platform_version", "ok").inc()
+            return resp.json()
+        if resp.status_code == 404:
+            # No existing platform tool to version — create it fresh.
+            create = await self._post(f"{self._base}/v1/platform/tools", manifest, headers)
+            if create.status_code == 201:
+                metrics.registry_call_total.labels("register_platform", "ok").inc()
+                return create.json()
+            self._raise(create, "register_platform")
+        self._raise(resp, "platform_version")
+
+    async def retire(
+        self,
+        *,
+        user_jwt: str,
+        agent_id: str,
+        name: str,
+        trace_headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """De-register (retire) the tool named ``name`` via ``POST /v1/tools/{name}/retire``
+        (``tools.status='retired'``). Used by promote to de-register a promoted MCP's OLD tenant
+        ``server_name`` once its flows are re-homed + registered under the platform namespace. A 404
+        is treated as already-gone (idempotent) so a missing/already-retired tool never fails
+        promote."""
+        headers = await self._headers(user_jwt=user_jwt, agent_id=agent_id, trace_headers=trace_headers)
+        resp = await self._post(f"{self._base}/v1/tools/{name}/retire", {}, headers)
+        if resp.status_code in (200, 201):
+            metrics.registry_call_total.labels("retire", "ok").inc()
+            return resp.json()
+        if resp.status_code == 404:
+            metrics.registry_call_total.labels("retire", "ok").inc()
+            return {"name": name, "status": "not_found"}
+        self._raise(resp, "retire")
+
     async def mark_restricted(
         self,
         *,
@@ -113,6 +177,42 @@ class RegistryClient:
             metrics.registry_call_total.labels("restrict", "ok").inc()
             return
         self._raise(resp, "restrict")
+
+    async def get_tool_access(
+        self,
+        *,
+        user_jwt: str,
+        agent_id: str,
+        name: str,
+        capability: str | None = None,
+        trace_headers: dict[str, str] | None = None,
+    ) -> str:
+        """Resolve the calling agent's access mode (``none|ask|automated``) for tool ``name``.
+
+        Used by the invoke path to enforce the per-agent registry ACCESS GRANT. Authenticates as
+        the bridge service while forwarding the agent JWT, so the registry resolves ``agent_id``'s
+        own grant (Contract 13). Raises :class:`ApiError` on transport/HTTP failure — the caller
+        fail-opens.
+        """
+        headers = await self._headers(user_jwt=user_jwt, agent_id=agent_id, trace_headers=trace_headers)
+        params = {"agent_id": agent_id}
+        if capability:
+            params["capability"] = capability
+        try:
+            resp = await self._client.get(
+                f"{self._base}/v1/tools/{name}/access",
+                params=params,
+                headers=headers,
+                timeout=self._settings.registry_timeout_seconds,
+            )
+        except httpx.HTTPError as exc:
+            metrics.registry_call_total.labels("access", "error").inc()
+            raise ApiError(ErrorCode.SERVICE_UNAVAILABLE, f"Tool Registry unreachable: {exc}") from exc
+        if resp.status_code == 200:
+            metrics.registry_call_total.labels("access", "ok").inc()
+            mode = resp.json().get("access_mode")
+            return str(mode) if mode else "automated"
+        self._raise(resp, "access")
 
     async def _post(
         self, url: str, body: dict[str, Any], headers: dict[str, str]

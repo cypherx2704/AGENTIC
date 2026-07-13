@@ -63,6 +63,8 @@ class NodeKind(StrEnum):
     SCHEMA_REF = "SchemaRef"
     FIELD = "Field"
     ENDPOINT = "Endpoint"
+    CONFIG = "Config"
+    SECURITY_SCHEME = "SecurityScheme"
 
 
 class EdgeKind(StrEnum):

@@ -1,31 +1,40 @@
-"""The real backend-graph pipeline: memoized queries that turn Python source into
+"""The backend-graph pipeline: memoized queries that turn a project's source into
 assembled Endpoints, feeding the incremental engine.
+
+The parser boundary is a ``PartialGraph`` (``bkg.parser.analyze``): each file's local
+facts as nodes (Route / SchemaRef / Middleware / SecurityScheme / Config) + router
+mounts, with every cross-file reference carrying language-resolved ``{file}:{symbol}``
+CANDIDATE ids. This pipeline is LANGUAGE-NEUTRAL: it never imports tree-sitter, ``ast``,
+or any import/typing logic — it only stitches candidates by picking the first whose file
+exists in the project, then assembles endpoints.
 
 Firewall structure (each per-fact node depends on a PROJECTION, never raw text):
 
     fileText:{p}   (input: source)
-      -> fileFacts:{p}   (runs the FastAPI adapter — re-parse absorbs comment edits)
-        -> routeDeclList / mountDeclList / importMap:{p}   (projections)
-          -> allMounts -> mountChain:{routerId}   (cross-file include_router)
+      -> fileFacts:{p}   (the file's PartialGraph — re-parse absorbs comment edits)
+        -> routeDeclList / mountDeclList / schemaDeclList / middlewareDeclList / securityMap / configDeclList
+          -> allMounts -> mountChain:{routerId}   (cross-file mounting, candidate-resolved)
           -> routeFact -> endpoint -> graph:all   (root)
 
 Inputs (kinds with no registered query) are ``fileText:{path}`` and ``files:all``.
-Cross-file router mounting is resolved at QUERY time (never eager edges), so a
-change to a mount point re-resolves exactly the affected endpoints.
+Cross-file resolution is at QUERY time (never eager edges), so a change to a mount point
+or a DTO re-resolves exactly the affected facts.
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
-from .adapters.fastapi import extract, resolve_target
+from bkg.parser import analyze
+
 from .engine import Cx, Engine
 
 ROOT = "graph:all"
 
 
-def _route_id(path: str, route: dict[str, Any]) -> str:
-    return f"{path}:{route['router']}:{route['method']}:{route['path']}"
+def _route_id(file: str, route: dict[str, Any]) -> str:
+    return f"{file}:{route['router_local']}:{route['method']}:{route['path']}"
 
 
 def _join_prefix(parent: str, child: str) -> str:
@@ -40,26 +49,69 @@ def _join_path(prefix: str, literal: str) -> str:
     return f"{p}/{literal.lstrip('/')}"
 
 
+_PATH_PARAM = re.compile(r"\{([^}:]+)")
+
+
+def _path_param_names(path: str) -> set[str]:
+    return set(_PATH_PARAM.findall(path))
+
+
+def _first_existing(candidates: list[str], files: set[str]) -> str | None:
+    """The first ``{file}:{symbol}`` candidate whose file is in the project — the ONLY
+    cross-file reconciliation the (language-neutral) engine does. The parser already
+    ordered the candidates by the language's import rules (naive path, then package
+    ``__init__`` variant, …)."""
+    for candidate in candidates:
+        if candidate.rsplit(":", 1)[0] in files:
+            return candidate
+    return None
+
+
 def install(engine: Engine) -> None:
     def file_facts(key: str, cx: Cx) -> Any:
         path = key.split(":", 1)[1]
-        return extract(cx.read(f"fileText:{path}"))
+        return analyze(cx.read(f"fileText:{path}"), path).to_dict()
+
+    def _nodes(cx: Cx, path: str, kind: str) -> list[dict[str, Any]]:
+        return [n for n in cx.read(f"fileFacts:{path}")["nodes"] if n["kind"] == kind]
 
     def route_decl_list(key: str, cx: Cx) -> Any:
-        return cx.read(f"fileFacts:{key.split(':', 1)[1]}")["routes"]
+        return _nodes(cx, key.split(":", 1)[1], "Route")
 
     def mount_decl_list(key: str, cx: Cx) -> Any:
-        return cx.read(f"fileFacts:{key.split(':', 1)[1]}")["mounts"]
+        return cx.read(f"fileFacts:{key.split(':', 1)[1]}")["router_mounts"]
 
-    def import_map(key: str, cx: Cx) -> Any:
-        return cx.read(f"fileFacts:{key.split(':', 1)[1]}")["imports"]
+    def middleware_decl_list(key: str, cx: Cx) -> Any:
+        return _nodes(cx, key.split(":", 1)[1], "Middleware")
+
+    def security_map(key: str, cx: Cx) -> Any:
+        return {n["var"]: n["scheme"] for n in _nodes(cx, key.split(":", 1)[1], "SecurityScheme")}
+
+    def schema_decl_list(key: str, cx: Cx) -> Any:
+        return _nodes(cx, key.split(":", 1)[1], "SchemaRef")
+
+    def config_decl_list(key: str, cx: Cx) -> Any:
+        out: list[dict[str, Any]] = []
+        for n in _nodes(cx, key.split(":", 1)[1], "Config"):
+            entry: dict[str, Any] = {
+                "kind": n["config_kind"],
+                "name": n["name"],
+                "type": n["type"],
+                "default": n["default"],
+                "line": n["line"],
+            }
+            if n["cls"] is not None:  # settings carry an owning class; env reads omit the key
+                entry["class"] = n["cls"]
+            out.append(entry)
+        return out
 
     def all_mounts(key: str, cx: Cx) -> Any:
+        file_list = cx.read("files:all")
+        files = set(file_list)
         out: list[dict[str, Any]] = []
-        for path in cx.read("files:all"):
-            imports = cx.read(f"importMap:{path}")
+        for path in file_list:
             for m in cx.read(f"mountDeclList:{path}"):
-                target = resolve_target(m["target_expr"], imports, path)
+                target = _first_existing(m["target_candidates"], files)
                 if target is None:
                     continue
                 out.append(
@@ -68,7 +120,8 @@ def install(engine: Engine) -> None:
                         "router_local": m["router_local"],
                         "prefix": m["prefix"],
                         "target": target,
-                        "middleware": [],  # Depends/middleware extraction is deferred to P4
+                        "middleware": [],  # route-level dependencies are on the endpoint's auth
+                        "tags": m["tags"],
                     }
                 )
         return sorted(out, key=lambda m: (m["target"], m["owner"], m["router_local"], m["prefix"]))
@@ -81,8 +134,14 @@ def install(engine: Engine) -> None:
                 return {
                     "prefix": _join_prefix(parent["prefix"], m["prefix"]),
                     "middleware": [*parent["middleware"], *m["middleware"]],
+                    "tags": sorted(set([*parent["tags"], *m["tags"]])),  # nested chains union tags
                 }
-        return {"prefix": "", "middleware": []}
+        # base case: an unmounted top-level app — its own add_middleware applies to every
+        # route it (transitively) mounts, so seed the chain with this router's middleware
+        file, router_local = router_id.rsplit(":", 1)
+        decls = cx.read(f"middlewareDeclList:{file}")
+        own_mw = [m["name"] for m in decls if m["router_local"] == router_local]
+        return {"prefix": "", "middleware": own_mw, "tags": []}
 
     def route_fact(key: str, cx: Cx) -> Any:
         route_id = key.split(":", 1)[1]
@@ -92,6 +151,56 @@ def install(engine: Engine) -> None:
                 return r
         return None
 
+    def schema_ref(key: str, cx: Cx) -> Any:
+        # key = schemaRef:{file}:{model}; file has no ':' so rsplit peels the model
+        file, model = key.split(":", 1)[1].rsplit(":", 1)
+        match = next((s for s in cx.read(f"schemaDeclList:{file}") if s["name"] == model), None)
+        if match is None:
+            return None
+        files = set(cx.read("files:all"))
+        # merge inherited base-class fields (child overrides); reading each base's
+        # schemaRef also records the edge, so editing a base blasts its subclasses
+        merged: dict[str, Any] = {}
+        partial = False
+        for base_ref in match["base_refs"]:
+            base_id = _first_existing(base_ref["candidates"], files)
+            if base_id is None:
+                continue  # external base (e.g. BaseModel) — expected, not partial
+            base = cx.read(f"schemaRef:{base_id}")
+            if base is None:
+                partial = True  # an in-project base file exists but the model is missing
+                continue
+            for field in base["fields"]:
+                merged[field["name"]] = field
+            partial = partial or base.get("partial", False)
+        own_id = f"{file}:{model}"
+        for field in match["fields"]:
+            merged[field["name"]] = {
+                "name": field["name"],
+                "type": field["type"],
+                "required": field["required"],
+                "default": field["default"],
+            }
+            # nested field-referenced DTO: read each in-project model used as a field type,
+            # so editing THAT model blasts this one too (inherited fields are covered
+            # transitively via the base dependency). Sets partial when it looks like a
+            # project model but can't be resolved to a schema.
+            nested_id = _first_existing(field["ref_candidates"], files)
+            if nested_id is None or nested_id == own_id:
+                continue
+            if cx.read(f"schemaRef:{nested_id}") is None:
+                partial = True
+        return {
+            "name": model,
+            "file": file,
+            "fields": list(merged.values()),
+            "bases": match["bases"],
+            "source": "static",
+            "confidence": "inferred" if partial else "static-certain",
+            "verification_status": "unverified",
+            "partial": partial,
+        }
+
     def endpoint(key: str, cx: Cx) -> Any:
         route_id = key.split(":", 1)[1]
         parts = route_id.split(":")
@@ -100,13 +209,79 @@ def install(engine: Engine) -> None:
         if rf is None:
             return None
         chain = cx.read(f"mountChain:{path}:{router}")
+        files = set(cx.read("files:all"))
+        path_params = _path_param_names(rf["path"])
+        partial = False
+
+        def resolve_dto(candidates: list[str]) -> str | None:
+            # returns an in-project DTO id, or None. Sets `partial` when a reference LOOKS
+            # like a model (non-empty candidates) but can't be resolved to a project schema
+            # (external / unloaded / ambiguous) — so the served answer flags incompleteness.
+            nonlocal partial
+            if not candidates:
+                return None  # a scalar/builtin — not a model
+            model_id = _first_existing(candidates, files)
+            if model_id is not None and cx.read(f"schemaRef:{model_id}") is not None:
+                return model_id
+            partial = True
+            return None
+
+        params_out: list[dict[str, Any]] = []
+        dependencies: list[str] = []
+        schemes: set[str] = set()
+        body: str | None = None
+        for p in rf["params"]:
+            if p["depends"]:
+                dependencies.append(p["depends"])
+                scheme = _classify_scheme(cx, p, files)
+                if scheme is not None:
+                    schemes.add(scheme)
+                continue
+            name = p["name"]
+            annotation = p["annotation"]
+            if name in path_params:
+                params_out.append({"name": name, "location": "path", "type": annotation, "required": True})
+                continue
+            # resolve EVERY non-path param, so a schemaRef edge exists for every
+            # model-typed param (not just the first) -> blast_radius stays sound
+            schema_id = resolve_dto(p["dto_candidates"])
+            if schema_id is not None:
+                if body is None:
+                    body = schema_id  # the first model-typed param is the primary body
+                continue
+            params_out.append(
+                {
+                    "name": name,
+                    "location": "query",
+                    "type": annotation,
+                    "required": not p["has_default"],
+                }
+            )
+
+        response = resolve_dto(rf["response_candidates"])
+        # the assembled endpoint is 'inferred' when it required cross-file resolution
+        # (a mount prefix or a DTO ref) or dropped a DTO ref; else it's 'static-certain'
+        certain = not (chain["prefix"] or body or response or partial)
         return {
             "method": rf["method"],
             "resolved_path": _join_path(chain["prefix"], rf["path"]),
+            "params": params_out,
+            "body": body,
+            "response": response,
+            "auth": {
+                "required": len(dependencies) > 0,
+                "dependencies": sorted(dependencies),
+                "schemes": sorted(schemes),
+            },
             "middleware_chain": chain["middleware"],
+            "tags": sorted(set([*rf["tags"], *chain["tags"]])),  # route ∪ router-chain tags
             "handler": rf["handler"],
             "handler_file": path,
             "handler_line": rf["line"],
+            "source": "static",
+            "confidence": "static-certain" if certain else "inferred",
+            "verification_status": "unverified",
+            "partial": partial,
         }
 
     def graph_all(key: str, cx: Cx) -> Any:
@@ -121,12 +296,32 @@ def install(engine: Engine) -> None:
     engine.define_query("fileFacts", file_facts)
     engine.define_query("routeDeclList", route_decl_list)
     engine.define_query("mountDeclList", mount_decl_list)
-    engine.define_query("importMap", import_map)
+    engine.define_query("middlewareDeclList", middleware_decl_list)
+    engine.define_query("securityMap", security_map)
+    engine.define_query("schemaDeclList", schema_decl_list)
+    engine.define_query("configDeclList", config_decl_list)
     engine.define_query("allMounts", all_mounts)
     engine.define_query("mountChain", mount_chain)
     engine.define_query("routeFact", route_fact)
+    engine.define_query("schemaRef", schema_ref)
     engine.define_query("endpoint", endpoint)
     engine.define_query("graph", graph_all)
+
+
+def _classify_scheme(cx: Cx, param: dict[str, Any], files: set[str]) -> str | None:
+    """Classify a dependency param's auth scheme from parser-computed hints: an inline
+    constructor (``Depends(HTTPBearer())``) wins; otherwise the first ``{file}:{var}``
+    candidate whose file is in the project and defines that security-scheme variable."""
+    if param["scheme_inline"] is not None:
+        return str(param["scheme_inline"])
+    for candidate in param["scheme_candidates"]:
+        file, var = candidate.rsplit(":", 1)
+        if file not in files:
+            continue
+        scheme = cx.read(f"securityMap:{file}").get(var)
+        if scheme is not None:
+            return str(scheme)
+    return None
 
 
 def apply_sources(engine: Engine, sources: dict[str, str]) -> None:

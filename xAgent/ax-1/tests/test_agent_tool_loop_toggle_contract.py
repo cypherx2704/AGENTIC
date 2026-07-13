@@ -89,7 +89,7 @@ async def test_put_create_accepts_and_echoes_toggle_false(client, monkeypatch: A
     async def _no_existing(pool: Any, tenant_id: str, agent_id: str) -> None:
         return None
 
-    async def _insert(pool: Any, tenant_id: str, agent_id: str, body: Any) -> AgentRuntime:
+    async def _insert(pool: Any, tenant_id: str, agent_id: str, body: Any, **_kw: Any) -> AgentRuntime:
         # The endpoint parsed the field onto the registration body and hands it to the repo.
         captured["tool_loop_enabled"] = body.tool_loop_enabled
         return _runtime(status=body.status, tool_loop_enabled=body.tool_loop_enabled)
@@ -120,7 +120,7 @@ async def test_put_create_defaults_true_when_field_omitted(client, monkeypatch: 
     async def _no_existing(pool: Any, tenant_id: str, agent_id: str) -> None:
         return None
 
-    async def _insert(pool: Any, tenant_id: str, agent_id: str, body: Any) -> AgentRuntime:
+    async def _insert(pool: Any, tenant_id: str, agent_id: str, body: Any, **_kw: Any) -> AgentRuntime:
         captured["tool_loop_enabled"] = body.tool_loop_enabled
         return _runtime(status=body.status, tool_loop_enabled=body.tool_loop_enabled)
 
@@ -151,7 +151,7 @@ async def test_put_update_persists_toggle(client, monkeypatch: Any) -> None:  # 
         return _runtime(status="active", tool_loop_enabled=True)
 
     async def _update(pool: Any, tenant_id: str, agent_id: str, body: Any,
-                      *, runtime_version: str, status: str) -> AgentRuntime:
+                      *, runtime_version: str, status: str, **_kw: Any) -> AgentRuntime:
         captured["tool_loop_enabled"] = body.tool_loop_enabled
         return _runtime(status=status, runtime_version=runtime_version,
                         tool_loop_enabled=body.tool_loop_enabled)

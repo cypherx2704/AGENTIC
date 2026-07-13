@@ -23,10 +23,11 @@ The Tool Registry service — Phase 07 "Tools (MCP Servers)", Component 1 (WP11,
 | `src/tool_registry/core/auth.py` | Dual-mode JWT verify (Contracts 1/12/13) + WP03 revocation mirror; `Principal`, `require_principal`, `require_scopes`. |
 | `src/tool_registry/core/{config,errors,logging,metrics,trace}.py` | Settings; Contract-2 error envelope; structlog; Prometheus; W3C trace middleware. |
 | `src/tool_registry/db/{pool,queries,valkey}.py` | RLS tx helpers (`in_tenant`/`in_platform`); all SQL; lazy Valkey client. |
-| `src/tool_registry/services/{discovery,manifest,seed,health_poll,health_runner}.py` | Shadowing/invoke-URL; Contract-4 validation; platform seed; health state machine + poll loop. |
+| `src/tool_registry/services/{discovery,manifest,health_poll,health_runner}.py` | Shadowing/invoke-URL; Contract-4 validation; health state machine + poll loop. |
 | `db/migrations/20260611_0001__init.sql` | `tools` schema, 4 tables, indexes, split RLS + grants. |
-| `db/migrations/20260611_0002__seed.sql` | Platform `tool-web-search` tool + version + capability + health rows. |
-| `tests/` | `conftest.py`, `fakes.py`, ~12 modules (auth, RLS cross-tenant, discovery, registration, manifest validation, health state machine + poll, seed, health endpoints). |
+| `db/migrations/20260611_0002__seed.sql` | (Historical) platform `tool-web-search` seed — **decommissioned** by `20260712_0008`; see below. |
+| `db/migrations/20260712_0008__decommission_tool_web_search.sql` | Removes the retired `tool-web-search` platform seed (replaced by the public `web_search` flow-tool). |
+| `tests/` | `conftest.py`, `fakes.py`, ~11 modules (auth, RLS cross-tenant, discovery, registration, manifest validation, health state machine + poll, health endpoints). |
 | `Dockerfile`, `pyproject.toml`, `uv.lock`, `.env.example` | Image, manifests, env template. |
 
 ## Build, test, run
@@ -51,10 +52,10 @@ All env, no prefix (`core/config.py`, pydantic-settings); real values in **Doppl
 - `REVOCATION_CHECK_ENABLED=true`, `REVOCATION_KEY_PREFIX=cypherx:rev:` (MUST match Auth), `REVOCATION_VALKEY_TIMEOUT_SECONDS=0.15` — WP03 fail-open mirror.
 - `MAX_ACTIVE_VERSIONS_PER_TOOL=3` — version retention cap (oldest retired).
 - `HEALTH_POLL_INTERVAL_SECONDS=30`, `HEALTH_POLL_TIMEOUT_SECONDS=5`, `HEALTH_DEGRADE_AFTER=1`, `HEALTH_OFFLINE_AFTER=3` — poll + state machine.
-- `SEED_PLATFORM_TOOLS=true`, `TOOL_WEB_SEARCH_BASE_URL=http://tool-web-search:8080` — startup seed of the platform web-search tool (base_url NEVER hardcoded).
 - `DISCOVERY_MAX_TOOLS=500` — hard row cap on `GET /v1/tools`.
 - `HOST`/`PORT`, `ENVIRONMENT`, `SERVICE_NAME`/`SERVICE_VERSION`, `OTEL_EXPORTER_OTLP_ENDPOINT` (optional).
-- **Keyless local:** the registry calls no LLM/provider APIs; mock toggles are irrelevant here (only the sibling `tool-web-search` uses `SEARCH_PROVIDER=mock`).
+- **No startup seed:** the registry seeds no platform tool. Platform/public tools are registered via the API by their owner (e.g. the public `web_search` flow-tool bootstrapped by `tool-flow-bridge`, which replaced the retired `tool-web-search` service).
+- **Keyless local:** the registry calls no LLM/provider APIs; mock toggles are irrelevant here.
 
 ## Contracts & cross-repo dependencies
 Source of truth is `contracts/` — honour it, never edit contracts to match code.
@@ -65,7 +66,7 @@ Source of truth is `contracts/` — honour it, never edit contracts to match cod
 - **Contract 7 (health):** `/livez`, `/readyz` (Postgres-gated), `/metrics`.
 - **Contracts 6/8 (trace/logs):** `TraceContextMiddleware` parses `traceparent`/`X-Request-ID`/`X-Tenant-ID`/`X-Agent-ID` and binds structlog contextvars; echoes `X-Request-ID`.
 - **DB owned:** schema `tools` (Contract 14 single-owner) — tables `tools`, `tool_versions`, `tool_capabilities`, `tool_health`; runtime role `tool_user` (LOGIN, NOT superuser, NOT BYPASSRLS).
-- **Callers/callees:** called by **xAgent** (discovery); calls **auth-service** (JWKS) and each tool server's `GET {base_url}/manifest` (e.g. **tool-web-search**). **No Kafka** — the registry emits no events (tool-invocation metering is emitted by xAgent's outbox).
+- **Callers/callees:** called by **xAgent** (discovery); calls **auth-service** (JWKS) and each registered tool server's `GET {base_url}/manifest` (e.g. the public `web_search` flow-tool served via **nodered** + **tool-flow-bridge**). **No Kafka** — the registry emits no events (tool-invocation metering is emitted by xAgent's outbox).
 
 ## Invariants & guards (do NOT break)
 - **Marketplace-hole RLS (security):** every tenant-scoped table has a SPLIT policy — `*_read` (`FOR SELECT USING own OR platform`) + `*_write` (`FOR ALL` with **`WITH CHECK (tenant_id = current_tenant)`**) + `*_platform` (empty-GUC, `tenant_id IS NULL`). The `WITH CHECK` half rejects writing a row with another tenant's id or `NULL` (forging a platform tool). Applies to **every** table **including `tool_capabilities`** (RLS does NOT propagate across joins).

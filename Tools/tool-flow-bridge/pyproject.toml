@@ -36,6 +36,11 @@ test = [
     "respx>=0.21",
 ]
 
+# One-shot operator CLI: publish + promote the PUBLIC web_search flow-tool.
+# Also runnable as `python -m tool_flow_bridge.services.bootstrap`.
+[project.scripts]
+tool-flow-bridge-bootstrap-web-search = "tool_flow_bridge.services.bootstrap:cli"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

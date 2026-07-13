@@ -39,8 +39,13 @@ router = APIRouter(prefix="/v1", tags=["tools"])
 require_admin = require_scopes(ADMIN_SCOPES)
 # Tool ACCESS management (per-agent access modes, restricted tools) is a tenant-owner action.
 require_tenant_admin = require_scopes(("tenant:admin", "platform:admin"))
+# PLATFORM (public) registration + platform-tool retirement is a platform-operator action.
+require_platform_admin = require_scopes(("platform:admin",))
 
 _ACCESS_MODES = ("none", "ask", "automated")
+# Marketplace visibility labels (mirrors the tools.tools CHECK constraint). A label the API
+# filters on — NOT an RLS boundary. `public` == the platform (tenant_id NULL) rows.
+_VISIBILITY_VALUES = ("private", "protected", "public")
 
 
 def _get_pool(request: Request) -> Any:
@@ -55,6 +60,64 @@ def _manifest_capabilities(manifest: dict[str, Any]) -> list[tuple[str, str]]:
     server_name = manifest["name"]
     fine_scope = f"tool:{server_name}:invoke"
     return [(cap, fine_scope) for cap in manifest_svc.declared_capabilities(manifest)]
+
+
+def _resolve_visibility(manifest: dict[str, Any], *, is_platform: bool) -> str:
+    """Resolve a registration's Marketplace visibility (``private``|``protected``|``public``).
+
+    Platform registrations (tenant_id NULL) are always ``public`` — public rows ARE the
+    platform rows. Otherwise take ``manifest['visibility']`` when present (validated against
+    the allowed set), defaulting to ``private``.
+
+    GOVERNANCE INVARIANT: ``public`` is reserved for platform rows only — a tenant cannot
+    self-declare a tool public. Public is reached exclusively by an admin promotion into the
+    platform (tenant_id NULL) namespace, never via a tenant's own registration. A tenant
+    registration that requests ``public`` is rejected (not silently downgraded) so the caller
+    learns the correct path. A DB CHECK (``visibility <> 'public' OR tenant_id IS NULL``)
+    backstops this at the storage layer.
+    """
+    if is_platform:
+        return "public"
+    raw = manifest.get("visibility")
+    if raw is None:
+        return "private"
+    value = str(raw).strip().lower()
+    if value not in _VISIBILITY_VALUES:
+        raise ApiError(
+            ErrorCode.VALIDATION_ERROR,
+            "visibility must be one of private|protected|public.",
+            details={"field": "visibility", "value": raw, "allowed": list(_VISIBILITY_VALUES)},
+        )
+    if value == "public":
+        raise ApiError(
+            ErrorCode.VALIDATION_ERROR,
+            "A tenant tool cannot be published as 'public'; public tools are created only by "
+            "platform promotion. Use 'private' or 'protected'.",
+            details={"field": "visibility", "value": raw, "allowed": ["private", "protected"]},
+        )
+    return value
+
+
+def _parse_visibility_filter(raw: str | None) -> set[str] | None:
+    """Parse the optional ``?visibility=`` filter (comma-separated) into a validated set.
+
+    Returns ``None`` when no filter was supplied (=> all visible). Rejects any token outside
+    ``private|protected|public`` with a 422 VALIDATION_ERROR.
+    """
+    if raw is None:
+        return None
+    wanted = {part.strip().lower() for part in raw.split(",") if part.strip()}
+    if not wanted:
+        return None
+    invalid = wanted - set(_VISIBILITY_VALUES)
+    if invalid:
+        raise ApiError(
+            ErrorCode.VALIDATION_ERROR,
+            "visibility filter must be a comma-separated subset of private|protected|public.",
+            status_code=422,
+            details={"invalid": sorted(invalid), "allowed": list(_VISIBILITY_VALUES)},
+        )
+    return wanted
 
 
 async def _resolve_tool_view(
@@ -81,14 +144,27 @@ async def _resolve_tool_view(
 async def list_tools(
     request: Request,
     principal: Principal = Depends(require_principal),
+    visibility: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    """List tools visible to the caller (platform + own tenant), tenant-priority shadowed."""
+    """List tools visible to the caller (platform + own tenant), tenant-priority shadowed.
+
+    Optional ``?visibility=`` (comma-separated ``public|private|protected``) narrows the
+    result to those Marketplace sections; default = all visible.
+    """
     settings = request.app.state.settings
     pool = _get_pool(request)
+    wanted = _parse_visibility_filter(visibility)
+    # Push the visibility filter INTO the SQL so the LIMIT counts only rows of the requested
+    # visibility (a post-LIMIT filter undercounts a narrowed tab when the visible set exceeds
+    # the cap).
     rows = await queries.list_visible_tools(
-        pool, principal.tenant_id, limit=settings.discovery_max_tools
+        pool, principal.tenant_id, limit=settings.discovery_max_tools, visibility=wanted
     )
     resolved = discovery.shadow_by_tenant_priority(rows)
+    # Redundant safety net: the SQL already narrowed to `wanted`, so this post-filter is a no-op
+    # on the real DB — kept as a defensive backstop.
+    if wanted is not None:
+        resolved = [r for r in resolved if r.get("visibility") in wanted]
     data: list[dict[str, Any]] = []
     for tool_row in resolved:
         view = await _resolve_tool_view(pool, principal.tenant_id, tool_row, version=None)
@@ -132,11 +208,17 @@ async def register_tool(
     name = manifest["name"]
     version = manifest["version"]
     capabilities = _manifest_capabilities(manifest)
+    # A registration through this API always carries a tenant Principal, so is_platform is
+    # False here; platform (tenant_id NULL) rows are seeded, not registered. Kept explicit so
+    # the platform->public rule holds if a platform principal ever reaches this path.
+    is_platform = not (principal.tenant_id or "").strip()
+    visibility = _resolve_visibility(manifest, is_platform=is_platform)
 
     try:
         tool = await queries.create_tool_with_version(
             pool, principal.tenant_id,
             name=name, version=version, manifest=manifest, capabilities=capabilities,
+            visibility=visibility,
         )
     except UniqueViolation as exc:
         raise ApiError(
@@ -152,6 +234,7 @@ async def register_tool(
         "name": name,
         "version": version,
         "owner": "tenant",
+        "visibility": visibility,
         "status": "active",
     }
 
@@ -181,6 +264,7 @@ async def register_version(
     own = next((r for r in rows if not r["is_platform"]), None)
     if own is None:
         raise ApiError(ErrorCode.NOT_FOUND, f"Tenant tool '{name}' not found; register it first.")
+    visibility = _resolve_visibility(manifest, is_platform=bool(own["is_platform"]))
 
     try:
         result = await queries.add_version(
@@ -188,6 +272,7 @@ async def register_version(
             tool_id=own["tool_id"], version=version, manifest=manifest,
             capabilities=_manifest_capabilities(manifest),
             max_active_versions=settings.max_active_versions_per_tool,
+            visibility=visibility,
         )
     except UniqueViolation as exc:
         raise ApiError(
@@ -204,7 +289,155 @@ async def register_version(
         "tool_id": own["tool_id"],
         "name": name,
         "version": version,
+        "visibility": visibility,
         "retired_versions": result["retired"],
+    }
+
+
+# ── Platform (public) registration (Phase 5 · 5-registry) ─────────────────────────
+# The SOLE path that creates a `tenant_id NULL` / `visibility='public'` row via the API.
+# A tenant registration (`POST /v1/tools`) still 400s on `public`; public == platform.
+@router.post("/platform/tools", status_code=201)
+async def register_platform_tool(
+    request: Request,
+    principal: Principal = Depends(require_platform_admin),
+    manifest: dict[str, Any] = Body(...),
+) -> dict[str, Any]:
+    """Register a NEW PLATFORM tool (``platform:admin`` only) as public.
+
+    Runs under ``db_pool.in_platform`` (an EMPTY ``app.tenant_id`` GUC) so the shared
+    ``NULLIF(current_setting('app.tenant_id', true), '')::uuid`` INSERT expression yields
+    ``NULL`` — the row is stamped ``tenant_id NULL`` and admitted by the ``p_tools_platform``
+    RLS policy (``tenant_id IS NULL AND empty-GUC``). ``visibility`` is forced to ``public``
+    (public rows ARE the platform rows). This is the only API path that mints a public row.
+    """
+    pool = _get_pool(request)
+    manifest_svc.validate_manifest(manifest)
+    name = manifest["name"]
+    version = manifest["version"]
+    capabilities = _manifest_capabilities(manifest)
+    # is_platform=True => forced 'public' (public rows are the platform, tenant_id NULL, rows).
+    visibility = _resolve_visibility(manifest, is_platform=True)
+
+    try:
+        tool = await queries.create_tool_with_version(
+            pool, principal.tenant_id,
+            name=name, version=version, manifest=manifest, capabilities=capabilities,
+            visibility=visibility, platform=True,
+        )
+    except UniqueViolation as exc:
+        raise ApiError(
+            ErrorCode.CONFLICT, f"Platform tool '{name}' already exists.",
+        ) from exc
+
+    from ..core import metrics
+
+    metrics.tool_registered_total.labels("tool").inc()
+    await _eager_poll(request, tool["tool_id"], manifest, name)
+    return {
+        "tool_id": tool["tool_id"],
+        "name": name,
+        "version": version,
+        "owner": "platform",
+        "visibility": visibility,
+        "status": "active",
+    }
+
+
+@router.post("/platform/tools/{name}/versions", status_code=201)
+async def register_platform_version(
+    request: Request,
+    name: str,
+    principal: Principal = Depends(require_platform_admin),
+    manifest: dict[str, Any] = Body(...),
+) -> dict[str, Any]:
+    """Append a new version to an existing PLATFORM tool (``platform:admin`` only).
+
+    Resolves the platform (``tenant_id NULL``) tool for ``name`` and versions it under
+    ``db_pool.in_platform`` so the new version/capability rows stay ``tenant_id NULL`` and
+    public. Mirrors ``POST /v1/tools/{name}/versions`` but on the platform namespace.
+    """
+    settings = request.app.state.settings
+    pool = _get_pool(request)
+    manifest_svc.validate_manifest(manifest)
+    if manifest["name"] != name:
+        raise ApiError(
+            ErrorCode.VALIDATION_ERROR,
+            "Manifest name does not match the path tool name.",
+            details={"path": name, "manifest_name": manifest["name"]},
+        )
+    version = manifest["version"]
+
+    own = await queries.get_platform_tool_by_name(pool, name)
+    if own is None:
+        raise ApiError(
+            ErrorCode.NOT_FOUND, f"Platform tool '{name}' not found; register it first."
+        )
+    visibility = _resolve_visibility(manifest, is_platform=True)
+
+    try:
+        result = await queries.add_version(
+            pool, principal.tenant_id,
+            tool_id=own["tool_id"], version=version, manifest=manifest,
+            capabilities=_manifest_capabilities(manifest),
+            max_active_versions=settings.max_active_versions_per_tool,
+            visibility=visibility, platform=True,
+        )
+    except UniqueViolation as exc:
+        raise ApiError(
+            ErrorCode.CONFLICT, f"Version '{version}' already exists for tool '{name}'.",
+        ) from exc
+
+    from ..core import metrics
+
+    metrics.tool_registered_total.labels("version").inc()
+    for _ in result["retired"]:
+        metrics.version_retired_total.inc()
+    await _eager_poll(request, own["tool_id"], manifest, name)
+    return {
+        "tool_id": own["tool_id"],
+        "name": name,
+        "version": version,
+        "owner": "platform",
+        "visibility": visibility,
+        "retired_versions": result["retired"],
+    }
+
+
+# ── Retire / de-register (Phase 5 · 5-registry) ───────────────────────────────────
+@router.post("/tools/{name}/retire")
+async def retire_tool(
+    request: Request,
+    name: str,
+    principal: Principal = Depends(require_admin),
+) -> dict[str, Any]:
+    """Retire (de-register) the caller-visible tool named ``name``.
+
+    Scope gate: a PLATFORM tool requires ``platform:admin``; a tenant tool needs the base
+    admin scope (``tool:admin``/``platform:admin``) and is RLS-scoped to the caller's tenant
+    (a caller can only resolve/retire its own tenant tool or a platform tool). Sets
+    ``tools.status='retired'`` and retires the tool's active versions so it stops resolving in
+    discovery. This backs the promote flow's de-registration of the OLD tenant ``server_name``
+    after its flows are re-homed to the platform runtime.
+    """
+    pool = _get_pool(request)
+    tool = await _resolve_own_or_platform_tool(pool, principal.tenant_id, name)
+    is_platform = bool(tool.get("is_platform"))
+    if is_platform and not principal.has_any_scope(("platform:admin",)):
+        raise ApiError(
+            ErrorCode.FORBIDDEN,
+            "Retiring a platform tool requires platform:admin.",
+            details={"required_any": ["platform:admin"]},
+        )
+    await queries.set_tool_status(
+        pool, principal.tenant_id, tool_id=tool["tool_id"], status="retired",
+        platform=is_platform,
+    )
+    return {
+        "tool_id": tool["tool_id"],
+        "name": name,
+        "status": "retired",
+        "owner": "platform" if is_platform else "tenant",
     }
 
 

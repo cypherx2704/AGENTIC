@@ -82,6 +82,17 @@ class OrchestratorController(
         @JsonProperty("tokens_revoked") val tokensRevoked: Int,
     )
 
+    data class SubAgentTokenRequest(
+        val scopes: List<String>? = null,
+    )
+
+    data class SubAgentTokenResponse(
+        val token: String,
+        @JsonProperty("token_type") val tokenType: String,
+        @JsonProperty("expires_in") val expiresIn: Long,
+        val scopes: List<String>,
+    )
+
     @PostMapping("/v1/orchestrator/sub-agents")
     fun createSubAgent(@RequestBody request: CreateSubAgentRequest): ResponseEntity<AgentResponse> {
         val caller = callerContext.requireAnyScope("orchestrator:manage").toAgentCaller()
@@ -135,6 +146,31 @@ class OrchestratorController(
             capabilitiesJson = capabilitiesJson,
             metadataJson = metadataJson,
         ).toResponse()
+    }
+
+    /**
+     * Mint a scoped agent JWT FOR one of the caller's own sub-agents (delegation mint — no api_key).
+     * The orchestration engine uses this so a sub-agent task runs under the SUB-AGENT's identity and
+     * downstream confinement (LLMs alias allowlist, tool access) applies to the sub-agent. Requires
+     * `orchestrator:manage`; 404 (invisible) when the target is not this orchestrator's sub-agent.
+     */
+    @PostMapping("/v1/orchestrator/sub-agents/{subAgentId}/token")
+    fun mintSubAgentToken(
+        @PathVariable subAgentId: UUID,
+        @RequestBody(required = false) request: SubAgentTokenRequest?,
+    ): SubAgentTokenResponse {
+        val caller = callerContext.requireAnyScope("orchestrator:manage").toAgentCaller()
+        val minted = orchestratorService.mintSubAgentToken(
+            caller = caller,
+            subAgentId = subAgentId,
+            requestedScopes = request?.scopes ?: emptyList(),
+        )
+        return SubAgentTokenResponse(
+            token = minted.token,
+            tokenType = minted.tokenType,
+            expiresIn = minted.expiresIn,
+            scopes = minted.scopes,
+        )
     }
 
     @DeleteMapping("/v1/orchestrator/sub-agents/{subAgentId}")

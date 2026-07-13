@@ -23,6 +23,15 @@ export interface SessionData {
   /** absolute epoch-seconds at which the downstream token expires */
   readonly tokenExpiresAt: number;
 
+  /**
+   * Opaque refresh token (`<session_id>.<secret>`) the BFF replays to `POST /v1/auth/refresh` to
+   * silently re-mint `downstreamToken` before it expires. Like `downstreamToken` it NEVER crosses to
+   * the browser. Absent for legacy api_key logins (which keep the old hard-expiry behaviour).
+   */
+  readonly refreshToken?: string;
+  /** absolute epoch-seconds hard cap of the refresh token (the whole session's max lifetime) */
+  readonly refreshExpiresAt?: number;
+
   /** double-submit CSRF token bound to this session */
   readonly csrfToken: string;
 

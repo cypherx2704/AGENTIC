@@ -1,0 +1,121 @@
+# SINGLETON platform (public) Node-RED runtime (Phase 5 · 5-bridge).
+#
+# This is the ONE platform-owned Node-RED that hosts PUBLIC (promoted) tools — distinct from the
+# per-tenant instances the Flow-Tool-Bridge's KubernetesProvisioner creates at request time. It:
+#   * egresses to the external search providers (egress-ALLOW — see nodered-platform-netpol.yaml),
+#     whereas tenant runtimes are egress-DENY;
+#   * holds a platform provider-key credential (delivered via the nodered-platform-secrets Secret).
+#
+# It lives in the same `cypherx-tools` namespace as the tenant runtimes (the namespace + the
+# baseline default-deny NetworkPolicy come from charts/nodered-tenant). Mirrors the objects
+# services/provisioner.py::_render_platform_objects renders for PROVISIONER_MODE=kubernetes — this
+# chart is the GitOps-managed equivalent so the singleton can be deployed declaratively.
+#
+# Apply order: charts/nodered-tenant (namespace + default-deny) → nodered-platform-secrets
+# (DopplerSecret) → this file → nodered-platform-netpol.yaml.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nodered-platform
+  namespace: cypherx-tools
+  labels:
+    app: nodered-platform
+    app.kubernetes.io/part-of: cypherx-flow-tools
+    cypherx.ai/role: platform
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nodered-platform
+  namespace: cypherx-tools
+  labels:
+    app: nodered-platform
+    app.kubernetes.io/part-of: cypherx-flow-tools
+    cypherx.ai/role: platform
+spec:
+  replicas: 1                       # SINGLETON — never scale the platform runtime horizontally
+  selector:
+    matchLabels:
+      app: nodered-platform
+  template:
+    metadata:
+      labels:
+        app: nodered-platform
+        app.kubernetes.io/part-of: cypherx-flow-tools
+        cypherx.ai/role: platform
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: node-red
+          image: cypherx/nodered-tenant:local   # same hardened image as the tenant runtimes
+          ports:
+            - containerPort: 1880
+          env:
+            - name: NODERED_ADMIN_ROOT
+              value: /bff/nodered
+            - name: NODERED_HTTP_NODE_ROOT
+              value: /flow
+            - name: CYPHERX_RUNTIME_ROLE
+              value: platform
+            - name: CYPHERX_INVOKE_SECRET_HEADER
+              value: X-CypherX-Tool-Secret
+            - name: HOME
+              value: /tmp
+          # Platform admin/invoke/credential secrets + the platform PROVIDER KEY(s).
+          envFrom:
+            - secretRef:
+                name: nodered-platform-secrets
+          resources:
+            limits:
+              cpu: 500m
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+          livenessProbe:
+            httpGet:
+              path: /bff/nodered
+              port: 1880
+            initialDelaySeconds: 20
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: nodered-platform
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nodered-platform
+  namespace: cypherx-tools
+  labels:
+    app: nodered-platform
+    app.kubernetes.io/part-of: cypherx-flow-tools
+    cypherx.ai/role: platform
+spec:
+  selector:
+    app: nodered-platform
+  ports:
+    - port: 1880
+      targetPort: 1880

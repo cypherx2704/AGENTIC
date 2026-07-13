@@ -10,15 +10,16 @@ this service owns tool identity, schema, tenancy, and the MCP wire protocol.
 - **Control plane** (`/v1/*`, called by the user via the BFF): `POST /v1/flow-tools` (publish /
   re-publish), `GET /v1/flow-tools`, `GET/DELETE /v1/flow-tools/{slug}`, `GET /v1/flows`
   (workflow picker), `POST /v1/editor-sessions` + `GET /v1/editor-runtime` (editor embed).
-- **MCP runtime** (called by xAgent): `GET /w/<slug>/manifest`, `POST /w/<slug>/mcp/v1/invoke`
-  (`{"tool","args"}` → `{"tool","result"}`), plus `/livez` `/readyz` `/metrics`.
+- **MCP runtime** (called by xAgent): `GET /w/<slug>/manifest`, `POST /w/<slug>/mcp`
+  (real MCP — JSON-RPC 2.0 over Streamable HTTP: `initialize` / `tools/list` / `tools/call`),
+  plus `/livez` `/readyz` `/metrics`. (The legacy `POST /w/<slug>/mcp/v1/invoke` wire was removed.)
 
 ## Flow
 ```
 Publish: analyze Node-RED flow (http in → http response) → generate Contract-4 manifest
          → upsert binding (flow_tools DB, RLS) → register in Tool Registry (Contract-12
          service token + forwarded user JWT) → set access (publisher picks; default 'ask').
-Invoke:  xAgent → /w/<slug>/mcp/v1/invoke → auth + scope + idempotency + schema-validate
+Invoke:  xAgent → /w/<slug>/mcp (tools/call) → auth + scope + idempotency + schema-validate
          → POST the tenant's Node-RED HTTP-In endpoint → JSON result.
 ```
 

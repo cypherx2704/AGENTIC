@@ -101,6 +101,12 @@ cypherx:
     agent-token-ttl-seconds: 3600          # Contract 1: agent token <= 1h
     service-token-ttl-seconds: 300         # Contract 12: internal service token = 5m
     clock-skew-seconds: 60
+    # End-user Console session (email/password + Google). The login access token stays <=1h
+    # (Contract 1); the BFF silently re-mints it via POST /v1/auth/refresh using a refresh token it
+    # holds server-side. idle = auto-logout after inactivity (SLIDES on each refresh); absolute = hard
+    # cap regardless of activity. Keep idle > agent-token-ttl-seconds.
+    user-refresh-idle-ttl-seconds: ${AUTH_USER_REFRESH_IDLE_TTL_SECONDS:28800}          # 8h idle
+    user-refresh-absolute-ttl-seconds: ${AUTH_USER_REFRESH_ABSOLUTE_TTL_SECONDS:604800}  # 7d hard cap
     # Signing-key envelope encryption: "kms" (cloud) or "local" (dev — AES via a local master key).
     key-encryptor: ${AUTH_KEY_ENCRYPTOR:local}
     kms-signing-cmk-arn: ${KMS_SIGNING_CMK_ARN:}

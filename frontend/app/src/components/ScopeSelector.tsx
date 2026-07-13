@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import { cn } from '@/lib/utils';
 
 /**
@@ -61,6 +62,7 @@ export function ScopeSelector({
   className?: string;
 }) {
   const options = Array.from(new Set([...available, ...value])).filter((s) => !exclude.includes(s)).sort();
+  const [hovered, setHovered] = useState<string | null>(null);
 
   function toggle(scope: string) {
     if (disabled) return;
@@ -71,35 +73,67 @@ export function ScopeSelector({
     return <p className={cn('text-sm text-muted', className)}>No grantable scopes are available.</p>;
   }
 
+  const active = hovered ?? null;
+  const activeMeta = active ? SCOPE_META[active] : null;
+
   return (
-    <div className={cn('flex flex-col gap-1.5', className)} role="group" aria-label="Allowed scopes">
-      {options.map((scope) => {
-        const checked = value.includes(scope);
-        const meta = SCOPE_META[scope];
-        return (
-          <label
-            key={scope}
-            className={cn(
-              'flex cursor-pointer items-start gap-2.5 rounded-md border px-2.5 py-2 transition-colors',
-              checked ? 'border-brand/40 bg-brand/5' : 'border-border bg-surface hover:bg-surface-2',
-              disabled && 'cursor-not-allowed opacity-60',
-            )}
-          >
-            <input
-              type="checkbox"
-              className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-brand"
-              checked={checked}
+    <div className={cn('flex flex-col gap-2.5', className)} role="group" aria-label="Allowed scopes">
+      {/* Clickable pills — click to select/unselect; selected ones are highlighted. */}
+      <div className="flex flex-wrap gap-1.5">
+        {options.map((scope) => {
+          const checked = value.includes(scope);
+          return (
+            <button
+              key={scope}
+              type="button"
+              role="checkbox"
+              aria-checked={checked}
               disabled={disabled}
-              onChange={() => toggle(scope)}
-            />
-            <span className="min-w-0">
-              <span className="block text-sm font-medium text-fg">{scopeLabel(scope)}</span>
-              <span className="block font-mono text-[11px] text-faint">{scope}</span>
-              {meta ? <span className="mt-0.5 block text-xs text-muted">{meta.hint}</span> : null}
-            </span>
-          </label>
-        );
-      })}
+              title={SCOPE_META[scope] ? `${scope} — ${SCOPE_META[scope].hint}` : scope}
+              onClick={() => toggle(scope)}
+              onMouseEnter={() => setHovered(scope)}
+              onMouseLeave={() => setHovered((h) => (h === scope ? null : h))}
+              onFocus={() => setHovered(scope)}
+              onBlur={() => setHovered((h) => (h === scope ? null : h))}
+              className={cn(
+                'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors',
+                'focus:outline-none focus-visible:ring-2 focus-visible:ring-brand/50',
+                checked
+                  ? 'border-brand bg-brand/15 text-brand'
+                  : 'border-border bg-surface text-muted hover:border-brand/40 hover:text-fg',
+                disabled && 'cursor-not-allowed opacity-60',
+              )}
+            >
+              <span
+                aria-hidden="true"
+                className={cn(
+                  'grid h-3 w-3 shrink-0 place-items-center rounded-[3px] border',
+                  checked ? 'border-brand bg-brand text-brand-fg' : 'border-border',
+                )}
+              >
+                {checked ? (
+                  <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4">
+                    <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                ) : null}
+              </span>
+              {scopeLabel(scope)}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Hover/focus a pill to read its detailed description here (no tooltip clipping). */}
+      <div className="min-h-[34px] rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs">
+        {active ? (
+          <span className="text-muted">
+            <span className="font-mono text-[11px] text-faint">{active}</span>
+            {activeMeta ? <> — {activeMeta.hint}</> : null}
+          </span>
+        ) : (
+          <span className="text-faint">Click a scope to select it; hover any scope to read what it grants.</span>
+        )}
+      </div>
     </div>
   );
 }
