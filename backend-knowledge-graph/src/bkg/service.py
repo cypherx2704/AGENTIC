@@ -185,11 +185,43 @@ class GraphService:
         return config
 
     def blast_radius(self, schema_id: str) -> list[str]:
-        """Endpoint ids referencing the DTO ``schema_id`` (``file:Model``) as body
-        or response — i.e. what to re-check if that DTO changes."""
-        self._engine.query(ROOT)  # ensure the graph + dependency edges are built
-        closure = self._engine.reverse_dependencies(f"schemaRef:{schema_id}")
-        return sorted(k[len("endpoint:") :] for k in closure if k.startswith("endpoint:"))
+        """Endpoint ids affected if the DTO ``schema_id`` (``file:Model``) changes — used
+        as a body/response/param, reached through inheritance, or NESTED (transitively)
+        inside another schema's field.
+
+        Two hops, because a DTO reference graph may be CYCLIC (``User.posts: list[Post]``
+        + ``Post.author: User``) while the engine's dependency graph is necessarily a DAG:
+        1. walk the schema reference graph (``schemaDeps``) in reverse with a visited set
+           to collect every schema transitively affected by ``schema_id``;
+        2. union those schemas' engine reverse-dependency closures to reach the endpoints
+           (this is what picks up EVERY model-typed param, not just the primary body).
+        """
+        # The live endpoint set. reverse_dependencies walks the store's reverse-dep rows,
+        # which still contain nodes for routes that have since been DELETED (the engine
+        # keeps unreachable memo rows and relies on reachability-from-root for liveness).
+        # Intersecting with the root keeps deleted routes out of the answer.
+        live: set[str] = set(self._engine.query(ROOT))
+        deps: dict[str, list[str]] = self._engine.query("schemaDeps:all")
+
+        referencing: dict[str, list[str]] = {}
+        for sid, refs in deps.items():
+            for ref in refs:
+                referencing.setdefault(ref, []).append(sid)
+
+        affected = {schema_id}
+        stack = [schema_id]
+        while stack:  # reverse-reachability; the visited set makes cycles safe
+            for parent in referencing.get(stack.pop(), ()):
+                if parent not in affected:
+                    affected.add(parent)
+                    stack.append(parent)
+
+        endpoints: set[str] = set()
+        for sid in affected:
+            for key in self._engine.reverse_dependencies(f"schemaRef:{sid}"):
+                if key in live:  # `live` already restricts to endpoint: keys still in the graph
+                    endpoints.add(key[len("endpoint:") :])
+        return sorted(endpoints)
 
     def trust_summary(self) -> dict[str, Any]:
         """How much of the served graph is certain vs inferred vs incomplete —

@@ -105,7 +105,8 @@ def install(engine: Engine) -> None:
             out.append(entry)
         return out
 
-    def all_mounts(key: str, cx: Cx) -> Any:
+    def _resolved_mounts(cx: Cx) -> list[dict[str, Any]]:
+        """Every mount whose target router resolves to a real project file, sorted."""
         file_list = cx.read("files:all")
         files = set(file_list)
         out: list[dict[str, Any]] = []
@@ -124,7 +125,36 @@ def install(engine: Engine) -> None:
                         "tags": m["tags"],
                     }
                 )
-        return sorted(out, key=lambda m: (m["target"], m["owner"], m["router_local"], m["prefix"]))
+        out.sort(key=lambda m: (m["target"], m["owner"], m["router_local"], m["prefix"]))
+        return out
+
+    def mount_cycles(key: str, cx: Cx) -> Any:
+        """Routers transitively mounted under themselves (``a.include_router(b)`` +
+        ``b.include_router(a)``) — broken source that nonetheless PARSES. ``mountChain``
+        walks parents recursively, so leaving these in would re-enter the engine and take
+        the whole graph down. Resolves the mounts itself rather than reading ``allMounts``
+        (which filters on THIS result — reading it would be a query cycle)."""
+        parent: dict[str, str] = {}
+        for m in _resolved_mounts(cx):  # sorted, so a target's first mount wins (as mountChain does)
+            parent.setdefault(m["target"], f"{m['owner']}:{m['router_local']}")
+        cyclic: set[str] = set()
+        state: dict[str, int] = {}  # 1 = on the current walk, 2 = settled
+        for start in sorted(parent):
+            path: list[str] = []
+            node: str | None = start
+            while node is not None and node not in state:
+                state[node] = 1
+                path.append(node)
+                node = parent.get(node)
+            if node is not None and state.get(node) == 1:  # looped back onto this walk
+                cyclic.update(path[path.index(node) :])
+            for seen in path:
+                state[seen] = 2
+        return sorted(cyclic)
+
+    def all_mounts(key: str, cx: Cx) -> Any:
+        cyclic = set(cx.read("mountCycles:all"))
+        return [m for m in _resolved_mounts(cx) if m["target"] not in cyclic]
 
     def mount_chain(key: str, cx: Cx) -> Any:
         router_id = key.split(":", 1)[1]  # "{file}:{router_local}"
@@ -135,13 +165,22 @@ def install(engine: Engine) -> None:
                     "prefix": _join_prefix(parent["prefix"], m["prefix"]),
                     "middleware": [*parent["middleware"], *m["middleware"]],
                     "tags": sorted(set([*parent["tags"], *m["tags"]])),  # nested chains union tags
+                    "cyclic": parent["cyclic"],  # a truncated ancestor taints the whole chain
                 }
         # base case: an unmounted top-level app — its own add_middleware applies to every
-        # route it (transitively) mounts, so seed the chain with this router's middleware
+        # route it (transitively) mounts, so seed the chain with this router's middleware.
+        # A router on a mount CYCLE also lands here (its mount was pruned) — flag it, so the
+        # endpoint reports the truncated prefix as `partial` rather than serving a path it
+        # could not actually resolve as `static-certain`.
         file, router_local = router_id.rsplit(":", 1)
         decls = cx.read(f"middlewareDeclList:{file}")
         own_mw = [m["name"] for m in decls if m["router_local"] == router_local]
-        return {"prefix": "", "middleware": own_mw, "tags": []}
+        return {
+            "prefix": "",
+            "middleware": own_mw,
+            "tags": [],
+            "cyclic": router_id in set(cx.read("mountCycles:all")),
+        }
 
     def route_fact(key: str, cx: Cx) -> Any:
         route_id = key.split(":", 1)[1]
@@ -151,20 +190,122 @@ def install(engine: Engine) -> None:
                 return r
         return None
 
+    def schema_decl(key: str, cx: Cx) -> Any:
+        """One model's RAW (unmerged) declaration, or None if the file doesn't declare it.
+
+        Reads only its own file's decl list, so it can NEVER recurse into another schema.
+        That makes it three things at once:
+        - the **existence oracle** a schema uses to check a nested field's DTO WITHOUT
+          forcing that DTO's assembly — which is what lets mutually-referencing models
+          (``User.posts: list[Post]`` + ``Post.author: User``) resolve instead of tripping
+          the engine's cycle detector;
+        - the **blast anchor**: ``blast_radius`` keys on it, so everything that reads a
+          model (its own schemaRef, its subclasses, and any schema NESTING it) is in its
+          reverse-dependency closure;
+        - a per-model **firewall**: editing a sibling model in the same file recomputes
+          this node to byte-identical bytes, so it backdates and nothing downstream moves.
+        """
+        file, model = key.split(":", 1)[1].rsplit(":", 1)
+        return next((s for s in cx.read(f"schemaDeclList:{file}") if s["name"] == model), None)
+
+    def schema_deps(key: str, cx: Cx) -> Any:
+        """The project's schema REFERENCE graph: ``{schema id -> sorted referenced ids}``
+        (base classes + nested field DTOs), resolved against the real file set.
+
+        Built in ONE query — it never recurses into another schema — so it stays
+        well-defined when models reference each other CYCLICALLY. That matters because the
+        engine's dependency graph is a DAG and therefore cannot represent a reference
+        cycle; ``blast_radius`` walks this map in reverse (with a visited set) to answer
+        "what breaks if this DTO changes" transitively and cycle-safely.
+        """
+        file_list = cx.read("files:all")
+        files = set(file_list)
+        graph: dict[str, list[str]] = {}
+        for path in file_list:
+            for s in cx.read(f"schemaDeclList:{path}"):
+                sid = f"{path}:{s['name']}"
+                if sid in graph:
+                    continue  # a duplicate class name: the FIRST declaration wins, exactly
+                    # as schemaDecl's ``next(...)`` does. Disagreeing here would analyze a
+                    # DIFFERENT graph than schema_ref actually resolves against.
+                refs: set[str] = set()
+                for base_ref in s["base_refs"]:
+                    target = _first_existing(base_ref["candidates"], files)
+                    if target is not None:
+                        refs.add(target)
+                for field in s["fields"]:
+                    target = _first_existing(field["ref_candidates"], files)
+                    if target is not None:
+                        refs.add(target)
+                refs.discard(sid)  # a self-reference adds nothing to the closure
+                graph[sid] = sorted(refs)
+        # drop dangling refs (a file exists but doesn't declare that model)
+        return {sid: [r for r in refs if r in graph] for sid, refs in graph.items()}
+
+    def schema_base_cycles(key: str, cx: Cx) -> Any:
+        """Schema ids caught in a base-class cycle (``class A(B)`` + ``class B(A)``).
+
+        Inheritance is a DAG in *valid* Python, so ``schema_ref`` merges base fields by
+        recursing through ``schemaRef``. But tree-sitter happily parses INVALID Python —
+        the normal state of a file mid-edit — and an unguarded recursion there re-enters
+        the engine and takes the WHOLE graph down. So base cycles are detected up front
+        (one query, no recursion into schemaRef) and those schemas degrade to ``partial``.
+        """
+        file_list = cx.read("files:all")
+        files = set(file_list)
+        bases: dict[str, list[str]] = {}
+        for path in file_list:
+            for s in cx.read(f"schemaDeclList:{path}"):
+                sid = f"{path}:{s['name']}"
+                if sid in bases:
+                    continue  # duplicate class name: FIRST declaration wins (as schemaDecl does),
+                    # otherwise this guard would analyze a base graph schema_ref never walks
+                resolved: list[str] = []
+                for base_ref in s["base_refs"]:
+                    target = _first_existing(base_ref["candidates"], files)
+                    if target is not None and target != sid:  # direct self-base: skipped below
+                        resolved.append(target)
+                bases[sid] = resolved
+
+        cyclic: set[str] = set()
+        state: dict[str, int] = {}  # 1 = on the current DFS path, 2 = settled
+
+        def visit(node: str, path: list[str]) -> None:
+            state[node] = 1
+            path.append(node)
+            for nxt in bases.get(node, ()):
+                if nxt not in bases:
+                    continue  # dangling base (the file exists but declares no such model)
+                if state.get(nxt, 0) == 1:  # back edge -> the whole loop is cyclic
+                    cyclic.update(path[path.index(nxt) :])
+                elif state.get(nxt, 0) == 0:
+                    visit(nxt, path)
+            path.pop()
+            state[node] = 2
+
+        for sid in sorted(bases):
+            if state.get(sid, 0) == 0:
+                visit(sid, [])
+        return sorted(cyclic)
+
     def schema_ref(key: str, cx: Cx) -> Any:
         # key = schemaRef:{file}:{model}; file has no ':' so rsplit peels the model
         file, model = key.split(":", 1)[1].rsplit(":", 1)
-        match = next((s for s in cx.read(f"schemaDeclList:{file}") if s["name"] == model), None)
+        own_id = f"{file}:{model}"
+        match = cx.read(f"schemaDecl:{own_id}")
         if match is None:
             return None
         files = set(cx.read("files:all"))
         # merge inherited base-class fields (child overrides); reading each base's
-        # schemaRef also records the edge, so editing a base blasts its subclasses
+        # schemaRef also records the edge, so editing a base blasts its subclasses.
+        # Recursing through bases is safe ONLY because base cycles are excluded up front
+        # (see schema_base_cycles); FIELD references, which legitimately cycle, go through
+        # the non-recursive schemaDecl below.
         merged: dict[str, Any] = {}
-        partial = False
-        for base_ref in match["base_refs"]:
+        partial = own_id in set(cx.read("schemaBaseCycles:all"))
+        for base_ref in [] if partial else match["base_refs"]:
             base_id = _first_existing(base_ref["candidates"], files)
-            if base_id is None:
+            if base_id is None or base_id == own_id:
                 continue  # external base (e.g. BaseModel) — expected, not partial
             base = cx.read(f"schemaRef:{base_id}")
             if base is None:
@@ -173,7 +314,6 @@ def install(engine: Engine) -> None:
             for field in base["fields"]:
                 merged[field["name"]] = field
             partial = partial or base.get("partial", False)
-        own_id = f"{file}:{model}"
         for field in match["fields"]:
             merged[field["name"]] = {
                 "name": field["name"],
@@ -181,14 +321,16 @@ def install(engine: Engine) -> None:
                 "required": field["required"],
                 "default": field["default"],
             }
-            # nested field-referenced DTO: read each in-project model used as a field type,
-            # so editing THAT model blasts this one too (inherited fields are covered
-            # transitively via the base dependency). Sets partial when it looks like a
-            # project model but can't be resolved to a schema.
+            # nested field-referenced DTO: depend on each in-project model used as a field
+            # type, so editing THAT model blasts this one (inherited fields are covered
+            # transitively via the base dependency). We read its schemaDECL, not its
+            # schemaRef: we only need to know it EXISTS, and not forcing its assembly is
+            # what makes cyclic/bidirectional models work. Sets partial when it looks like
+            # a project model but can't be resolved to a schema.
             nested_id = _first_existing(field["ref_candidates"], files)
             if nested_id is None or nested_id == own_id:
                 continue
-            if cx.read(f"schemaRef:{nested_id}") is None:
+            if cx.read(f"schemaDecl:{nested_id}") is None:
                 partial = True
         return {
             "name": model,
@@ -211,7 +353,9 @@ def install(engine: Engine) -> None:
         chain = cx.read(f"mountChain:{path}:{router}")
         files = set(cx.read("files:all"))
         path_params = _path_param_names(rf["path"])
-        partial = False
+        # a mount cycle truncated this route's prefix — the resolved_path below is
+        # incomplete, so say so instead of serving it as certain
+        partial = bool(chain["cyclic"])
 
         def resolve_dto(candidates: list[str]) -> str | None:
             # returns an in-project DTO id, or None. Sets `partial` when a reference LOOKS
@@ -299,7 +443,11 @@ def install(engine: Engine) -> None:
     engine.define_query("middlewareDeclList", middleware_decl_list)
     engine.define_query("securityMap", security_map)
     engine.define_query("schemaDeclList", schema_decl_list)
+    engine.define_query("schemaDecl", schema_decl)
+    engine.define_query("schemaDeps", schema_deps)
+    engine.define_query("schemaBaseCycles", schema_base_cycles)
     engine.define_query("configDeclList", config_decl_list)
+    engine.define_query("mountCycles", mount_cycles)
     engine.define_query("allMounts", all_mounts)
     engine.define_query("mountChain", mount_chain)
     engine.define_query("routeFact", route_fact)

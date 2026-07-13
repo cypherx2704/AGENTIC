@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from bkg.engine import Engine
 from bkg.pipeline import ROOT, apply_sources, install
+from bkg.service import GraphService
 from bkg.store import open_store
 
 SCHEMAS = (
@@ -449,9 +450,11 @@ def test_nested_dto_edit_blasts_the_containing_endpoint() -> None:
         "@router.post('/', response_model=User)\n"
         "def create(payload: User): ...\n"
     )
-    engine = _app({"app/main.py": _MAIN_NOPREFIX, "app/routers/users.py": users, "app/schemas.py": schemas})
-    engine.query(ROOT)
-    # editing Address must blast the endpoint that uses User (which contains an Address)
-    closure = engine.reverse_dependencies("schemaRef:app/schemas.py:Address")
-    assert "schemaRef:app/schemas.py:User" in closure  # User references Address as a field
-    assert any(k.startswith("endpoint:") for k in closure)  # ...and the endpoint that uses User
+    svc = GraphService.from_sources(
+        {"app/main.py": _MAIN_NOPREFIX, "app/routers/users.py": users, "app/schemas.py": schemas}
+    )
+    # editing Address must blast the endpoint that uses User (which contains an Address).
+    # Asserted through the public surface, not a specific engine edge: the DTO reference
+    # graph may be cyclic, so the transitive walk (not dep-reachability) answers this.
+    assert svc.blast_radius("app/schemas.py:Address") == ["app/routers/users.py:router:POST:/"]
+    assert svc.blast_radius("app/schemas.py:User") == ["app/routers/users.py:router:POST:/"]
