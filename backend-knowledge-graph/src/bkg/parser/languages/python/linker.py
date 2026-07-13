@@ -24,6 +24,7 @@ from ....protocol.models import (
     RouterMount,
     SchemaRefNode,
     SecuritySchemeNode,
+    SymbolRef,
 )
 from ...analysis import ConfigFact, ImportFact, MiddlewareFact, MountFact, ParamFact, RouteFact, SchemaFact
 from ...base import FrameworkFacts, SemanticModel
@@ -138,4 +139,13 @@ class PythonLinker:
         )
         nodes.extend(_config_node(c, file) for c in model.config)
         mounts = tuple(_mount(m, imports, file) for m in framework.mounts)
-        return PartialGraph(nodes=tuple(nodes), router_mounts=mounts)
+        # Every import BINDING, as an unresolved cross-file reference. This is what lets
+        # the engine chase a RE-EXPORT: `routers/__init__.py` doing
+        # `from .users import router` means a mount targeting `routers/__init__.py:router`
+        # must follow the binding to the router's real home, `routers/users.py:router` —
+        # otherwise the mount matches nothing and the route silently loses its prefix.
+        bindings = tuple(
+            SymbolRef(name=local, from_file=file, candidates=resolve.resolve_symbol(local, imports, file))
+            for local in sorted(imports)
+        )
+        return PartialGraph(nodes=tuple(nodes), router_mounts=mounts, symbol_refs=bindings)

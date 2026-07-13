@@ -87,6 +87,33 @@ def install(engine: Engine) -> None:
     def security_map(key: str, cx: Cx) -> Any:
         return {n["var"]: n["scheme"] for n in _nodes(cx, key.split(":", 1)[1], "SecurityScheme")}
 
+    def binding_map(key: str, cx: Cx) -> Any:
+        """This file's import bindings: ``{local name -> candidate {file}:{symbol} ids}``.
+        Used to chase RE-EXPORTS (a package ``__init__`` that re-exports a router)."""
+        path = key.split(":", 1)[1]
+        refs = cx.read(f"fileFacts:{path}")["symbol_refs"]
+        return {r["name"]: r["candidates"] for r in refs}
+
+    def _chase(target: str | None, cx: Cx, files: set[str]) -> str | None:
+        """Follow re-export bindings to a symbol's real home.
+
+        A mount resolves to ``{file}:{symbol}`` by import rules, but that file may only
+        RE-EXPORT the symbol (``routers/__init__.py``: ``from .users import router``). The
+        router actually lives where it is DEFINED, so keep following the binding until the
+        symbol is locally defined (no binding for it). Bounded + visited-guarded, so a
+        circular re-export degrades instead of looping."""
+        seen: set[str] = set()
+        while target is not None and target not in seen and len(seen) < 16:
+            seen.add(target)
+            file, symbol = target.rsplit(":", 1)
+            if file not in files:
+                return None
+            nxt = _first_existing(cx.read(f"bindingMap:{file}").get(symbol, []), files)
+            if nxt is None or nxt == target:
+                return target  # locally defined here — this is the symbol's real home
+            target = nxt
+        return target
+
     def schema_decl_list(key: str, cx: Cx) -> Any:
         return _nodes(cx, key.split(":", 1)[1], "SchemaRef")
 
@@ -112,7 +139,9 @@ def install(engine: Engine) -> None:
         out: list[dict[str, Any]] = []
         for path in file_list:
             for m in cx.read(f"mountDeclList:{path}"):
-                target = _first_existing(m["target_candidates"], files)
+                # chase re-exports, so a router mounted via a package __init__ still
+                # resolves to where it is DEFINED (and keeps its prefix)
+                target = _chase(_first_existing(m["target_candidates"], files), cx, files)
                 if target is None:
                     continue
                 out.append(
@@ -442,6 +471,7 @@ def install(engine: Engine) -> None:
     engine.define_query("mountDeclList", mount_decl_list)
     engine.define_query("middlewareDeclList", middleware_decl_list)
     engine.define_query("securityMap", security_map)
+    engine.define_query("bindingMap", binding_map)
     engine.define_query("schemaDeclList", schema_decl_list)
     engine.define_query("schemaDecl", schema_decl)
     engine.define_query("schemaDeps", schema_deps)

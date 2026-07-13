@@ -59,15 +59,20 @@ def _merge(model: SemanticModel) -> FrameworkFacts:
     for f in facts:
         security.update(f.security)
 
-    if len(applicable) > 1:  # ambiguous multi-framework file: dedup routes by id (post-sort)
-        seen: set[tuple[str, str, str]] = set()
-        deduped = []
-        for r in routes:
-            rid = (r.router, r.method, r.path)
-            if rid not in seen:
-                seen.add(rid)
-                deduped.append(r)
-        routes = deduped
+    # Dedup by route id, ALWAYS — not just for an ambiguous multi-framework file. Two
+    # handlers on the same router+method+path collide on the id, and everything downstream
+    # of graph:all assumes ids are unique (a duplicate emitted the endpoint twice, with the
+    # same id, and double-counted it in trust_summary). Keeping the first also matches the
+    # frameworks' runtime semantics: the first registered route wins, so the shadowed
+    # handler is unreachable anyway.
+    seen: set[tuple[str, str, str]] = set()
+    deduped = []
+    for r in routes:
+        rid = (r.router, r.method, r.path)
+        if rid not in seen:
+            seen.add(rid)
+            deduped.append(r)
+    routes = deduped
 
     return FrameworkFacts(
         routes=tuple(routes), mounts=tuple(mounts), middlewares=middlewares, security=security
