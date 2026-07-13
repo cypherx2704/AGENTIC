@@ -71,6 +71,13 @@ class AgentRuntime(BaseModel):
     runtime_version: str = "1.0.0"
     status: AgentStatus = "active"
 
+    # Routing description (migration 0009) — "when to use this agent", addressed to the
+    # ORCHESTRATOR'S PLANNER, not to the agent. Distinct from system_prompt on purpose: the
+    # system prompt instructs the agent ("Be terse"), the description advertises it to the
+    # router ("Use me to fetch GitHub repo statistics"). Empty => the orchestration roster
+    # falls back to system_prompt (pre-0009 agents).
+    description: str = ""
+
     # LLM configuration.
     llm_model: str = "smart"
     system_prompt: str = ""
@@ -116,6 +123,11 @@ class AgentRuntimeRegistration(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     runtime_version: str = "1.0.0"
     status: AgentStatus = "active"
+
+    # See AgentRuntime.description. Optional at the API so pre-0009 callers and non-sub-agents keep
+    # working; the sub-agent creation UI requires it, because an undescribed sub-agent is one the
+    # planner can only route to by guessing at its name.
+    description: str = Field(default="", max_length=2000)
 
     llm_model: str = "smart"
     system_prompt: str = Field(..., min_length=1)

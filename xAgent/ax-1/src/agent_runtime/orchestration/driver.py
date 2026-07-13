@@ -139,14 +139,42 @@ _DEP_SATISFIED = frozenset({"completed", "skipped"})
 def resolve_node_agent(
     node: DagNode, roster: dict[str, str], *, default_agent_id: str | None = None
 ) -> str | None:
-    """Resolve the concrete sub-agent id a node runs as, or ``None`` if unassignable.
+    """Resolve the concrete agent id a node runs as.
 
-    Precedence: explicit ``assigned_agent_id`` > ``preset`` mapped via ``roster`` > ``default_agent_id``.
+    The rule, exactly::
+
+        if no agent is specified   -> the default agent (the ORCHESTRATOR)
+        elif that agent exists     -> use it
+        else                       -> raise UNKNOWN_AGENT
+
+    The asymmetry between the first and last branch IS the design:
+
+    * **No agent specified** — the ``solo`` graph's node. The planner was never asked to route it, so
+      the lead agent takes it. It falls back to ``default_agent_id``, which is always the
+      orchestrator, never a sub-agent. (``None`` only if there is no default either -> the caller
+      raises ``UNASSIGNED_NODE``.)
+    * **An agent that does not exist** — the planner *did* decide, and named something that is not
+      there (a typo, a hallucination, or a roster that changed mid-run). This RAISES
+      ``UNKNOWN_AGENT``. It must never fall through to the default: quietly running the step on some
+      other agent would discard the planner's choice and substitute the backend's own, which is the
+      one thing this engine forbids. Fail loudly, name the bogus target.
+
+    Raises:
+        ApiError: ``UNKNOWN_AGENT`` when ``node.preset`` names an agent absent from ``roster``.
     """
     if node.assigned_agent_id:
         return node.assigned_agent_id
-    if node.preset and node.preset in roster:
-        return roster[node.preset]
+    if node.preset:
+        agent_id = roster.get(node.preset)
+        if agent_id is None:
+            raise ApiError(
+                ErrorCode.UNKNOWN_AGENT,
+                f"Node {node.node_id!r} names agent {node.preset!r}, which does not exist. "
+                f"Known agents: {', '.join(sorted(roster)) or '(none)'}.",
+                details={"node_id": node.node_id, "requested_agent": node.preset,
+                         "known_agents": sorted(roster)},
+            )
+        return agent_id
     return default_agent_id
 
 
@@ -422,15 +450,25 @@ async def _run_layer(
 
     async def _one(nid: str) -> tuple[str, SubAgentResult | ApiError]:
         node = states[nid].node
-        agent_id = resolve_node_agent(node, roster, default_agent_id=default_agent_id)
-        if agent_id is None:
+        try:
+            agent_id = resolve_node_agent(node, roster, default_agent_id=default_agent_id)
+        except ApiError as exc:  # UNKNOWN_AGENT — the planner named an agent that does not exist
+            return nid, exc
+        if agent_id is None:  # no agent named AND no default to fall back to
             return nid, ApiError(
                 ErrorCode.UNASSIGNED_NODE,
-                f"Node {nid!r} has no assignable sub-agent (preset={node.preset!r}).",
+                f"Node {nid!r} names no agent and there is no default agent to run it.",
             )
         # HIL gate (fail-closed): auto-approves under 'automated' mode; otherwise the node waits
         # 'awaiting_approval' for a human verdict. A denial flows through the node's on_error policy.
-        if hil_gate is not None:
+        #
+        # It gates SUB-AGENT CREATION specifically. A node the planner routed to the ORCHESTRATOR
+        # ITSELF spawns no sub-agent, so there is nothing here to approve — and now that "delegate to
+        # nobody" is a first-class planner outcome, gating it would stop every such run to ask a human
+        # to approve a delegation that is not happening (and, under 'ask' mode, fail it when the wait
+        # budget elapsed). Gate delegation; do not gate the lead agent doing its own work.
+        delegating = agent_id != orchestrator.agent_id
+        if hil_gate is not None and delegating:
             await _mark_node(
                 pool, orchestrator.tenant_id, states[nid],
                 status="awaiting_approval", assigned_agent_id=agent_id,

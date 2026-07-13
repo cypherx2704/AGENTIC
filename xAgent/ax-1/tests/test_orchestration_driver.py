@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from agent_runtime.core.errors import ApiError, ErrorCode
 from agent_runtime.orchestration.dag import DagNode, parse_dag
 from agent_runtime.orchestration.driver import (
@@ -48,11 +50,40 @@ def test_preset_maps_via_roster() -> None:
     assert resolve_node_agent(_node(preset="researcher"), {"researcher": "R"}) == "R"
 
 
-def test_falls_back_to_default() -> None:
-    assert resolve_node_agent(_node(preset="unknown"), {}, default_agent_id="D") == "D"
+def test_no_agent_specified_falls_back_to_the_orchestrator_default() -> None:
+    """Branch 1 of the rule: no agent specified -> the default agent (the orchestrator). This is the
+    solo (no-delegation) node — the planner was never asked to route it, so the lead agent takes it.
+    It is the ONLY defaulting that exists."""
+    assert resolve_node_agent(_node(), {}, default_agent_id="D") == "D"
 
 
-def test_unassignable_is_none() -> None:
+def test_unknown_agent_raises_and_never_substitutes() -> None:
+    """Branch 3 of the rule: the planner named an agent that does not exist -> raise UNKNOWN_AGENT.
+
+    It must NOT fall through to the default even though one is available. Silently re-pointing the
+    step at another agent would discard the planner's decision and substitute the backend's own."""
+    with pytest.raises(ApiError) as exc:
+        resolve_node_agent(_node(preset="resercher"), {"researcher": "R"}, default_agent_id="D")
+    assert exc.value.code == ErrorCode.UNKNOWN_AGENT
+    # The error must name the bogus target AND the real ones, so the failure is actionable.
+    assert "resercher" in exc.value.message
+    assert "researcher" in exc.value.message
+    assert exc.value.details == {
+        "node_id": "n",
+        "requested_agent": "resercher",
+        "known_agents": ["researcher"],
+    }
+
+
+def test_unknown_agent_raises_even_with_an_empty_roster() -> None:
+    with pytest.raises(ApiError) as exc:
+        resolve_node_agent(_node(preset="ghost"), {}, default_agent_id="D")
+    assert exc.value.code == ErrorCode.UNKNOWN_AGENT
+
+
+def test_no_agent_and_no_default_is_unassignable() -> None:
+    """Branch 1 with nothing to fall back to -> None, which the driver turns into UNASSIGNED_NODE.
+    Distinct from UNKNOWN_AGENT: nothing was named, so nothing was overridden."""
     assert resolve_node_agent(_node(), {}) is None
 
 

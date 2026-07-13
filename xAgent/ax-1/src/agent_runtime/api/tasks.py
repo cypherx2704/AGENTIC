@@ -674,6 +674,8 @@ def _build_steps(steps: list[StepRow]) -> list[dict[str, Any]]:
             status=step.status,
             duration_ms=step.duration_ms,
             tokens=step.tokens_used,
+            step_type=step.step_type,
+            output=step.output,
         )
         for step in steps
     ]

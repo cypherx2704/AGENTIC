@@ -1,9 +1,10 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Badge, Card, CardBody, CardHeader, StatusBadge } from '@/components/ui';
 import { AgentName } from '@/components/AgentNames';
-import type { OrchestrationGraph, OrchestrationNode } from '@/lib/services';
+import { getTask, type OrchestrationGraph, type OrchestrationNode } from '@/lib/services';
+import type { TaskStep } from '@/lib/types';
 import { formatCost, formatNumber } from '@/lib/utils';
 
 /**
@@ -72,7 +73,32 @@ export function ExecutionTree({ graph }: { graph: OrchestrationGraph | null }) {
 
 function NodeRow({ node }: { node: OrchestrationNode }) {
   const [open, setOpen] = useState(false);
+  const [steps, setSteps] = useState<TaskStep[] | null>(null);
+  const [stepsError, setStepsError] = useState(false);
   const summary = node.output?.summary;
+  const expandable = Boolean(summary || node.task_id);
+
+  // Lazily pull the sub-agent's audit trail on expand (never on initial render — that would be an
+  // N+1 across every node). The tool calls live on the node's OWN task, so this is what makes
+  // "which tools did THIS sub-agent actually use" visible per agent.
+  useEffect(() => {
+    if (!open || !node.task_id || steps !== null || stepsError) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const task = await getTask(node.task_id as string);
+        if (!cancelled) setSteps(task.task_steps ?? []);
+      } catch {
+        if (!cancelled) setStepsError(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, node.task_id, steps, stepsError]);
+
+  const toolCalls = (steps ?? []).filter((s) => s.step_type === 'tool_call');
+
   return (
     <li className="px-4 py-3">
       <div className="flex flex-wrap items-center gap-2">
@@ -87,9 +113,9 @@ function NodeRow({ node }: { node: OrchestrationNode }) {
         <span className="ml-auto flex items-center gap-3 text-xs text-muted">
           {node.tokens_used ? <span>{formatNumber(node.tokens_used)} tok</span> : null}
           {node.cost_usd ? <span>{formatCost(node.cost_usd)}</span> : null}
-          {summary ? (
+          {expandable ? (
             <button type="button" className="text-brand hover:underline" onClick={() => setOpen((v) => !v)}>
-              {open ? 'Hide' : 'Summary'}
+              {open ? 'Hide' : 'Details'}
             </button>
           ) : null}
         </span>
@@ -97,11 +123,46 @@ function NodeRow({ node }: { node: OrchestrationNode }) {
       {node.depends_on.length > 0 ? (
         <p className="mt-1 text-[11px] text-faint">depends on: {node.depends_on.join(', ')}</p>
       ) : null}
-      {open && summary ? (
-        <div className="mt-2 rounded-md border border-border bg-surface-2 px-3 py-2">
-          <p className="whitespace-pre-wrap text-xs text-fg/90">{summary}</p>
-          {node.output?.citations?.length ? (
-            <p className="mt-1 text-[11px] text-faint">citations: {node.output.citations.join(', ')}</p>
+
+      {open ? (
+        <div className="mt-2 flex flex-col gap-2">
+          {summary ? (
+            <div className="rounded-md border border-border bg-surface-2 px-3 py-2">
+              <p className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-faint">Summary</p>
+              <p className="whitespace-pre-wrap text-xs text-fg/90">{summary}</p>
+              {node.output?.citations?.length ? (
+                <p className="mt-1 text-[11px] text-faint">citations: {node.output.citations.join(', ')}</p>
+              ) : null}
+            </div>
+          ) : null}
+
+          {node.task_id ? (
+            <div className="rounded-md border border-border bg-surface-2 px-3 py-2">
+              <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-faint">
+                Tool Calls
+              </p>
+              {stepsError ? (
+                <p className="text-xs text-muted">Could not load this sub-agent&apos;s trace.</p>
+              ) : steps === null ? (
+                <p className="text-xs text-muted">Loading…</p>
+              ) : toolCalls.length === 0 ? (
+                <p className="text-xs text-muted">
+                  No tools called — this sub-agent answered from the model alone.
+                </p>
+              ) : (
+                <ul className="flex flex-col gap-1">
+                  {toolCalls.map((s, i) => (
+                    <li key={`${s.tool ?? 'tool'}-${i}`} className="flex flex-wrap items-center gap-2">
+                      <Badge tone={s.error ? 'danger' : 'success'}>{s.tool ?? 'tool'}</Badge>
+                      {s.error ? <span className="text-[11px] text-danger">{s.error}</span> : null}
+                      <span className="ml-auto text-[11px] text-faint">
+                        {s.duration_ms != null ? `${formatNumber(s.duration_ms)} ms` : null}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           ) : null}
         </div>
       ) : null}

@@ -39,6 +39,10 @@ CREATE TABLE IF NOT EXISTS xagent.agents (
   status                VARCHAR(20)  NOT NULL DEFAULT 'active',
   llm_model             VARCHAR(100) NOT NULL DEFAULT 'smart',
   system_prompt         TEXT         NOT NULL,
+  -- Routing description (migration 0009): "when to use this agent", written for the ORCHESTRATOR's
+  -- planner, not for the agent. Rendered into the planner's capability catalogue next to
+  -- allowed_tools. Empty => the roster falls back to system_prompt.
+  description           TEXT         NOT NULL DEFAULT '',
   max_tokens            INTEGER      NOT NULL DEFAULT 2048,
   temperature           FLOAT        NOT NULL DEFAULT 0.7,
   memory_scope          VARCHAR(20)  NOT NULL DEFAULT 'agent',

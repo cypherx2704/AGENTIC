@@ -68,6 +68,12 @@ export interface AgentRuntime {
   name: string;
   runtime_version: string;
   status: AgentRuntimeStatus;
+  // Routing description (xAgent migration 0009) — "when to use this agent", written for the
+  // ORCHESTRATOR'S PLANNER, not for the agent itself. This is what the planner routes a step on,
+  // together with the agent's allowed_tools. Distinct from system_prompt on purpose: the system
+  // prompt instructs the agent ("Be terse"); the description advertises it to the router ("Use me
+  // to fetch GitHub repo statistics"). Optional in the response for back-compat with pre-0009 rows.
+  description?: string;
   llm_model: string;
   system_prompt: string;
   max_tokens: number;
@@ -92,6 +98,9 @@ export interface AgentRuntime {
 export interface AgentRuntimeRegistration {
   name: string;
   status: AgentRuntimeStatus;
+  // See AgentRuntime.description. REQUIRED in the sub-agent creation UI: an undescribed sub-agent
+  // is one the orchestrator's planner can only route to by guessing at its name.
+  description?: string;
   llm_model: string;
   system_prompt: string;
   max_tokens: number;
@@ -163,6 +172,15 @@ export interface TaskStep {
   status: string;
   duration_ms?: number | null;
   tokens?: number | null;
+  /** The audit step type (e.g. 'tool_call', 'llm_call', 'guardrail_check_input'). */
+  step_type?: string | null;
+  // For a `tool_call` step: WHICH tool ran. Every tool step's `step` is the literal "tool_call",
+  // so without these the tool's identity is invisible.
+  tool?: string | null;
+  tool_version?: string | null;
+  tool_call_id?: string | null;
+  /** Error code when the invocation failed (denied, unavailable, …). */
+  error?: string | null;
 }
 
 export interface TaskResponse {

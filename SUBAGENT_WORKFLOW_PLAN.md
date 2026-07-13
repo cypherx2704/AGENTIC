@@ -1,5 +1,28 @@
 # CypherX Sub-Agent Orchestration — Implementation Plan
 
+> ## ⚠️ PARTIALLY SUPERSEDED — 2026-07-13
+>
+> **This plan's decomposition design was reversed during implementation.** It specifies
+> *"deterministic templates first, LLM decomposition only when needed"* — a keyword router
+> (`match_template()`) that mapped goal text to a fixed `researcher → writer → reviewer` shape.
+> **That is now deleted, and re-introducing it is forbidden.** It was a routing rule in disguise: it
+> chose the sub-agents itself, and being a substring matcher it could not read a negation — *"…and do
+> NOT write a brief"* matched the `write` keyword and produced a brief-writing step anyway.
+>
+> **The rule that replaced it:** *the orchestrator's LLM planner decides the steps and which agent runs
+> each one. The backend only validates* — acyclic, within the depth/fanout caps, and every named target
+> a real roster entry. It never chooses, invents, or substitutes a target. An invalid plan goes back to
+> the planner once (gated by a HIL approval); failing that, the run fails `ORCHESTRATION_FAILED`. The
+> only non-planner graph is `solo`: one node run by the orchestrator itself = no delegation.
+>
+> **Everything else in this plan shipped as written** — the internal (no-A2A) sub-agent execution path,
+> summary-only returns, the live SSE execution tree, the budget ceiling, and HIL gating. Sections that
+> are stale are marked ~~struck through~~ inline below.
+>
+> **Current state of record:** [SUBAGENT_WORKFLOW_EXPLAINED.md](SUBAGENT_WORKFLOW_EXPLAINED.md) and
+> [orchestration/decompose.py](xAgent/ax-1/src/agent_runtime/orchestration/decompose.py).
+> This document is kept for the *reasoning* behind the decisions, not as the design of record.
+
 > **Status:** DRAFT for founder review · **Branch:** `service-enhancement` · **Author:** planning pass (recon-verified against live code, 2026-07-12)
 >
 > Goal: build the full **PROMPT → ORCHESTRATOR → SUB-AGENTS** workflow "just like Claude" — an orchestrator that decomposes a prompt, spawns scoped sub-agents, maintains a live execution tree, and synthesizes a result — **using a lightweight internal path (no A2A internally)** and reusing the governance layer that already exists. Reviewed and approved *before* implementation begins.
@@ -12,7 +35,7 @@
 
 **What's missing (the whole point of this plan):** the *execution* engine. Nothing decomposes a goal, spawns sub-agent runs, tracks a tree, enforces a budget, or synthesizes results. `xAgent/ax-2` (the spec's orchestrator home) is an empty repo; ax-1 runs exactly one agent and forbids cross-agent submission.
 
-**The plan in one line:** add an **orchestration engine** that reuses ax-1's existing single-agent pipeline to run each sub-agent node internally (in-tenant, `on_behalf_of` the sub-agent — no A2A, no per-child token mint), driven by a DAG built from **deterministic templates first, LLM decomposition only when needed**, with a **live SSE execution tree**, a **per-workflow budget ceiling**, and **HIL gating** on sub-agent creation / risky tools. Reserve the heavy A2A router + delegation chains strictly for the future external/cross-vendor boundary.
+**The plan in one line:** add an **orchestration engine** that reuses ax-1's existing single-agent pipeline to run each sub-agent node internally (in-tenant, `on_behalf_of` the sub-agent — no A2A, no per-child token mint), driven by a DAG built from ~~**deterministic templates first, LLM decomposition only when needed**~~ **the orchestrator's LLM planner — which alone decides the steps and which agent runs each one; the backend only validates the result and never substitutes a target** *(reversed 2026-07-13 — see the banner)*, with a **live SSE execution tree**, a **per-workflow budget ceiling**, and **HIL gating** on sub-agent creation / risky tools. Reserve the heavy A2A router + delegation chains strictly for the future external/cross-vendor boundary.
 
 ### ⚠️ Decision to confirm before coding (§11 has the full trade-off)
 **Where does the orchestration engine live?**
@@ -75,7 +98,8 @@ Everything below is written to work for **either** host; the only thing that cha
                     ┌──────────────────────────────────────────────────────────┐
   PROMPT ──────────►│ ORCHESTRATOR  (the tenant's one orchestrator agent)       │
   (task runner,     │  1. intent + mode: run solo OR use sub-agents             │
-   sub-agents ON)   │  2. DECOMPOSE goal → DAG   (template first, LLM fallback) │
+   sub-agents ON)   │  2. DECOMPOSE goal → DAG   (LLM planner decides; the      │
+                    │     backend only validates. `solo` = no delegation)       │
                     │  3. validate DAG (acyclic) + apply caps (depth/fanout/$)  │
                     │  4. DRIVE the DAG: run in-degree-0 nodes in parallel      │
                     │  5. HIL gate (sub_agent_creation / risky tool) if needed  │
@@ -89,8 +113,11 @@ Everything below is written to work for **either** host; the only thing that cha
              ▼                     ▼                     ▼
       ┌─────────────┐       ┌─────────────┐       ┌─────────────┐
       │ sub-agent A │       │ sub-agent B │  ...  │ sub-agent N │   each = a scoped agent
-      │ (researcher)│       │  (writer)   │       │ (reviewer)  │   with its OWN runtime:
-      └─────────────┘       └─────────────┘       └─────────────┘   model/prompt/tools/scopes
+      │  (whatever  │       │  (whatever  │       │  (whatever  │   with its OWN runtime:
+      │  the tenant │       │  the tenant │       │  the tenant │   description/model/prompt/
+      │   named it) │       │   named it) │       │   named it) │   tools/scopes
+      └─────────────┘       └─────────────┘       └─────────────┘
+        ↑ NO reserved roles. The planner routes on each agent's DESCRIPTION + TOOLS, never its name.
              │  LLM + tools (MCP) + RAG + memory, confined by its scope subset + alias allowlist
              ▼
         summary + citations ──► back up to the orchestrator (NOT the transcript)
@@ -168,9 +195,16 @@ The run stream emits node-attributed frames so the UI can build a tree:
 - Add an **internal execution entrypoint** in ax-1 that runs the pipeline for an *arbitrary target agent in the same tenant* — **without** relaxing the public `/v1/tasks` caller-vs-target rule. This is a new internal function (not the public route): `run_agent_pipeline(target_agent_id, input, on_behalf_of, budget, cancel, parent_task_id, workflow_id)`. Reuses `LoadStage`→`EventStage`. Downstream identity = `on_behalf_of=<target>`.
 - Authorization guard: the caller must be the tenant orchestrator; `target_agent_id.parent_orchestrator_id == orchestrator` (or target ∈ roster allowlist). Cross-tenant impossible (RLS).
 
-**B1 — Decomposition (deterministic-first).**
-- `Decomposer`: goal → DAG. **Template router** first (a table of preset shapes: `single`, `sequential-pipeline`, `parallel-fanout+synthesis`, `research→write→review`); **LLM `plan` fallback** only for novel goals (reuse `task_type: plan` output `steps[{step, depends_on[]}]`). Persist chosen DAG in `subtask_dag`; record `decomposition ∈ {template,llm}`.
-- **Kahn cycle-check** before execution → `INVALID_DAG` on failure, no nodes spawned. Apply caps (depth≤max_depth, fanout≤max_fanout).
+**B1 — Decomposition.** ⚠️ *REVERSED 2026-07-13. The original spec is struck through; what shipped is below it.*
+
+- ~~`Decomposer`: goal → DAG. **Template router** first (a table of preset shapes: `single`, `sequential-pipeline`, `parallel-fanout+synthesis`, `research→write→review`); **LLM `plan` fallback** only for novel goals.~~ **DELETED.** The template router (`match_template()`) *was* forced routing: an `if` chain mapping goal substrings to a fixed set of sub-agents, with the LLM never consulted. Being a substring matcher it could not read a negation, so *"…and do NOT write a brief"* matched the `write` keyword and emitted a brief-writing step regardless. Re-introducing it is forbidden.
+
+- **What shipped — the planner decides, the backend validates:**
+  1. `Decomposer`: goal → the orchestrator's **LLM planner**, which is shown a **capability catalogue** of the tenant's real sub-agents (`name` + `description` + actual `allowed_tools`) plus an `orchestrator` target meaning *"no delegation"*. It returns `{"steps":[{id, step, preset, depends_on}]}`. `plan_to_dag()` translates it **mechanically** — nothing inferred, nothing defaulted.
+  2. **Validate** (never re-route): **Kahn cycle-check** + caps (depth ≤ `max_depth`, fanout ≤ `max_fanout`) → `INVALID_DAG`; and `validate_targets()` → **`UNKNOWN_AGENT`** if a step names an agent that does not exist. No nodes spawned on failure.
+  3. **Repair, don't substitute:** an invalid plan goes **back to the planner once**, with the exact reason and the valid target list — gated by a HIL approval (an explicit human *deny* hard-fails; an unreachable HIL retries anyway). A second failure → **`ORCHESTRATION_FAILED`**. The backend never picks a replacement agent.
+  4. Persist in `subtask_dag`; record `decomposition ∈ {template,llm}`, where **`template` now means only `solo`** (the single no-delegation node) and every delegating graph is `llm`.
+  5. **Delegation is the exception, not the default.** The planner's system prompt states the default is *no* delegation — delegate only for parallelism, specialization, or isolation. A one-step plan is a good plan.
 
 **B2 — DAG driver + fan-out + join.**
 - Background async job (mirror ax-1's async-task driver + `_track_background_task` + sweeper): topological execution, in-degree-0 nodes via `asyncio.gather(return_exceptions=True)`, optimistic-locked node transitions (`version`), state+events atomic via outbox. Retry (`retry_max` default 1) + reuse the Phase-9 per-target circuit breaker.
@@ -237,13 +271,13 @@ Ranked, adversarially filtered. **★ = build now, zero/negative extra $, high R
 
 **Build now (high ROI, low cost):**
 1. ★ **Summary-only sub-agent returns** — orchestrator ingests each child's *summary + citations*, never its transcript. The single biggest token lever (net-negative cost). Reuses the 256 KiB output cap. *(§4 B2)*
-2. ★ **Deterministic/template decomposition + scale-effort caps** — skip the planning LLM call for common shapes; LLM only for novel goals; hard caps on depth/fanout. Kills the "over-spawn on simple prompts" blow-up. *(§4 B1)*
+2. ~~★ **Deterministic/template decomposition** — skip the planning LLM call for common shapes.~~ **NOT BUILT — deliberately rejected 2026-07-13.** This was forced routing, and the token it saved was not worth it: a substring router cannot judge whether delegating is warranted at all, and cannot read a negation. **What replaced it:** the planner always runs, but its prompt makes *not delegating* the default ("if ONE agent can do the whole job, emit exactly ONE step"), which kills the over-spawn blow-up at the source rather than by pre-empting the model. **Scale-effort caps SHIPPED** (hard depth/fanout ceilings, enforced in `dag.py` and quoted to the planner). *(§4 B1)*
 3. ★ **Live execution tree with per-node tokens/cost** — the "reads like Claude" UX at **zero token cost**; reuses SSE + `workflow_tasks`. *(§5 F2)*
 4. ★ **Per-workflow budget ceiling + early stop** — sum `usage_records` by `workflow_id`, trip the cancel path on breach. ~50 lines of catastrophe insurance. *(§4 B3)*
 5. ★ **Prompt caching on the orchestrator's fixed prefix** — one `cache_control: ephemeral` marker → ~90% cheaper / ~85% faster on repeated turns. Free money at the gateway. *(§4 B6)*
 6. **Parallel fan-out** of independent nodes (`asyncio.gather`) — the only reason multi-agent wins; cuts wall-clock up to ~90%. *(§4 B2)*
 7. **Per-sub-agent least-privilege tools/scopes** — reuses scope subset + tool ACLs; smaller prompts + fewer wrong-tool errors. *(§4 B6 / §5 F5)*
-8. **Sub-agent presets** (researcher/writer/reviewer) — the `.claude/agents` analogue; enables 2 & 7. *(§3.1, §5 F5)*
+8. ~~**Sub-agent presets** (researcher/writer/reviewer) — the `.claude/agents` analogue.~~ **REVISED 2026-07-13.** There are **no reserved role names**. What shipped is the *useful* half of the `.claude/agents` analogue: every sub-agent carries a **`description`** ("when to use this agent") alongside its **tools**, and the planner routes on that pair — exactly as Claude Code routes on a subagent's `description` frontmatter. Names are arbitrary and carry no meaning. Seeding a fixed researcher/writer/reviewer trio was what made the router possible in the first place. *(§3.1, §5 F5)*
 9. **Finish HIL inline + streaming + cancel in the tree** — mostly already built; makes the tree trustworthy. *(§4 B4, §5 F4)*
 10. **Bounded retry + per-target circuit breaker** — cheap reliability; `retry_max` already in the schema. *(§4 B2)*
 
@@ -302,7 +336,7 @@ Parallelizable tracks after step 2: **backend engine** (3→7) and **frontend sh
 2. **Default when a sub-agent HIL is denied mid-run:** fail the whole workflow, or skip that node and continue with partial results? *Recommendation: skip-node + mark partial for `research`-type; fail for `tool`/write-type.*
 3. **`immutable_llm`:** enforce it (sub-agent's model locked at creation) or drop the flag? *Recommendation: enforce — it's a cheap least-surprise guard and it's already plumbed.*
 4. **Critic/verifier pass:** ship as an opt-in preset now, or defer entirely? *Recommendation: defer to "build later"; it ~doubles cost.*
-5. **Presets:** ship the 3 defaults (researcher/writer/reviewer) seeded per tenant, or let tenants define their own only? *Recommendation: seed 3 + allow custom.*
+5. ~~**Presets:** ship the 3 defaults (researcher/writer/reviewer) seeded per tenant, or let tenants define their own only?~~ **RESOLVED 2026-07-13 — tenants define their own, full stop.** No seeded roles, no reserved names. Each sub-agent declares a **`description`** ("when to use this agent"); the planner routes on that plus the agent's real tools. Seeding a fixed trio is what let a keyword router exist, and a router that picks the agent is the one thing this engine must never do.
 
 ---
 

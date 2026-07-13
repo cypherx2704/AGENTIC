@@ -28,7 +28,7 @@ from .pool import in_tenant
 
 _COLUMNS = """
     agent_id::text AS agent_id, tenant_id::text AS tenant_id, name, runtime_version, status,
-    llm_model, system_prompt, max_tokens, temperature, memory_scope,
+    llm_model, system_prompt, description, max_tokens, temperature, memory_scope,
     guardrail_policy_id::text AS guardrail_policy_id, allowed_tools, tool_loop_enabled,
     allowed_skills, allowed_kb_ids::text[] AS allowed_kb_ids, rag_top_k_per_kb, rag_min_score,
     token_budget_per_task, capabilities, metadata, immutable_llm
@@ -79,11 +79,11 @@ async def upsert_agent_runtime(
             """
             INSERT INTO xagent.agents
               (agent_id, tenant_id, name, runtime_version, status, llm_model, system_prompt,
-               max_tokens, temperature, memory_scope, guardrail_policy_id, allowed_tools,
-               tool_loop_enabled, allowed_skills, allowed_kb_ids, rag_top_k_per_kb,
+               description, max_tokens, temperature, memory_scope, guardrail_policy_id,
+               allowed_tools, tool_loop_enabled, allowed_skills, allowed_kb_ids, rag_top_k_per_kb,
                rag_min_score, token_budget_per_task, capabilities, metadata,
                agent_type, parent_orchestrator_id, immutable_llm)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (agent_id) DO NOTHING
             """,
             (
@@ -94,6 +94,7 @@ async def upsert_agent_runtime(
                 reg.status,
                 reg.llm_model,
                 reg.system_prompt,
+                reg.description,
                 reg.max_tokens,
                 reg.temperature,
                 reg.memory_scope,
@@ -147,11 +148,11 @@ async def insert_agent_runtime(
             """
             INSERT INTO xagent.agents
               (agent_id, tenant_id, name, runtime_version, status, llm_model, system_prompt,
-               max_tokens, temperature, memory_scope, guardrail_policy_id, allowed_tools,
-               tool_loop_enabled, allowed_skills, allowed_kb_ids, rag_top_k_per_kb,
+               description, max_tokens, temperature, memory_scope, guardrail_policy_id,
+               allowed_tools, tool_loop_enabled, allowed_skills, allowed_kb_ids, rag_top_k_per_kb,
                rag_min_score, token_budget_per_task, capabilities, metadata,
                agent_type, parent_orchestrator_id, immutable_llm)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (agent_id) DO NOTHING
             """,
             (
@@ -162,6 +163,7 @@ async def insert_agent_runtime(
                 reg.status,
                 reg.llm_model,
                 reg.system_prompt,
+                reg.description,
                 reg.max_tokens,
                 reg.temperature,
                 reg.memory_scope,
@@ -216,12 +218,12 @@ async def update_agent_runtime(
             f"""
             UPDATE xagent.agents
                SET name = %s, runtime_version = %s, status = %s, llm_model = %s,
-                   system_prompt = %s, max_tokens = %s, temperature = %s, memory_scope = %s,
-                   guardrail_policy_id = %s, allowed_tools = %s, tool_loop_enabled = %s,
-                   allowed_skills = %s, allowed_kb_ids = %s, rag_top_k_per_kb = %s,
-                   rag_min_score = %s, token_budget_per_task = %s, capabilities = %s,
-                   metadata = %s, agent_type = %s, parent_orchestrator_id = %s,
-                   immutable_llm = %s, updated_at = NOW()
+                   system_prompt = %s, description = %s, max_tokens = %s, temperature = %s,
+                   memory_scope = %s, guardrail_policy_id = %s, allowed_tools = %s,
+                   tool_loop_enabled = %s, allowed_skills = %s, allowed_kb_ids = %s,
+                   rag_top_k_per_kb = %s, rag_min_score = %s, token_budget_per_task = %s,
+                   capabilities = %s, metadata = %s, agent_type = %s,
+                   parent_orchestrator_id = %s, immutable_llm = %s, updated_at = NOW()
              WHERE agent_id = %s
             RETURNING {_COLUMNS}
             """,  # noqa: S608 — static RETURNING columns
@@ -231,6 +233,7 @@ async def update_agent_runtime(
                 status,
                 reg.llm_model,
                 reg.system_prompt,
+                reg.description,
                 reg.max_tokens,
                 reg.temperature,
                 reg.memory_scope,

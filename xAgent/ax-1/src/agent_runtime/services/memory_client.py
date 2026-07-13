@@ -27,6 +27,7 @@ import structlog
 from ..core import metrics, trace
 from ..core.config import Settings
 from ..core.errors import ApiError, ErrorCode
+from .errors import error_detail as _error_detail
 from .service_token import ServiceTokenProvider
 
 logger = structlog.get_logger(__name__)
@@ -193,10 +194,11 @@ class MemoryClient:
             raise ApiError(ErrorCode.SERVICE_UNAVAILABLE, "Memory service unavailable.") from exc
         if resp.status_code >= 400:
             metrics.downstream_calls_total.labels("memory", "rejected").inc()
-            logger.warning("memory_call_rejected", op=op, status=resp.status_code)
+            detail = _error_detail(resp)  # Contract-2 message — the whole diagnosis
+            logger.warning("memory_call_rejected", op=op, status=resp.status_code, detail=detail)
             raise ApiError(
                 ErrorCode.SERVICE_UNAVAILABLE,
-                f"Memory service returned {resp.status_code}.",
+                f"Memory service returned {resp.status_code}." + (f" {detail}" if detail else ""),
             )
         metrics.downstream_calls_total.labels("memory", "ok").inc()
         # A 201 store may legitimately carry an empty body — tolerate non-JSON / empty.

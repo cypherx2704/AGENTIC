@@ -48,7 +48,7 @@
     "decomposition": {
       "type": "string",
       "enum": ["template", "llm"],
-      "description": "How the DAG was produced: a deterministic template match, or an LLM decomposition."
+      "description": "How the DAG was produced. 'llm' = the orchestrator's planner produced it (every delegating graph). 'template' = the single deterministic graph that needs no planner: 'solo', one node run by the orchestrator itself (no delegation). There is no keyword/template router — a multi-node DAG is always 'llm'."
     },
     "status": {
       "type": "string",

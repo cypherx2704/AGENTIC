@@ -19,6 +19,8 @@ integration-level (needs the pipeline + DB) and is exercised by the driver + the
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -41,6 +43,22 @@ logger = structlog.get_logger(__name__)
 SUB_AGENT = "sub_agent"
 
 
+def jwt_exp(token: str) -> float | None:
+    """Read a JWT's ``exp`` claim WITHOUT verifying the signature.
+
+    We are not trusting the token here — Auth just issued it to us over TLS, and every downstream
+    re-verifies the signature itself. We only need the DEADLINE, and ``exp`` is the single value
+    every verifier actually enforces. Returns ``None`` if the token is unparseable.
+    """
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)  # restore base64url padding
+        exp = json.loads(base64.urlsafe_b64decode(payload)).get("exp")
+        return float(exp) if exp is not None else None
+    except Exception:  # noqa: BLE001 — an unreadable token just means "no deadline known"
+        return None
+
+
 # ── sub-agent token provider (mint + expiry-aware cache) ─────────────────────────────────
 class SubAgentTokenProvider:
     """Mints + caches scoped sub-agent JWTs via the Auth delegation endpoint.
@@ -48,6 +66,12 @@ class SubAgentTokenProvider:
     A run touches each sub-agent a few times; caching (keyed by ``(sub_agent_id, scopes)`` with a
     safety margin before the token's expiry) avoids re-minting per node. ``now`` is injectable for
     tests (defaults to ``time.monotonic``).
+
+    **The cache MUST NOT outlive the token.** It therefore expires on the EARLIER of Auth's reported
+    ``expires_in`` and the token's own ``exp`` claim. Trusting the reported number alone is what
+    broke: a token whose ``exp`` was one hour out stayed cached for two and a half, and every
+    downstream then rejected it with ``401 Invalid token: Signature has expired``. ``exp`` is what
+    verifiers enforce, so ``exp`` is what the cache honours.
     """
 
     def __init__(
@@ -56,11 +80,34 @@ class SubAgentTokenProvider:
         *,
         safety_margin_seconds: float = 60.0,
         now: Callable[[], float] = time.monotonic,
+        wall_now: Callable[[], float] = time.time,
     ) -> None:
         self._auth = auth_client
         self._margin = safety_margin_seconds
         self._now = now
+        self._wall_now = wall_now  # `exp` is a wall-clock epoch; `now` is monotonic
         self._cache: dict[tuple[str, tuple[str, ...]], tuple[str, float]] = {}
+
+    def _lifetime_seconds(self, token: str, reported_expires_in: int) -> float:
+        """Seconds this token is ACTUALLY usable for: the earlier of what Auth said and what it signed."""
+        candidates: list[float] = []
+        if reported_expires_in > 0:
+            candidates.append(float(reported_expires_in))
+        exp = jwt_exp(token)
+        if exp is not None:
+            candidates.append(exp - self._wall_now())
+        if not candidates:
+            return 1.0  # nothing to go on -> re-mint next time rather than cache blind
+        lifetime = min(candidates)
+        if len(candidates) == 2 and abs(candidates[0] - candidates[1]) > 60.0:
+            logger.warning(
+                "subagent_token_ttl_mismatch",
+                reported_expires_in=reported_expires_in,
+                exp_remaining=round(candidates[1]),
+                using=round(lifetime),
+                hint="Auth's expires_in disagrees with the JWT exp; honouring exp.",
+            )
+        return lifetime
 
     async def get(
         self,
@@ -79,7 +126,8 @@ class SubAgentTokenProvider:
         minted = await self._auth.mint_sub_agent_token(
             sub_agent_id, agent_jwt=orchestrator_jwt, requested_scopes=list(scopes)
         )
-        expiry = now + max(1.0, minted.expires_in - self._margin)
+        lifetime = self._lifetime_seconds(minted.token, minted.expires_in)
+        expiry = now + max(1.0, lifetime - self._margin)
         self._cache[key] = (minted.token, expiry)
         return minted.token
 
@@ -217,16 +265,28 @@ async def run_subagent_task(
     the sub-agent's transcript. Authorization (orchestrator owns this sub-agent) is enforced upstream
     by the Auth mint endpoint (404 for a non-owned target) and by the driver's DAG-assignment guard.
     """
-    token = await token_provider.get(
-        sub_agent_id, orchestrator_jwt=orchestrator.raw_token, requested_scopes=requested_scopes
-    )
-    principal = build_subagent_principal(
-        sub_agent_id=sub_agent_id,
-        tenant_id=orchestrator.tenant_id,
-        scopes=requested_scopes or [],
-        token=token,
-        orchestrator_id=orchestrator.agent_id or "",
-    )
+    # A node may be assigned to the ORCHESTRATOR ITSELF ("no delegation needed" — the planner's
+    # default outcome). Delegation-minting is only for real sub-agents: asking Auth to mint a
+    # sub-agent token for the orchestrator would 404 (it is not its own sub-agent). Run it under
+    # the orchestrator's own already-verified principal instead.
+    # `token` is ALSO the pipeline's `inbound_agent_jwt` below (forwarded downstream as
+    # X-Forwarded-Agent-JWT) — so BOTH branches must bind it, or the self-run path raises
+    # UnboundLocalError. Self-run forwards the orchestrator's own already-verified JWT, which is
+    # exactly what downstream confinement should key off when the orchestrator is the actor.
+    if sub_agent_id == orchestrator.agent_id:
+        token = orchestrator.raw_token or ""
+        principal = orchestrator
+    else:
+        token = await token_provider.get(
+            sub_agent_id, orchestrator_jwt=orchestrator.raw_token, requested_scopes=requested_scopes
+        )
+        principal = build_subagent_principal(
+            sub_agent_id=sub_agent_id,
+            tenant_id=orchestrator.tenant_id,
+            scopes=requested_scopes or [],
+            token=token,
+            orchestrator_id=orchestrator.agent_id or "",
+        )
 
     task = await tasks_repo.create_task(
         pool,

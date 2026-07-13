@@ -5,9 +5,9 @@
       "workflow_id": "b1e7c2a4-3d5f-4a6b-8c9d-0e1f2a3b4c5d",
       "schema_version": "1.0.0",
       "tenant_id": "550e8400-e29b-41d4-a716-446655440000",
-      "name": "research-write-review",
+      "name": "rag-briefing-with-review",
       "goal": "Write a briefing on retrieval-augmented generation and review it.",
-      "decomposition": "template",
+      "decomposition": "llm",
       "nodes": [
         {
           "node_id": "research",
@@ -46,6 +46,8 @@
       "workflow_id": "0a1b2c3d-4e5f-4061-8273-849506afb1c2",
       "schema_version": "1.0.0",
       "tenant_id": "550e8400-e29b-41d4-a716-446655440000",
+      "name": "solo",
+      "decomposition": "template",
       "nodes": [
         { "node_id": "solo", "node_type": "task", "ref": "chat" }
       ]

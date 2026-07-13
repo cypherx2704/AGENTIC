@@ -14,6 +14,8 @@ const STEP_LABELS: Record<string, string> = {
   memory_write: 'Memory Write',
   llm_call: 'LLM Call',
   tool_loop: 'Tool Loop',
+  tool_call: 'Tool Call',
+  tool_loop_limit: 'Tool Loop Limit',
   guardrail_check_output: 'Guardrail (Output)',
   event: 'Emit Event',
 };
@@ -43,6 +45,8 @@ export function TaskTimeline({ steps }: { steps: TaskStep[] }) {
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 <span className="text-sm font-medium text-fg">{label(s.step)}</span>
+                {/* Every tool step's name is the literal "tool_call" — show WHICH tool ran. */}
+                {s.tool ? <span className="font-mono text-xs text-brand">{s.tool}</span> : null}
                 <StatusBadge status={s.status} />
               </div>
               <div className="flex items-center gap-3 font-mono text-xs text-muted">

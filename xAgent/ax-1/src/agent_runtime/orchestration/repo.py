@@ -61,10 +61,28 @@ async def get_agent_hierarchy(
 # ── roster (the orchestrator's runnable sub-agents) ────────────────────────────────────
 @dataclass
 class SubAgentRef:
-    """A runnable sub-agent of the orchestrator (from the xagent.agents runtime mirror)."""
+    """A runnable sub-agent of the orchestrator (from the xagent.agents runtime mirror).
+
+    Carries CAPABILITY, not just identity: the planner routes a step to an agent, so it must know
+    what each one is FOR (:attr:`description`) and what it can actually DO (:attr:`allowed_tools`).
+    With names alone it can only guess from the string — and will happily hand a GitHub lookup to
+    an agent that only holds a Wikipedia tool, which then answers from thin air.
+    """
 
     agent_id: str
     name: str
+    #: Routing description (migration 0009) — "when to use this agent", written for the planner.
+    description: str = ""
+    #: The agent's own instructions. Only a FALLBACK purpose, for agents created before 0009 had a
+    #: description; it addresses the agent, not the router, so it is a poor routing signal.
+    system_prompt: str = ""
+    #: Tool/MCP-server names the agent may call. Empty = no tools (pure LLM).
+    allowed_tools: tuple[str, ...] = ()
+
+    @property
+    def purpose(self) -> str:
+        """What the planner is shown as this agent's reason to exist (description, else prompt)."""
+        return self.description.strip() or self.system_prompt.strip()
 
 
 async def list_orchestrator_subagents(
@@ -80,7 +98,7 @@ async def list_orchestrator_subagents(
     async def _q(conn: AsyncConnection) -> list[SubAgentRef]:
         cur = await conn.cursor(row_factory=dict_row).execute(
             """
-            SELECT agent_id::text AS agent_id, name
+            SELECT agent_id::text AS agent_id, name, description, system_prompt, allowed_tools
               FROM xagent.agents
              WHERE parent_orchestrator_id = %s
                AND agent_type = 'sub_agent'
@@ -89,7 +107,16 @@ async def list_orchestrator_subagents(
             """,
             (orchestrator_id,),
         )
-        return [SubAgentRef(agent_id=r["agent_id"], name=r["name"]) for r in await cur.fetchall()]
+        return [
+            SubAgentRef(
+                agent_id=r["agent_id"],
+                name=r["name"],
+                description=r["description"] or "",
+                system_prompt=r["system_prompt"] or "",
+                allowed_tools=tuple(r["allowed_tools"] or ()),
+            )
+            for r in await cur.fetchall()
+        ]
 
     return await in_tenant(pool, tenant_id, _q)
 
