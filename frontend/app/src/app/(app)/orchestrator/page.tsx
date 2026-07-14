@@ -33,6 +33,7 @@ import {
   type SubAgent,
 } from '@/lib/services';
 import { memoryScopeFor, runtimeToRegistration, subAgentRegistration } from '@/lib/subAgentRuntime';
+import { isRepairable, probeRuntime, runtimeOf, type RuntimeProbe } from '@/lib/runtimeProbe';
 import type { AgentRuntime } from '@/lib/types';
 import { useSession } from '@/components/SessionProvider';
 
@@ -45,11 +46,13 @@ export default function OrchestratorPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [editing, setEditing] = useState<SubAgent | null>(null);
   const [editingRuntime, setEditingRuntime] = useState<SubAgent | null>(null);
-  // agent_id -> xAgent runtime row (null = none registered). The orchestration roster reads
-  // xagent.agents, NOT auth — so an identity with no runtime row can never be scheduled. We probe
-  // each sub-agent's runtime so that "dead-end" state is VISIBLE here instead of only surfacing as
-  // an UNASSIGNED_NODE failure at run time.
-  const [runtimes, setRuntimes] = useState<Record<string, AgentRuntime | null>>({});
+  const [viewing, setViewing] = useState<SubAgent | null>(null);
+  // agent_id -> a CLASSIFIED probe of the xAgent runtime. The orchestration roster reads
+  // xagent.agents, NOT auth — so an identity with no runtime row can never be scheduled, and that
+  // dead end must be visible HERE rather than surfacing as a mystery at run time. The probe is a
+  // discriminated union, not a nullable row, because "no runtime" and "not allowed to look" are
+  // completely different problems and were previously reported identically (see lib/runtimeProbe).
+  const [probes, setProbes] = useState<Record<string, RuntimeProbe>>({});
   const [busy, setBusy] = useState<string | null>(null);
 
   const items = data?.items;
@@ -58,32 +61,31 @@ export default function OrchestratorPage() {
   // column reflects the table the driver actually reads.
   useEffect(() => {
     if (!items?.length) {
-      setRuntimes({});
+      setProbes({});
       return;
     }
     let cancelled = false;
     void (async () => {
       const entries = await Promise.all(
-        items.map(async (a) => {
-          try {
-            return [a.agent_id, await getRuntime(a.agent_id)] as const;
-          } catch {
-            return [a.agent_id, null] as const; // 404 => no runtime row => not schedulable
-          }
-        }),
+        items.map(async (a) => [a.agent_id, await probeRuntime(a.agent_id)] as const),
       );
-      if (!cancelled) setRuntimes(Object.fromEntries(entries));
+      if (!cancelled) setProbes(Object.fromEntries(entries));
     })();
     return () => {
       cancelled = true;
     };
   }, [items]);
 
+  // A 403 on the runtime probe is not an agent problem — it is a SESSION problem, and it affects
+  // every agent at once. Say so plainly and once, instead of painting the whole table red and
+  // sending the operator off "repairing" agents that were never broken.
+  const scopeBlocked = Object.values(probes).some((p) => p.kind === 'forbidden');
+
   /** Register/reactivate the xAgent runtime for a sub-agent whose identity exists but is unschedulable. */
   async function repair(a: SubAgent) {
     setBusy(a.agent_id);
     try {
-      const existing = runtimes[a.agent_id];
+      const existing = runtimeOf(probes[a.agent_id]);
       await putRuntime(
         a.agent_id,
         existing
@@ -135,81 +137,101 @@ export default function OrchestratorPage() {
       key: 'description',
       header: 'When to use',
       render: (a) => {
-        if (!(a.agent_id in runtimes)) return <span className="text-xs text-faint">checking…</span>;
-        const desc = runtimes[a.agent_id]?.description?.trim();
+        const p = probes[a.agent_id];
+        if (!p) return <span className="text-xs text-faint">checking…</span>;
+        const desc = runtimeOf(p)?.description?.trim();
+        if (p.kind === 'forbidden' || p.kind === 'error') return <span className="text-xs text-faint">—</span>;
         if (!desc) return <Badge tone="warning">Not described</Badge>;
         return (
-          <span className="line-clamp-2 max-w-[28ch] text-xs text-muted" title={desc}>
+          <span className="line-clamp-2 max-w-[26ch] text-xs text-muted" title={desc}>
             {desc}
           </span>
         );
       },
     },
-    { key: 'type', header: 'Type', render: (a) => <Badge>{a.agent_type}</Badge> },
+    {
+      // The TOOLS are the other half of what the planner routes on: a step needing external data can
+      // only go to an agent that actually holds a tool able to fetch it.
+      key: 'tools',
+      header: 'Tools',
+      render: (a) => {
+        const rt = runtimeOf(probes[a.agent_id]);
+        if (!probes[a.agent_id]) return <span className="text-xs text-faint">checking…</span>;
+        if (!rt) return <span className="text-xs text-faint">—</span>;
+        if (rt.allowed_tools.length === 0) return <span className="text-xs text-faint">none</span>;
+        return (
+          <div className="flex flex-wrap gap-1">
+            {rt.allowed_tools.slice(0, 2).map((t) => (
+              <Badge key={t}>{t}</Badge>
+            ))}
+            {rt.allowed_tools.length > 2 ? (
+              <span className="text-xs text-muted">+{rt.allowed_tools.length - 2}</span>
+            ) : null}
+          </div>
+        );
+      },
+    },
     { key: 'status', header: 'Status', render: (a) => <StatusBadge status={a.status} /> },
     {
       key: 'schedulable',
       header: 'Schedulable',
       render: (a) => {
         if (a.status !== 'active') return <span className="text-xs text-faint">—</span>;
-        if (!(a.agent_id in runtimes)) return <span className="text-xs text-faint">checking…</span>;
-        const rt = runtimes[a.agent_id];
-        if (rt === null) return <Badge tone="danger">No runtime</Badge>;
-        if (rt.status !== 'active') return <Badge tone="warning">Runtime {rt.status}</Badge>;
-        return <Badge tone="success">Ready</Badge>;
+        const p = probes[a.agent_id];
+        if (!p) return <span className="text-xs text-faint">checking…</span>;
+        switch (p.kind) {
+          case 'ready':
+            return <Badge tone="success">Ready</Badge>;
+          case 'inactive':
+            return <Badge tone="warning">Runtime {p.runtime.status}</Badge>;
+          case 'missing':
+            return <Badge tone="danger">No runtime</Badge>;
+          // NOT "No runtime". We were refused permission to look — the agent may be perfectly fine,
+          // and "Repair" would 403 on the same scope gate.
+          case 'forbidden':
+            return (
+              <span title={p.message}>
+                <Badge tone="warning">Can&apos;t check — no scope</Badge>
+              </span>
+            );
+          default:
+            return (
+              <span title={`${p.code}: ${p.message}`}>
+                <Badge tone="warning">Check failed ({p.status || 'network'})</Badge>
+              </span>
+            );
+        }
       },
-    },
-    {
-      key: 'scopes',
-      header: 'Scopes',
-      render: (a) => (
-        <div className="flex flex-wrap gap-1">
-          {a.allowed_scopes.slice(0, 6).map((s) => (
-            <Badge key={s}>{s}</Badge>
-          ))}
-          {a.allowed_scopes.length > 6 ? <span className="text-xs text-muted">+{a.allowed_scopes.length - 6}</span> : null}
-        </div>
-      ),
     },
     {
       key: 'actions',
       header: '',
       className: 'text-right',
-      render: (a) => {
-        const rt = runtimes[a.agent_id];
-        const needsRepair =
-          a.status === 'active' && a.agent_id in runtimes && (rt === null || rt.status !== 'active');
-        return (
-          <div className="flex items-center justify-end gap-2">
-            {needsRepair ? (
-              <Button
-                size="sm"
-                disabled={!isOrchestrator}
-                loading={busy === a.agent_id}
-                onClick={() => repair(a)}
-              >
-                Repair
-              </Button>
-            ) : null}
-            <Button
-              size="sm"
-              variant="secondary"
-              disabled={!isOrchestrator}
-              onClick={() => setEditingRuntime(a)}
-            >
-              Edit
+      render: (a) => (
+        <div className="flex items-center justify-end gap-2">
+          {/* Repair only when it can actually help. A 403/5xx is not about this agent, and a Repair
+              would just 403 again on the same gate — offering it there is a wild goose chase. */}
+          {a.status === 'active' && isRepairable(probes[a.agent_id]) ? (
+            <Button size="sm" disabled={!isOrchestrator} loading={busy === a.agent_id} onClick={() => repair(a)}>
+              Repair
             </Button>
-            <Button size="sm" variant="secondary" disabled={!isOrchestrator} onClick={() => setEditing(a)}>
-              Scopes
+          ) : null}
+          <Button size="sm" variant="secondary" onClick={() => setViewing(a)}>
+            Details
+          </Button>
+          <Button size="sm" variant="secondary" disabled={!isOrchestrator} onClick={() => setEditingRuntime(a)}>
+            Edit
+          </Button>
+          <Button size="sm" variant="secondary" disabled={!isOrchestrator} onClick={() => setEditing(a)}>
+            Scopes
+          </Button>
+          {a.status === 'active' ? (
+            <Button size="sm" variant="danger" loading={busy === a.agent_id} onClick={() => deactivate(a)}>
+              Deactivate
             </Button>
-            {a.status === 'active' ? (
-              <Button size="sm" variant="danger" loading={busy === a.agent_id} onClick={() => deactivate(a)}>
-                Deactivate
-              </Button>
-            ) : null}
-          </div>
-        );
-      },
+          ) : null}
+        </div>
+      ),
     },
   ];
 
@@ -228,6 +250,20 @@ export default function OrchestratorPage() {
         {!isOrchestrator && (
           <Callout tone="warning" title="Non-Orchestrator Session">
             You are signed in as a non-orchestrator agent. Sub-agent management requires the orchestrator session.
+          </Callout>
+        )}
+        {scopeBlocked && (
+          <Callout tone="warning" title="This session cannot read agent runtimes">
+            <p>
+              Reading or writing a sub-agent&apos;s runtime needs the <code>agent:admin</code> (or{' '}
+              <code>platform:admin</code>) scope, and this session has neither — so the{' '}
+              <strong>Schedulable</strong> and <strong>When to use</strong> columns cannot be filled in.
+            </p>
+            <p className="mt-1">
+              This does <strong>not</strong> mean the agents are broken: they may be registered and running
+              fine. Re-authenticate with an admin scope to manage them — <strong>Repair</strong> would fail on
+              the same gate.
+            </p>
           </Callout>
         )}
         <Card className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -264,9 +300,20 @@ export default function OrchestratorPage() {
         }}
       />
 
+      <SubAgentDetailsModal
+        subAgent={viewing}
+        probe={viewing ? probes[viewing.agent_id] : undefined}
+        onClose={() => setViewing(null)}
+        onEdit={() => {
+          const a = viewing;
+          setViewing(null);
+          setEditingRuntime(a);
+        }}
+      />
+
       <EditSubAgentRuntimeModal
         subAgent={editingRuntime}
-        runtime={editingRuntime ? (runtimes[editingRuntime.agent_id] ?? null) : null}
+        runtime={editingRuntime ? runtimeOf(probes[editingRuntime.agent_id]) : null}
         onClose={() => setEditingRuntime(null)}
         onSaved={() => {
           toast.success('Sub-agent updated.');
@@ -286,6 +333,146 @@ export default function OrchestratorPage() {
         }}
       />
     </Page>
+  );
+}
+
+/**
+ * Everything about one sub-agent — led by THE THING THAT DECIDES ITS FATE.
+ *
+ * The headline is not the model or the prompt: it is the **capability catalogue entry**, rendered
+ * exactly as the orchestrator's planner is shown it. That block (name + "use when" + tools) is the
+ * entire basis on which a step is routed here, so seeing it verbatim answers the only question that
+ * really matters — *would I route work to this agent, reading only this?* An empty description or an
+ * empty tool list stops being an abstract warning and becomes self-evidently unroutable.
+ */
+function SubAgentDetailsModal({
+  subAgent,
+  probe,
+  onClose,
+  onEdit,
+}: {
+  subAgent: SubAgent | null;
+  probe: RuntimeProbe | undefined;
+  onClose: () => void;
+  onEdit: () => void;
+}) {
+  if (!subAgent) return null;
+  const rt = runtimeOf(probe);
+  const description = rt?.description?.trim();
+  const tools = rt?.allowed_tools ?? [];
+
+  return (
+    <Modal
+      open={!!subAgent}
+      onClose={onClose}
+      title={subAgent.name}
+      description="What the orchestrator knows about this agent — and what it can actually do."
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>
+            Close
+          </Button>
+          <Button onClick={onEdit}>Edit</Button>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-4">
+        {probe?.kind === 'forbidden' || probe?.kind === 'error' ? (
+          <Callout tone="warning" title="Runtime could not be read">
+            {probe.kind === 'forbidden'
+              ? 'This session lacks the agent:admin scope, so the runtime config below cannot be shown. The agent itself may be perfectly healthy.'
+              : `${probe.code}: ${probe.message}`}
+          </Callout>
+        ) : null}
+
+        {probe?.kind === 'missing' ? (
+          <Callout tone="danger" title="Not schedulable — no runtime">
+            This agent exists in Auth but has no xAgent runtime row. The orchestration roster reads that
+            table, so <strong>the planner cannot see this agent at all</strong> and will never delegate to
+            it. Use <strong>Repair</strong> or <strong>Edit</strong> to register it.
+          </Callout>
+        ) : null}
+
+        {/* ── the routing catalogue entry ─────────────────────────────────────────────── */}
+        <section>
+          <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-faint">
+            How the orchestrator sees this agent when routing
+          </p>
+          <pre className="overflow-x-auto rounded-md border border-border bg-surface-2 px-3 py-2.5 font-mono text-xs leading-relaxed text-fg/90">
+{`- ${subAgent.name}
+    use when: ${description || 'UNSPECIFIED — no description was configured for this agent'}
+    tools: ${tools.length ? tools.join(', ') : 'NONE (cannot call any tool)'}`}
+          </pre>
+          {!description ? (
+            <p className="mt-1.5 text-xs text-warning">
+              With no description, the planner can only guess from the name — it will misroute work here,
+              or avoid the agent entirely.
+            </p>
+          ) : null}
+          {tools.length === 0 ? (
+            <p className="mt-1 text-xs text-muted">
+              No tools: this agent answers from the model alone. Correct for a writer — but it can never
+              fetch external data, and the planner is told so.
+            </p>
+          ) : null}
+          <p className="mt-2 text-xs text-muted">
+            Attaching a tool takes <strong>two</strong> writes — the runtime&apos;s <code>allowed_tools</code>{' '}
+            <em>and</em> a tool-registry access grant. An agent listed against a tool it was never granted
+            gets <code>TOOL_DENIED</code> at run time. Do both in the Agent Builder:{' '}
+            <Link href={`/agents/${subAgent.agent_id}`} className="font-medium text-brand hover:underline">
+              Attach tools →
+            </Link>
+          </p>
+        </section>
+
+        {/* ── the rest of the runtime ─────────────────────────────────────────────────── */}
+        {rt ? (
+          <section className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+            <Detail label="Model" value={rt.llm_model} />
+            <Detail label="Runtime status" value={rt.status} />
+            <Detail label="Tool loop" value={rt.tool_loop_enabled === false ? 'off (single LLM call)' : 'on'} />
+            <Detail label="Memory scope" value={rt.memory_scope} />
+            <Detail label="Max tokens" value={String(rt.max_tokens)} />
+            <Detail label="Token budget / task" value={String(rt.token_budget_per_task)} />
+          </section>
+        ) : null}
+
+        {rt?.system_prompt ? (
+          <section>
+            <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-faint">
+              System prompt — its own instructions, once a step reaches it
+            </p>
+            <p className="max-h-32 overflow-y-auto whitespace-pre-wrap rounded-md border border-border bg-surface-2 px-3 py-2 text-xs text-fg/90">
+              {rt.system_prompt}
+            </p>
+          </section>
+        ) : null}
+
+        <section>
+          <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-faint">
+            Scopes ({subAgent.allowed_scopes.length}) — always a subset of the orchestrator&apos;s
+          </p>
+          <div className="flex flex-wrap gap-1">
+            {subAgent.allowed_scopes.length === 0 ? (
+              <span className="text-xs text-faint">none</span>
+            ) : (
+              subAgent.allowed_scopes.map((s) => <Badge key={s}>{s}</Badge>)
+            )}
+          </div>
+        </section>
+
+        <p className="font-mono text-[11px] text-faint">agent_id: {subAgent.agent_id}</p>
+      </div>
+    </Modal>
+  );
+}
+
+function Detail({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <p className="text-[11px] uppercase tracking-wider text-faint">{label}</p>
+      <p className="mt-0.5 font-medium text-fg">{value}</p>
+    </div>
   );
 }
 

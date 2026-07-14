@@ -51,6 +51,18 @@ root: `llms_gateway` (in `src/`); container entry `python -m llms_gateway`.
 > `message.tool_calls` + `finish_reason=tool_calls`. `tool_mode` (auto|native|emulated, default
 > auto) is on `ChatCompletionRequest`; the response carries `X-Cypherx-Tool-Mode`. Seeded small
 > models: `llama-3.1-8b-instruct`/`qwen2.5-7b-instruct`/`mistral-7b-instruct` (alias `small`).
+>
+> **The mode is DERIVED PER MODEL — do not pin it globally (2026-07-14).** `tool_mode` defaults to
+> `auto`, and `auto` reads `model_capabilities.native_tool_use`, so a frontier model and an 8B model
+> can be driven differently in the same run. An explicit `native`/`emulated` **short-circuits
+> `should_emulate()` before it ever consults the capability registry** — so pinning a mode (e.g. via
+> a caller-side env var) silently overrides the table for EVERY model at once. That is exactly how
+> `llama-3.1-8b-instant` (registered `native_tool_use=false`) got driven through a native tool
+> protocol it cannot follow, which Groq turns into a hard `400 tool_use_failed` that kills the
+> caller's whole task. **`emulate_tools_when_unknown` defaults `True`**: a model with no capability
+> row emulates, because the failure modes are not symmetric (needlessly emulating costs tokens;
+> wrongly going native fails the request) and "unknown" is the common case for tenant BYOK models.
+> To change how ONE model is driven, set its `native_tool_use` row — never a global override.
 | `src/llms_gateway/db/` | `pool.py` (`in_tenant()` RLS helper + platform reads + `readyz_ping`), `outbox.py` (usage + 2 events txn + publisher), `read_queries.py`, `valkey.py`. |
 | `db/migrations/` | Atlas SQL (`..._0001`→`..._0007`), `schema.sql` flattened snapshot, `atlas.hcl`, `README.md`. |
 | `tests/` | 24 test files (normalizer, chat/stream mock, WP05/WP06 suites, outbox payloads, auth, config-registry drift guard). |

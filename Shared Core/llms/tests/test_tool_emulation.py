@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -72,9 +73,44 @@ def test_no_tools_never_emulates() -> None:
     assert tool_emulation.should_emulate(_req("llama-3.1-8b-instruct", tools=False), "llama-3.1-8b-instruct", s) is False
 
 
-def test_unknown_model_follows_config_default() -> None:
-    s = Settings()  # emulate_tools_when_unknown defaults False -> native
+def test_unknown_model_emulates_by_default() -> None:
+    """An unclassified model EMULATES — the unknown case must fall to the recoverable side.
+
+    The two mistakes are not symmetric. Emulating a model that could have gone native costs a few
+    prompt tokens; driving a model natively that CANNOT do it is a hard failure — the provider
+    rejects the request (Groq: 400 tool_use_failed) and the caller's whole task dies. "Unknown" is
+    also the COMMON case: every tenant BYOK model arrives with no capability row, and tenants add
+    small/free models precisely because they are cheap — the ones least able to do native tools.
+    """
+    s = Settings()  # emulate_tools_when_unknown defaults True
+    assert tool_emulation.should_emulate(_req("some-custom-model"), "some-custom-model", s) is True
+
+
+def test_unknown_model_can_be_forced_native_by_config() -> None:
+    """The opt-out still exists: an all-frontier fleet can treat unclassified models as native."""
+    s = Settings(emulate_tools_when_unknown=False)
     assert tool_emulation.should_emulate(_req("some-custom-model"), "some-custom-model", s) is False
+
+
+def test_unknown_model_emulates_even_if_the_setting_is_absent() -> None:
+    """The getattr fallback inside should_emulate() must agree with Settings' default.
+
+    The policy is written down in TWO places (Settings.emulate_tools_when_unknown and the getattr
+    default in should_emulate). If they disagree, a settings object missing the attribute silently
+    reverts to the OLD unsafe behaviour — native-on-unknown — which is the exact bug we removed.
+    """
+    bare = SimpleNamespace(tool_emulation_enabled=True)  # no emulate_tools_when_unknown at all
+    assert tool_emulation.should_emulate(_req("some-custom-model"), "some-custom-model", bare) is True
+
+
+def test_known_frontier_model_is_unaffected_by_the_unknown_default() -> None:
+    """A model WITH a capability row is decided by the row, never by the unknown-model default.
+
+    Guards the flip above: claude-sonnet-4-6 is in the registry (native), so it must still go
+    native even though unknown models now emulate.
+    """
+    s = Settings()
+    assert tool_emulation.should_emulate(_req("claude-sonnet-4-6"), "claude-sonnet-4-6", s) is False
 
 
 # ── request transform ───────────────────────────────────────────────────────────────

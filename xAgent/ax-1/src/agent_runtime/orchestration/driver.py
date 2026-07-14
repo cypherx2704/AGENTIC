@@ -501,13 +501,31 @@ async def _run_layer(
         )
         summaries = {k: v.summary for k, v in states.items()}
         message = render_node_message(node, workflow.goal, summaries, dep_ids=sorted(deps_of.get(nid, set())))
+
+        async def _publish_task_id(task_id: str, _nid: str = nid) -> None:
+            """Stamp the child task id on the node AS SOON AS it exists, not at completion.
+
+            The execution tree follows a node's tool calls through this id. Stamping it only on
+            completion (the old behaviour) meant a sub-agent's tools were invisible for the whole
+            time it was actually calling them. ``mark_started=False`` so the already-set
+            ``started_at`` is not pushed forward by this write.
+            """
+            states[_nid].task_id = task_id
+            await _mark_node(
+                pool, orchestrator.tenant_id, states[_nid], status="running",
+                task_id=task_id, mark_started=False,
+            )
+
         try:
             result = await run_subagent_task(
                 pool=pool, settings=settings, token_provider=token_provider, orchestrator=orchestrator,
                 sub_agent_id=agent_id, workflow_id=workflow.workflow_id, parent_task_id=None,
                 message=message, trace_id=trace_id, request_id=request_id,
                 budget_seconds=node_budget_seconds, cost_budget_usd=node_cost_budget,
-                cancel_check=cancel_check,
+                # The run-level tool switch reaches EVERY node from the workflow row — the
+                # orchestrator answering a step itself included, since it is just another node.
+                use_tools=workflow.use_tools,
+                cancel_check=cancel_check, on_task_created=_publish_task_id,
             )
             return nid, result
         except ApiError as exc:
@@ -594,8 +612,15 @@ async def _mark_node(
     pool: AsyncConnectionPool, tenant_id: str, state: NodeState, *, status: str,
     assigned_agent_id: str | None = None, task_id: str | None = None,
     output: dict[str, Any] | None = None, tokens_used: int | None = None, cost_usd: float | None = None,
+    mark_started: bool | None = None,
 ) -> None:
-    """Optimistic-locked node transition; refresh the cached version (best-effort, never raises)."""
+    """Optimistic-locked node transition; refresh the cached version (best-effort, never raises).
+
+    ``mark_started`` defaults to "this transition is the start" (``status == 'running'``). Pass it
+    explicitly as ``False`` to write a field on an ALREADY-running node (the task_id stamp) without
+    re-stamping ``started_at`` — otherwise the node's measured duration would silently lose the time
+    between the transition and the stamp.
+    """
     fields: dict[str, Any] = {"status": status}
     if assigned_agent_id is not None:
         fields["assigned_agent_id"] = assigned_agent_id
@@ -605,7 +630,8 @@ async def _mark_node(
         fields["tokens_used"] = tokens_used
     if cost_usd is not None:
         fields["cost_usd"] = cost_usd
-    mark_started = status == "running"
+    if mark_started is None:
+        mark_started = status == "running"
     mark_completed = status in ("completed", "failed", "skipped")
     updated = await repo.update_workflow_task(
         pool, tenant_id, state.pk, expected_version=state.version, output=output,

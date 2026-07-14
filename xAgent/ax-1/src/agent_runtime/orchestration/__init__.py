@@ -5,14 +5,23 @@ DAG and runs each node as one of its OWN sub-agents INTERNALLY — in-tenant, re
 single-agent pipeline, with confinement enforced downstream (LLM alias allowlist, tool
 grants). No A2A: A2A stays reserved for the external/cross-vendor boundary.
 
-Foundations delivered here (phase B0):
-  * :mod:`.dag`   — pure DAG parse + Kahn cycle validation + caps + topological layers.
-  * :mod:`.authz` — pure guards: orchestrator-only, owns-its-sub-agent (404-invisible).
-  * :mod:`.repo`  — RLS-scoped persistence for ``xagent.workflows`` / ``workflow_tasks`` /
-    ``agent_presets`` + the agent-hierarchy read used by the guards.
+**Routing is the planner's decision, never the backend's.** The orchestrator LLM is shown a capability
+catalogue of the tenant's real sub-agents (name + routing ``description`` + actual tools) and names one
+per step; this package only VALIDATES what comes back (acyclic, within the depth/fanout caps, every
+named target a real roster entry) and hands an invalid plan back to the planner to fix. It never
+chooses, invents, or substitutes an agent. There is no keyword router and no preset template — both
+existed once and both were routing rules in disguise. See :mod:`.decompose`.
 
-The DAG *driver* (fan-out/join, budget ceiling, HIL gating) and the sub-agent *executor*
-land in later phases (B1-B5); see ``SUBAGENT_WORKFLOW_PLAN.md``.
+Modules:
+  * :mod:`.dag`       — pure DAG parse + Kahn cycle validation + caps + topological layers.
+  * :mod:`.authz`     — pure guards: orchestrator-only, owns-its-sub-agent (404-invisible).
+  * :mod:`.repo`      — RLS-scoped persistence for ``xagent.workflows`` / ``workflow_tasks`` + the
+    roster read (sub-agent name/description/tools) and the agent-hierarchy read used by the guards.
+  * :mod:`.decompose` — goal -> plan -> validated DAG, with the single gated repair attempt.
+  * :mod:`.llm`       — the planner prompt (capability catalogue) + the synthesis pass.
+  * :mod:`.driver`    — layered fan-out/join, budget ceiling, cancel, HIL gating.
+  * :mod:`.executor`  — one node -> one sub-agent task under its own minted JWT (summary-only return).
+  * :mod:`.service`   — the coordinator that wires it all together.
 """
 
 from __future__ import annotations

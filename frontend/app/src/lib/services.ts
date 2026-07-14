@@ -49,6 +49,7 @@ import type {
   SkillView,
   TaskListResponse,
   TaskResponse,
+  TaskStep,
   ToolView,
   ToolVisibility,
   FlowTool,
@@ -566,6 +567,13 @@ export interface OrchestrationNode {
   cost_usd?: number | null;
   started_at?: string | null;
   completed_at?: string | null;
+  /**
+   * What this sub-agent actually DID: its own pipeline audit trail (guardrail → llm → tool_call …),
+   * the same TaskStep shape the single-agent Task Runner renders. Carried inline on the graph/SSE
+   * frames — so the tree streams a sub-agent's TOOL CALLS as they happen, rather than the UI lazily
+   * re-fetching each node's task (an N+1 that showed nothing at all while a node was still running).
+   */
+  steps?: TaskStep[];
 }
 
 export interface OrchestrationGraph {
@@ -573,13 +581,21 @@ export interface OrchestrationGraph {
   nodes: OrchestrationNode[];
 }
 
-/** Submit a goal to the orchestrator; it decomposes + fans out to sub-agents. Returns 202 + workflow_id. */
+/** Submit a goal to the orchestrator; it decomposes + fans out to sub-agents. Returns 202 + workflow_id.
+ *
+ * `mode` and `use_tools` are INDEPENDENT switches:
+ *   * `mode`      — may the orchestrator delegate to sub-agents, or must it answer alone?
+ *   * `use_tools` — may any agent in the run call its tools at all?
+ * `mode: 'solo'` + `use_tools: false` is the plain-chatbot configuration: no planner, no roster,
+ * no tools. Both default ON server-side, so omitting them preserves today's behaviour.
+ */
 export function submitOrchestration(body: {
   goal: string;
   mode?: 'subagents' | 'solo';
+  use_tools?: boolean;
   cost_budget_usd?: number;
   timeout_seconds?: number;
-}): Promise<{ workflow_id: string; status: string; mode: string; trace_id?: string }> {
+}): Promise<{ workflow_id: string; status: string; mode: string; use_tools?: boolean; trace_id?: string }> {
   return api('xagent', '/v1/orchestrations', { method: 'POST', body });
 }
 

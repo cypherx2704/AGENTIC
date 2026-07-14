@@ -22,7 +22,7 @@ import asyncio
 import base64
 import json
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -253,9 +253,11 @@ async def run_subagent_task(
     request_id: str,
     budget_seconds: float,
     cost_budget_usd: float | None = None,
+    use_tools: bool = True,
     requested_scopes: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
     cancel_check: Callable[[], Any] | None = None,
+    on_task_created: Callable[[str], Awaitable[None]] | None = None,
 ) -> SubAgentResult:
     """Run one sub-agent node: mint its identity, spawn a lineage-linked task, run the pipeline.
 
@@ -264,6 +266,12 @@ async def run_subagent_task(
     crash-recovery). Returns a SUMMARY-ONLY :class:`SubAgentResult` — the orchestrator never ingests
     the sub-agent's transcript. Authorization (orchestrator owns this sub-agent) is enforced upstream
     by the Auth mint endpoint (404 for a non-owned target) and by the driver's DAG-assignment guard.
+
+    ``on_task_created`` is invoked with the child ``task_id`` the moment the row exists — BEFORE the
+    pipeline runs. The driver uses it to stamp ``workflow_tasks.task_id`` immediately, so the live
+    execution tree can follow the sub-agent's audit trail (its tool calls) WHILE it works. Stamping
+    the id only on completion, as it used to, meant tools were invisible for the entire time the node
+    was actually doing them — you could only see them afterwards, if at all.
     """
     # A node may be assigned to the ORCHESTRATOR ITSELF ("no delegation needed" — the planner's
     # default outcome). Delegation-minting is only for real sub-agents: asking Auth to mint a
@@ -300,6 +308,14 @@ async def run_subagent_task(
         parent_task_id=parent_task_id,
         workflow_id=workflow_id,
     )
+    if on_task_created is not None:
+        # Publish the child task id NOW (not at completion) so the run's execution tree can stream
+        # this sub-agent's steps while they happen. Fail-soft: a bookkeeping hiccup must never stop
+        # the sub-agent from actually running.
+        try:
+            await on_task_created(task.task_id)
+        except Exception as exc:  # noqa: BLE001 — telemetry, not control flow
+            logger.warning("subagent_task_id_publish_failed", task_id=task.task_id, error=str(exc))
     await tasks_repo.mark_running(pool, orchestrator.tenant_id, task.task_id)
 
     ctx = PipelineContext(
@@ -314,6 +330,9 @@ async def run_subagent_task(
         started_at=tasks_repo.now_iso(),
         cancel_check=cancel_check,
         cost_budget_usd=cost_budget_usd,
+        # The single chokepoint for the run-level tool switch: every sub-agent node of every run
+        # (solo and subagents alike) is built here, so TOOL_LOOP sees the caller's choice.
+        use_tools=use_tools,
     )
     ctx.publish_event = _noop_publish  # type: ignore[attr-defined]
 

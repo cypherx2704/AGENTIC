@@ -163,7 +163,7 @@ class LlmsClient:
         wins over our category default, so the gateway's precise classification is preserved.
         """
         status = resp.status_code
-        upstream_code, upstream_msg = LlmsClient._parse_error_envelope(resp)
+        upstream_code, upstream_msg, provider_code = LlmsClient._parse_error_envelope(resp)
 
         # 429 — provider rate-limit. Preserve the accurate code + message (+ Retry-After).
         if status == 429:
@@ -174,7 +174,11 @@ class LlmsClient:
                 upstream_code or ErrorCode.RATE_LIMIT_EXCEEDED,
                 upstream_msg or "LLMs gateway rate-limited the request (upstream 429).",
                 status_code=status,
-                details={"upstream_status": status, "upstream_code": upstream_code},
+                details={
+                    "upstream_status": status,
+                    "upstream_code": upstream_code,
+                    "provider_code": provider_code,
+                },
                 headers=headers,
             )
 
@@ -185,7 +189,11 @@ class LlmsClient:
                 upstream_code or ErrorCode.BUDGET_EXCEEDED,
                 upstream_msg or "LLMs gateway rejected the request for insufficient credit (402).",
                 status_code=status,
-                details={"upstream_status": status, "upstream_code": upstream_code},
+                details={
+                    "upstream_status": status,
+                    "upstream_code": upstream_code,
+                    "provider_code": provider_code,
+                },
             )
 
         # 408 + 5xx — genuine gateway availability/transport problems -> SERVICE_UNAVAILABLE.
@@ -198,35 +206,50 @@ class LlmsClient:
 
         # Other 4xx client/config error: surface the upstream code (do not mask as availability).
         code = upstream_code or ErrorCode.VALIDATION_ERROR
-        logger.warning("llms_call_rejected", status=status, upstream_code=code)
+        logger.warning(
+            "llms_call_rejected", status=status, upstream_code=code, provider_code=provider_code
+        )
         return ApiError(
             code,
             upstream_msg or f"LLMs gateway rejected the request ({status}).",
             status_code=status,
-            details={"upstream_status": status, "upstream_code": upstream_code},
+            details={
+                "upstream_status": status,
+                "upstream_code": upstream_code,
+                "provider_code": provider_code,
+            },
         )
 
     @staticmethod
-    def _parse_error_envelope(resp: httpx.Response) -> tuple[str | None, str | None]:
-        """Extract ``(code, message)`` from a Contract-2 gateway error body (best-effort).
+    def _parse_error_envelope(resp: httpx.Response) -> tuple[str | None, str | None, str | None]:
+        """Extract ``(code, message, provider_code)`` from a Contract-2 gateway error body.
 
         Tolerates the canonical ``{"error": {"code", "message"}}`` envelope, a flat
-        ``{"code", "message"}`` body, and an unparsable / non-JSON body (-> (None, None)).
+        ``{"code", "message"}`` body, and an unparsable / non-JSON body (-> all None).
         Never raises — error mapping must never itself error.
+
+        ``provider_code`` is the ORIGINAL upstream provider's error code, which the gateway
+        preserves at ``error.details.upstream_code`` (e.g. Groq's ``tool_use_failed``). The
+        gateway's own ``code`` necessarily flattens every provider 400 to ``VALIDATION_ERROR``,
+        which cannot distinguish "the caller sent a bad request" from "the MODEL emitted a tool
+        call the provider could not parse" — and only the latter is recoverable. Keep them apart.
         """
         try:
             data = resp.json()
         except (ValueError, TypeError):
-            return None, None
+            return None, None, None
         if not isinstance(data, dict):
-            return None, None
+            return None, None, None
         nested = data.get("error")
         err: dict[str, Any] = nested if isinstance(nested, dict) else data
         code = err.get("code")
         message = err.get("message")
+        details = err.get("details")
+        provider_code = details.get("upstream_code") if isinstance(details, dict) else None
         return (
             str(code) if isinstance(code, str) and code else None,
             str(message) if isinstance(message, str) and message else None,
+            str(provider_code) if isinstance(provider_code, str) and provider_code else None,
         )
 
     @staticmethod
