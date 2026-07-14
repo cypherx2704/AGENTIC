@@ -121,6 +121,12 @@ class PipelineContext:
     # Optional per-task USD cost budget — the LLM/tool stages accrue against it and
     # short-circuit BUDGET_EXCEEDED before exceeding it. None = no cost cap.
     cost_budget_usd: float | None = None
+    # RUN-level tool switch (the caller's "Use Tools" choice), distinct from the agent-level
+    # `tool_loop_enabled` config. False => TOOL_LOOP does not run for this task at all: no tool is
+    # resolved, offered, or invoked, and the agent answers as a plain chat model from its own
+    # knowledge. Either switch can veto (run-level AND agent-level must both be on to use tools).
+    # Defaults True so the single-agent task path (api/tasks.py) is unchanged.
+    use_tools: bool = True
 
     # ── Audit steps (one per user-visible stage; feeds the A2A response too) ────────
     steps: StepBuffer | None = None

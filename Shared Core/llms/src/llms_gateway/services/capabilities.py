@@ -175,8 +175,10 @@ class CapabilityRegistry:
     def native_tool_use(self, model_id: str) -> bool | None:
         """Return whether ``model_id`` supports NATIVE tool-calling, or None if unknown.
 
-        None lets the caller apply its own default for an unrecognised model (the
-        gateway treats unknown-by-default as native unless configured otherwise).
+        None lets the caller apply its own default for an unrecognised model. The gateway treats
+        unknown-by-default as NON-native (it EMULATES) — see ``Settings.emulate_tools_when_unknown``
+        — because wrongly going native is a hard provider rejection, while wrongly emulating only
+        costs prompt tokens.
         """
         cap = self._cache.get(model_id)
         return cap.native_tool_use if cap is not None else None

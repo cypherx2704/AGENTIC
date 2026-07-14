@@ -133,6 +133,10 @@ class WorkflowRow:
     status: str
     mode: str
     version: int
+    #: RUN-level tool switch (0011). False => every task in this run is a plain chat completion:
+    #: TOOL_LOOP is skipped and the planner is shown a toolless roster. ANDed with the agent-level
+    #: ``agents.tool_loop_enabled`` — either switch alone turns tools off.
+    use_tools: bool = True
     decomposition: str | None = None
     subtask_dag: dict[str, Any] | None = None
     output: dict[str, Any] | None = None
@@ -150,7 +154,7 @@ class WorkflowRow:
 
 _WORKFLOW_COLUMNS = f"""
     workflow_id::text AS workflow_id, tenant_id::text AS tenant_id,
-    root_agent_id::text AS root_agent_id, goal, status, mode, decomposition,
+    root_agent_id::text AS root_agent_id, goal, status, mode, use_tools, decomposition,
     subtask_dag, output, error_code, error_msg, tokens_used, cost_usd, cost_budget_usd,
     to_char(approval_due_at, {_TS}) AS approval_due_at,
     to_char(created_at,      {_TS}) AS created_at,
@@ -174,6 +178,9 @@ def _row_to_workflow(row: dict[str, Any]) -> WorkflowRow:
         status=row["status"],
         mode=row["mode"],
         version=row["version"],
+        # bool() not row.get(..., True): a row that HAS the column must be believed, including
+        # False. The default only covers a caller that built a row dict without the column.
+        use_tools=bool(row["use_tools"]) if "use_tools" in row else True,
         decomposition=row.get("decomposition"),
         subtask_dag=row.get("subtask_dag"),
         output=row.get("output"),
@@ -197,6 +204,7 @@ async def create_workflow(
     root_agent_id: str,
     goal: str,
     mode: str = "subagents",
+    use_tools: bool = True,
     cost_budget_usd: float | None = None,
     timeout_seconds: int | None = None,
 ) -> WorkflowRow:
@@ -206,13 +214,14 @@ async def create_workflow(
         cur = await conn.cursor(row_factory=dict_row).execute(
             f"""
             INSERT INTO xagent.workflows
-              (tenant_id, root_agent_id, goal, status, mode, cost_budget_usd, timeout_at)
-            VALUES (%s, %s, %s, 'pending', %s, %s,
+              (tenant_id, root_agent_id, goal, status, mode, use_tools, cost_budget_usd, timeout_at)
+            VALUES (%s, %s, %s, 'pending', %s, %s, %s,
                     CASE WHEN %s::int IS NULL THEN NULL
                          ELSE NOW() + (%s || ' seconds')::interval END)
             RETURNING {_WORKFLOW_COLUMNS}
             """,  # noqa: S608 — static RETURNING columns
-            (tenant_id, root_agent_id, goal, mode, cost_budget_usd, timeout_seconds, timeout_seconds),
+            (tenant_id, root_agent_id, goal, mode, use_tools, cost_budget_usd,
+             timeout_seconds, timeout_seconds),
         )
         row = await cur.fetchone()
         assert row is not None
@@ -467,6 +476,66 @@ async def list_workflow_tasks(
     return await in_tenant(pool, tenant_id, _q)
 
 
+# ── per-node audit steps (what each sub-agent actually DID) ────────────────────────────
+@dataclass
+class NodeStepRow:
+    """One audit row from a sub-agent's task — the raw material of the execution tree.
+
+    This is what makes a sub-agent's TOOL CALLS visible in an orchestration run. The steps live on
+    the sub-agent's own ``xagent.tasks`` row (a `tool_call` step per invocation), not on the
+    workflow, so without joining them back the run tree can only ever show "node completed" and never
+    "…and here is the tool it called to do it".
+    """
+
+    task_id: str
+    step_type: str
+    step_name: str
+    status: str
+    duration_ms: int
+    tokens_used: int | None = None
+    output: dict[str, Any] | None = None
+
+
+async def list_workflow_steps(
+    pool: AsyncConnectionPool, tenant_id: str, workflow_id: str
+) -> dict[str, list[NodeStepRow]]:
+    """Every audit step of every task in this workflow, grouped by ``task_id`` — in ONE query.
+
+    Deliberately a single join rather than a per-node lookup: the run tree renders every node at
+    once (and re-renders on every SSE tick), so a per-node fetch would be an N+1 that grows with
+    fan-out and re-fires on each poll.
+    """
+
+    async def _q(conn: AsyncConnection) -> dict[str, list[NodeStepRow]]:
+        cur = await conn.cursor(row_factory=dict_row).execute(
+            """
+            SELECT s.task_id::text AS task_id, s.step_type, s.step_name, s.status,
+                   s.duration_ms, s.tokens_used, s.output
+              FROM xagent.task_steps s
+              JOIN xagent.tasks t ON t.task_id = s.task_id
+             WHERE t.workflow_id = %s
+             ORDER BY s.created_at, s.step_name
+            """,
+            (workflow_id,),
+        )
+        grouped: dict[str, list[NodeStepRow]] = {}
+        for r in await cur.fetchall():
+            grouped.setdefault(r["task_id"], []).append(
+                NodeStepRow(
+                    task_id=r["task_id"],
+                    step_type=r["step_type"],
+                    step_name=r["step_name"],
+                    status=r["status"],
+                    duration_ms=int(r["duration_ms"] or 0),
+                    tokens_used=r.get("tokens_used"),
+                    output=r.get("output"),
+                )
+            )
+        return grouped
+
+    return await in_tenant(pool, tenant_id, _q)
+
+
 #: Columns the optimistic node updater may set (whitelist).
 _WORKFLOW_TASK_UPDATABLE = frozenset(
     {
@@ -531,97 +600,3 @@ async def update_workflow_task(
 
     return await in_tenant(pool, tenant_id, _q)
 
-
-# ── agent_presets ──────────────────────────────────────────────────────────────────────
-@dataclass
-class AgentPresetRow:
-    """In-process view of a ``xagent.agent_presets`` row."""
-
-    preset_id: str
-    tenant_id: str
-    name: str
-    description: str | None = None
-    system_prompt: str | None = None
-    model_alias: str | None = None
-    allowed_tools: list[str] = field(default_factory=list)
-    allowed_scopes: list[str] = field(default_factory=list)
-    metadata: dict[str, Any] = field(default_factory=dict)
-    created_at: str | None = None
-    updated_at: str | None = None
-
-
-_PRESET_COLUMNS = f"""
-    preset_id::text AS preset_id, tenant_id::text AS tenant_id, name, description,
-    system_prompt, model_alias, allowed_tools, allowed_scopes, metadata,
-    to_char(created_at, {_TS}) AS created_at,
-    to_char(updated_at, {_TS}) AS updated_at
-"""
-
-
-def _row_to_preset(row: dict[str, Any]) -> AgentPresetRow:
-    return AgentPresetRow(
-        preset_id=row["preset_id"],
-        tenant_id=row["tenant_id"],
-        name=row["name"],
-        description=row.get("description"),
-        system_prompt=row.get("system_prompt"),
-        model_alias=row.get("model_alias"),
-        allowed_tools=list(row.get("allowed_tools") or []),
-        allowed_scopes=list(row.get("allowed_scopes") or []),
-        metadata=row.get("metadata") or {},
-        created_at=row.get("created_at"),
-        updated_at=row.get("updated_at"),
-    )
-
-
-async def create_preset(
-    pool: AsyncConnectionPool,
-    *,
-    tenant_id: str,
-    name: str,
-    description: str | None = None,
-    system_prompt: str | None = None,
-    model_alias: str | None = None,
-    allowed_tools: list[str] | None = None,
-    allowed_scopes: list[str] | None = None,
-    metadata: dict[str, Any] | None = None,
-) -> AgentPresetRow:
-    """INSERT a sub-agent preset (unique per ``(tenant_id, name)``) and return it."""
-
-    async def _q(conn: AsyncConnection) -> AgentPresetRow:
-        cur = await conn.cursor(row_factory=dict_row).execute(
-            f"""
-            INSERT INTO xagent.agent_presets
-              (tenant_id, name, description, system_prompt, model_alias,
-               allowed_tools, allowed_scopes, metadata)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            RETURNING {_PRESET_COLUMNS}
-            """,  # noqa: S608 — static RETURNING columns
-            (
-                tenant_id,
-                name,
-                description,
-                system_prompt,
-                model_alias,
-                allowed_tools or [],
-                allowed_scopes or [],
-                Jsonb(metadata or {}),
-            ),
-        )
-        row = await cur.fetchone()
-        assert row is not None
-        return _row_to_preset(row)
-
-    return await in_tenant(pool, tenant_id, _q)
-
-
-async def list_presets(pool: AsyncConnectionPool, tenant_id: str) -> list[AgentPresetRow]:
-    """List the tenant's sub-agent presets (RLS-scoped), by name."""
-
-    async def _q(conn: AsyncConnection) -> list[AgentPresetRow]:
-        cur = await conn.cursor(row_factory=dict_row).execute(
-            f"SELECT {_PRESET_COLUMNS} FROM xagent.agent_presets ORDER BY name",  # noqa: S608
-        )
-        return [_row_to_preset(r) for r in await cur.fetchall()]
-
-    return await in_tenant(pool, tenant_id, _q)

@@ -161,9 +161,12 @@ status ∈ {pending,running,awaiting_approval,completed,failed,cancelled,timeout
 output JSONB (summary+citations), tokens_used, cost_usd, retry_count, retry_max DEFAULT 1,
 version INT DEFAULT 1
 
--- xagent.agent_presets  (§7 #8 — the ".claude/agents" analogue; optional but recommended)
-preset_id UUID PK, tenant_id, name, description, system_prompt, model_alias,
-allowed_tools TEXT[], allowed_scopes TEXT[], created_at
+-- xagent.agent_presets  ❌ BUILT BY 0008, DROPPED BY 0010 (2026-07-14) — DO NOT RE-ADD.
+--   It was the ".claude/agents" analogue: reusable {system_prompt, tools, scopes, model} bundles a
+--   node's `preset` would point at. Dead from birth — nothing ever read, wrote or seeded it — and it
+--   only existed to make preset-driven routing possible. A node's `preset` is now simply the NAME of
+--   a sub-agent in xagent.agents, chosen by the planner. The useful half of the ".claude/agents"
+--   analogue survives as agents.description (migration 0009): the routing blurb the planner reads.
 ```
 Plus a small addition to `xagent.tasks`: `parent_task_id UUID NULL` + `workflow_id UUID NULL` (lineage; NULL for normal single-agent tasks).
 
@@ -191,7 +194,7 @@ The run stream emits node-attributed frames so the UI can build a tree:
 > Host = ax-1 `orchestration/` module unless you pick ax-2. Each phase ends green (pytest + ruff + mypy) and is built by a sub-agent, then hardened by an **adversarial-review workflow** (our proven pattern — it consistently finds real bugs the passing tests miss).
 
 **B0 — Foundations & the cross-agent seam.**
-- Migrations for `xagent.workflows`, `xagent.workflow_tasks`, `xagent.agent_presets`, `xagent.tasks.parent_task_id`+`workflow_id`.
+- Migrations for `xagent.workflows`, `xagent.workflow_tasks`, ~~`xagent.agent_presets`~~ *(built by 0008, dropped by 0010 — see the DDL note above)*, `xagent.tasks.parent_task_id`+`workflow_id`.
 - Add an **internal execution entrypoint** in ax-1 that runs the pipeline for an *arbitrary target agent in the same tenant* — **without** relaxing the public `/v1/tasks` caller-vs-target rule. This is a new internal function (not the public route): `run_agent_pipeline(target_agent_id, input, on_behalf_of, budget, cancel, parent_task_id, workflow_id)`. Reuses `LoadStage`→`EventStage`. Downstream identity = `on_behalf_of=<target>`.
 - Authorization guard: the caller must be the tenant orchestrator; `target_agent_id.parent_orchestrator_id == orchestrator` (or target ∈ roster allowlist). Cross-tenant impossible (RLS).
 

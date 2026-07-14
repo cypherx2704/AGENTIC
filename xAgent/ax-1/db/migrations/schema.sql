@@ -13,6 +13,10 @@
 --   20260705_0007__agent_tool_loop_toggle.sql  (agents.tool_loop_enabled)
 --   20260712_0008__orchestration.sql           (workflows, workflow_tasks, agent_presets,
 --                                               tasks.parent_task_id + workflow_id)
+--   20260713_0009__subagent_description.sql    (agents.description — the planner's routing signal)
+--   20260714_0010__drop_agent_presets.sql      (DROPS the agent_presets table 0008 created — dead;
+--                                               routing is the planner's decision, not a preset's)
+--   20260714_0011__workflow_use_tools.sql      (workflows.use_tools — the run-level tool switch)
 -- Keep this file in sync when adding a versioned migration.
 -- =====================================================================================
 
@@ -201,6 +205,10 @@ CREATE TABLE IF NOT EXISTS xagent.workflows (
   goal            TEXT         NOT NULL,
   status          VARCHAR(20)  NOT NULL DEFAULT 'pending',
   mode            VARCHAR(20)  NOT NULL DEFAULT 'subagents',
+  use_tools       BOOLEAN      NOT NULL DEFAULT true,     -- run-level tool switch (0011); ANDed with
+                                                          -- agents.tool_loop_enabled. false => every
+                                                          -- task in the run is a plain chat: TOOL_LOOP
+                                                          -- is skipped and the planner sees no tools.
   decomposition   VARCHAR(20),
   subtask_dag     JSONB,
   output          JSONB,
@@ -259,25 +267,13 @@ CREATE INDEX IF NOT EXISTS idx_workflow_tasks_workflow ON xagent.workflow_tasks 
 CREATE INDEX IF NOT EXISTS idx_workflow_tasks_tenant   ON xagent.workflow_tasks (tenant_id);
 CREATE INDEX IF NOT EXISTS idx_workflow_tasks_task_id  ON xagent.workflow_tasks (task_id) WHERE task_id IS NOT NULL;
 
-CREATE TABLE IF NOT EXISTS xagent.agent_presets (
-  preset_id      UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
-  tenant_id      UUID         NOT NULL,
-  name           VARCHAR(100) NOT NULL,
-  description    TEXT,
-  system_prompt  TEXT,
-  model_alias    VARCHAR(100),
-  allowed_tools  TEXT[]       NOT NULL DEFAULT '{}',
-  allowed_scopes TEXT[]       NOT NULL DEFAULT '{}',
-  metadata       JSONB        NOT NULL DEFAULT '{}',
-  created_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-  updated_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-  CONSTRAINT uq_agent_preset_name UNIQUE (tenant_id, name)
-);
-CREATE INDEX IF NOT EXISTS idx_agent_presets_tenant ON xagent.agent_presets (tenant_id);
+-- NB: xagent.agent_presets was created by 0008 and DROPPED by 0010 — it is deliberately absent from
+-- this end-state. It was the ".claude/agents" analogue backing preset-driven routing; routing is now
+-- the orchestrator LLM's decision alone, and a node's `preset` is simply the NAME of a sub-agent in
+-- xagent.agents. Do not re-add it.
 
 ALTER TABLE xagent.workflows      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE xagent.workflow_tasks ENABLE ROW LEVEL SECURITY;
-ALTER TABLE xagent.agent_presets  ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS xagent_workflows_isolation ON xagent.workflows;
 CREATE POLICY xagent_workflows_isolation ON xagent.workflows FOR ALL
@@ -286,11 +282,6 @@ CREATE POLICY xagent_workflows_isolation ON xagent.workflows FOR ALL
 
 DROP POLICY IF EXISTS xagent_workflow_tasks_isolation ON xagent.workflow_tasks;
 CREATE POLICY xagent_workflow_tasks_isolation ON xagent.workflow_tasks FOR ALL
-  USING      (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
-  WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
-
-DROP POLICY IF EXISTS xagent_agent_presets_isolation ON xagent.agent_presets;
-CREATE POLICY xagent_agent_presets_isolation ON xagent.agent_presets FOR ALL
   USING      (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
   WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
 
@@ -306,4 +297,3 @@ CREATE POLICY xagent_workflow_tasks_sweeper ON xagent.workflow_tasks FOR ALL
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON xagent.workflows      TO xagent_user;
 GRANT SELECT, INSERT, UPDATE, DELETE ON xagent.workflow_tasks TO xagent_user;
-GRANT SELECT, INSERT, UPDATE, DELETE ON xagent.agent_presets  TO xagent_user;

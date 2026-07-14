@@ -447,14 +447,15 @@ services:
       STAGE_ENABLE_MEMORY_RETRIEVE: ${STAGE_ENABLE_MEMORY_RETRIEVE:-true}
       STAGE_ENABLE_MEMORY_WRITE: ${STAGE_ENABLE_MEMORY_WRITE:-true}
       STAGE_ENABLE_TOOL_LOOP: ${STAGE_ENABLE_TOOL_LOOP:-true}
-      # Force EMULATED tool-calling for the tool loop. Free/small models (and any model with
-      # no llms.model_capabilities row) are NOT natively tool-capable; with the default
-      # tool_mode=auto the gateway would attempt NATIVE tool-calling on an unknown model and
-      # no tool call would ever be produced. 'emulated' makes the gateway inject the tool
-      # schema into the prompt and parse the model's text reply back into tool_calls — the
-      # only way a free-tier model can drive the LLM->TOOL agent loop. Set to 'auto' or
-      # 'native' only once you're on a model with native_tool_use=true.
-      TOOL_LOOP_TOOL_MODE: ${TOOL_LOOP_TOOL_MODE:-emulated}
+      # TOOL_LOOP_TOOL_MODE is deliberately NOT set: native-vs-emulated tool-calling is a property
+      # of the MODEL, so the gateway derives it per model from llms.model_capabilities. Pinning one
+      # mode here overrode that table for EVERY model at once (an explicit tool_mode short-circuits
+      # the gateway's capability lookup) — which is how llama-3.1-8b-instant ended up being driven
+      # through a native tool protocol it cannot follow. The reason this was pinned to 'emulated'
+      # (an UNKNOWN model used to fall back to NATIVE, so free-tier models never produced a tool
+      # call) is fixed at the source: emulate_tools_when_unknown now defaults TRUE in the gateway,
+      # so an unclassified model emulates. To change how ONE model is driven, set its
+      # native_tool_use row — do not reintroduce a global override here.
       TOOL_LOOP_MAX_ITERATIONS: ${TOOL_LOOP_MAX_ITERATIONS:-4}
       # WP12 enhancement-stage dependencies (RAG / Memory / Tool-Registry). Internal DNS, port 8080.
       RAG_SERVICE_URL: ${RAG_SERVICE_URL:-http://rag:8080}

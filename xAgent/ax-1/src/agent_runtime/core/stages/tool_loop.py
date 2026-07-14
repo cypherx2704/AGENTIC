@@ -34,6 +34,18 @@ BOUNDS / accounting:
 A failed tool invocation is FAIL-SOFT to the LOOP (its error is fed back to the model so it
 can recover / answer without the tool), not fatal to the task — except the hard budget caps
 above, which ARE terminal.
+
+MODEL MISBEHAVIOUR (a weak model is assumed, not treated as an anomaly):
+  * A tool call naming a tool that was NEVER OFFERED (a hallucinated ``brave_search`` /
+    ``web_search``) is dropped from the assistant turn and answered with a plain-dialogue
+    correction. It must never reach the message history: providers validate the history's
+    tool_calls against the request's ``tools[]`` and reject the entire NEXT request when one is
+    missing ("attempted to call tool 'brave_search' which was not in request.tools"), turning one
+    invented name into a dead task.
+  * A tool call the PROVIDER cannot parse (Groq 400 ``tool_use_failed``) is retried ONCE in the
+    gateway's EMULATED tool mode, which takes ``tools[]`` off the wire entirely and parses +
+    allow-lists the reply itself — so the provider's tool parser is never involved. The task then
+    stays in emulated mode. Only if that also fails is the task terminal.
 """
 
 from __future__ import annotations
@@ -54,6 +66,15 @@ from ..pipeline import PipelineContext, Stage
 from . import deps
 
 logger = structlog.get_logger(__name__)
+
+#: The gateway's emulated tool-calling mode: tools[] is stripped off the wire request, the protocol
+#: is taught in the prompt, and the gateway parses + allow-lists the reply itself.
+_TOOL_MODE_EMULATED = "emulated"
+
+#: Provider error code for "the model's tool call could not be parsed/validated" (Groq's
+#: ``tool_use_failed``). This is a MODEL failure, not a malformed request from us — retrying it
+#: natively just reproduces it, so it is the one LLM error the loop recovers from (via emulation).
+_PROVIDER_CODE_TOOL_USE_FAILED = "tool_use_failed"
 
 
 class _ResolvedTool:
@@ -117,6 +138,18 @@ class ToolLoopStage(Stage):
         agent = ctx.agent
         if agent is None or not agent.allowed_tools:
             return  # no tools configured -> the base LLM answer stands (default-disabled shape)
+        # RUN-level tool switch (the caller's "Use Tools" choice). OFF => this task is a plain chat
+        # completion: no tool is resolved, offered to the model, or invoked. Deliberately checked
+        # BEFORE resolution so a tools-off run makes zero Tool-Registry / MCP calls — "off" must mean
+        # the tools are not merely unused but unreachable. Independent of the agent-level toggle
+        # below: either switch alone vetoes.
+        if not ctx.use_tools:
+            logger.info(
+                "tool_loop_disabled_for_run",
+                task_id=ctx.task.task_id,
+                agent_id=agent.agent_id,
+            )
+            return
         # Per-agent tool-loop toggle (migration 0007): "per request" mode. When disabled the
         # stage SKIPS even with allowed_tools, so the task makes a single LLM call (the base
         # LLM answer stands) — for rate-limited / free-tier models where multiple round-trips
@@ -150,23 +183,20 @@ class ToolLoopStage(Stage):
         tool_schemas = [t.schema for t in resolved]
         llms = deps.get_llms_client()
         mcp = deps.get_mcp_client()
-        messages: list[dict[str, Any]] = self._loop_messages(ctx, settings)
+        messages: list[dict[str, Any]] = self._loop_messages(ctx, settings, sorted(by_name))
+
+        # Tool-calling mode for this task. A provider that rejects the NATIVE tool protocol
+        # downgrades it to emulated for every remaining turn (see _chat).
+        tool_mode = settings.tool_loop_tool_mode
 
         for _iteration in range(settings.tool_loop_max_iterations):
             try:
-                completion = await llms.chat(
-                    model=agent.llm_model,
-                    messages=messages,
-                    max_tokens=agent.effective_max_tokens(),
-                    temperature=agent.temperature,
-                    tools=tool_schemas,
-                    tool_mode=settings.tool_loop_tool_mode,
-                    agent_jwt=ctx.inbound_agent_jwt,
-                    on_behalf_of=ctx.principal.agent_id,
+                completion, tool_mode = await self._chat(
+                    ctx, llms, agent, messages, tool_schemas, tool_mode
                 )
             except ApiError as exc:
-                # A loop LLM round-trip failed — terminal for the task (the base LLM answer,
-                # if any, is left as-is; mark failed so EVENT records it).
+                # The round-trip failed and could not be recovered — terminal for the task (the
+                # base LLM answer, if any, is left as-is; mark failed so EVENT records it).
                 logger.warning("tool_loop_llm_failed", task_id=ctx.task.task_id, error=exc.message)
                 ctx.fail(exc.code, exc.message, status="failed")
                 return
@@ -183,26 +213,42 @@ class ToolLoopStage(Stage):
                     ctx.final_answer = completion.content
                 return
 
-            # Append the assistant turn (carrying the tool-call requests) before dispatch.
-            messages.append(self._assistant_turn(completion))
+            # Split the requests into tools we actually OFFERED and tools we did not. A weak model
+            # readily invents a familiar-sounding tool it was never given (``brave_search``,
+            # ``web_search``). Such a call must NEVER enter the message history: a provider
+            # validates every tool_call in the history against the request's ``tools[]`` and
+            # rejects the whole NEXT request when one is absent ("attempted to call tool
+            # 'brave_search' which was not in request.tools") — one hallucinated name then kills
+            # the task. Drop them from the assistant turn and correct the model in plain dialogue.
+            offered = [c for c in completion.tool_calls if c.name in by_name]
+            unoffered = [c for c in completion.tool_calls if c.name not in by_name]
 
-            for call in completion.tool_calls:
-                # Multi-call budget: a HARD cap on total invocations across the task.
-                if ctx.tool_invocations >= settings.tool_loop_max_invocations:
-                    self._fail_budget(ctx, "tool invocation budget exceeded")
-                    return
+            if offered:
+                # The assistant turn carries ONLY dispatchable calls, each answered by a tool result.
+                messages.append(self._assistant_turn(completion, offered))
+                for call in offered:
+                    # Multi-call budget: a HARD cap on total invocations across the task.
+                    if ctx.tool_invocations >= settings.tool_loop_max_invocations:
+                        self._fail_budget(ctx, "tool invocation budget exceeded")
+                        return
 
-                tool = by_name.get(call.name)
-                if tool is None:
-                    # The model asked for a tool that is not allowed/resolved — feed back an
-                    # error so it can recover; do NOT invoke (version-pin / allow-list guard).
-                    messages.append(self._tool_message(call.id, call.name, {"error": "tool_not_allowed"}))
-                    await self._record_tool_step(ctx, call.name, None, "failed", 0, error="tool_not_allowed")
-                    continue
+                    await self._invoke_one(ctx, mcp, by_name[call.name], call, messages, settings)
+                    if ctx.terminal_error is not None:
+                        return
 
-                await self._invoke_one(ctx, mcp, tool, call, messages, settings)
-                if ctx.terminal_error is not None:
-                    return
+            if unoffered:
+                names = sorted({c.name for c in unoffered})
+                logger.info(
+                    "tool_loop_unoffered_call_dropped",
+                    task_id=ctx.task.task_id,
+                    requested=names,
+                    offered=sorted(by_name),
+                )
+                for call in unoffered:
+                    await self._record_tool_step(
+                        ctx, call.name, None, "failed", 0, error="tool_not_allowed"
+                    )
+                messages.append(self._unoffered_tools_message(names, sorted(by_name)))
 
         # Exhausted the iteration budget while the model still wanted tools — STOP with the
         # partial answer and record a tool_loop_limit step (NOT an error).
@@ -229,6 +275,99 @@ class ToolLoopStage(Stage):
         )
 
     # ── helpers ────────────────────────────────────────────────────────────────────
+    async def _chat(
+        self,
+        ctx: PipelineContext,
+        llms: Any,
+        agent: Any,
+        messages: list[dict[str, Any]],
+        tool_schemas: list[dict[str, Any]],
+        tool_mode: str | None,
+    ) -> tuple[Any, str | None]:
+        """Run ONE loop turn, falling back from native to EMULATED tool-calling at most once.
+
+        A model that is weak at the provider's native function-calling protocol can emit a call the
+        PROVIDER itself refuses to parse (Groq answers 400 ``tool_use_failed``). That is a failure
+        of the MODEL, not a malformed request from us, so re-issuing it natively only reproduces it
+        — while the gateway's emulated mode cannot hit it at all: it strips ``tools[]`` off the wire
+        request (so the provider never runs its tool parser), teaches the protocol in the prompt,
+        flattens the tool history, and parses + allow-lists the reply itself.
+
+        The fallback mode is RETURNED so the caller keeps it for the remaining turns — otherwise
+        every iteration would pay for one more failed native call. Any other error, and any failure
+        that survives the fallback, propagates to the caller (terminal).
+        """
+        try:
+            completion = await self._call_llm(llms, agent, ctx, messages, tool_schemas, tool_mode)
+            return completion, tool_mode
+        except ApiError as exc:
+            if tool_mode == _TOOL_MODE_EMULATED or not self._is_tool_protocol_failure(exc):
+                raise
+            logger.warning(
+                "tool_loop_native_tools_rejected",
+                task_id=ctx.task.task_id,
+                error=exc.message,
+                fallback=_TOOL_MODE_EMULATED,
+            )
+        completion = await self._call_llm(
+            llms, agent, ctx, messages, tool_schemas, _TOOL_MODE_EMULATED
+        )
+        return completion, _TOOL_MODE_EMULATED
+
+    @staticmethod
+    async def _call_llm(
+        llms: Any,
+        agent: Any,
+        ctx: PipelineContext,
+        messages: list[dict[str, Any]],
+        tool_schemas: list[dict[str, Any]],
+        tool_mode: str | None,
+    ) -> Any:
+        """One gateway chat call for the loop (tools offered, identity in headers)."""
+        return await llms.chat(
+            model=agent.llm_model,
+            messages=messages,
+            max_tokens=agent.effective_max_tokens(),
+            temperature=agent.temperature,
+            tools=tool_schemas,
+            tool_mode=tool_mode,
+            agent_jwt=ctx.inbound_agent_jwt,
+            on_behalf_of=ctx.principal.agent_id,
+        )
+
+    @staticmethod
+    def _is_tool_protocol_failure(exc: ApiError) -> bool:
+        """True when the PROVIDER rejected the model's tool call as unparsable/invalid.
+
+        Keyed on the PROVIDER's own code (the gateway preserves it at ``details.provider_code``),
+        never on the gateway's code: every provider 400 flattens to ``VALIDATION_ERROR`` there, and
+        that cannot tell a genuinely bad request (do not retry) from a model that fumbled the tool
+        protocol (retry differently). Unknown/absent code => not recoverable.
+        """
+        details = getattr(exc, "details", None) or {}
+        return str(details.get("provider_code") or "").lower() == _PROVIDER_CODE_TOOL_USE_FAILED
+
+    @staticmethod
+    def _unoffered_tools_message(requested: list[str], offered: list[str]) -> dict[str, Any]:
+        """Correct a model that called a tool it was never given — as PLAIN dialogue.
+
+        Deliberately NOT a ``tool`` message: a tool result must answer a tool_call present in the
+        preceding assistant turn, and this call was dropped from that turn precisely because the
+        provider would reject the history for containing it. A plain user turn keeps the history
+        valid on every provider while still telling the model what it did wrong and what it may
+        actually call.
+        """
+        names = ", ".join(requested)
+        available = ", ".join(offered) if offered else "none"
+        return {
+            "role": "user",
+            "content": (
+                f"There is no tool named {names}. Do not call it again. "
+                f"The only tools available to you are: {available}. "
+                "Call one of those, or answer directly from what you already know."
+            ),
+        }
+
     async def _resolve_tools(self, ctx: PipelineContext, allowed: list[str]) -> list[_ResolvedTool]:
         """Resolve each allowed tool with version-pin enforcement; drop the unresolvable."""
         registry = deps.get_registry_client()
@@ -366,22 +505,37 @@ class ToolLoopStage(Stage):
         return [resolved[i] for i in order[:cap]]
 
     @staticmethod
-    def _loop_messages(ctx: PipelineContext, settings: Any) -> list[dict[str, Any]]:
+    def _loop_messages(
+        ctx: PipelineContext, settings: Any, tool_names: list[str]
+    ) -> list[dict[str, Any]]:
         """Copy the prompt messages, optionally prepending a 'use tools' system nudge.
 
-        The nudge is inserted AFTER any leading system messages (so the agent's system
-        prompt stays first) and helps weaker models actually invoke an available tool
-        instead of answering from priors. Gated by ``tool_loop_tool_use_nudge``.
+        The nudge is inserted AFTER any leading system messages (so the agent's system prompt stays
+        first) and helps weaker models actually invoke an available tool instead of answering from
+        priors. Gated by ``tool_loop_tool_use_nudge``.
+
+        It NAMES the offered tools and states that the list is exhaustive. A weak model that is only
+        told "you have tools" reaches for whatever tool it remembers from training — it invented
+        ``brave_search`` here, a tool no agent in this tenant holds — and a provider then rejects the
+        whole request for calling a tool that was never offered. Naming the set, and saying plainly
+        that nothing else exists, removes the guess. The complementary half is the instruction NOT to
+        fabricate when the list cannot get what the step needs: a model denied its imagined search
+        tool will otherwise answer from priors and present it as fact.
         """
         messages: list[dict[str, Any]] = list(ctx.messages)
         if not getattr(settings, "tool_loop_tool_use_nudge", False):
             return messages
+        offered = ", ".join(tool_names) if tool_names else "none"
         nudge = {
             "role": "system",
             "content": (
-                "You have tools available. When a tool would help you answer more "
-                "accurately or act on the request, call it instead of guessing; "
-                "otherwise answer directly."
+                f"You have exactly these tools, and no others: {offered}. "
+                "Call one when it would make your answer more accurate, or when the request cannot "
+                "be satisfied without it; otherwise answer directly. "
+                "That list is complete: never call, invent, or guess any other tool name — no web "
+                "search, no browser, no code interpreter, unless it is named above. "
+                "If none of them can get what you need, say so plainly and answer from what you "
+                "already know. Never invent a tool's output or present a guess as a fact you looked up."
             ),
         }
         idx = 0
@@ -524,26 +678,37 @@ class ToolLoopStage(Stage):
         )
 
     @staticmethod
-    def _assistant_turn(completion: Any) -> dict[str, Any]:
+    def _assistant_turn(completion: Any, calls: list[Any]) -> dict[str, Any]:
         """Build the assistant message carrying the model's tool-call requests.
 
-        Reuses the gateway's raw ``message.tool_calls`` block verbatim when present (so the
-        downstream tool ids line up), else reconstructs the OpenAI tool-call shape from the
-        parsed :class:`ToolCall` list.
+        Only ``calls`` — the OFFERED, dispatchable subset — is included. Reuses the gateway's raw
+        ``message.tool_calls`` block for those ids when present (so the ids line up with what the
+        provider issued), else reconstructs the OpenAI tool-call shape from the parsed
+        :class:`ToolCall` list.
+
+        A call naming a tool we never offered is deliberately EXCLUDED: providers validate the
+        history's tool_calls against the request's ``tools[]`` and reject the entire request when
+        one is missing, so admitting it here would poison every subsequent turn of the loop.
         """
+        keep = {c.id for c in calls}
         raw_choices = completion.raw.get("choices") if isinstance(completion.raw, dict) else None
         raw_message = raw_choices[0].get("message", {}) if raw_choices else {}
         raw_tool_calls = raw_message.get("tool_calls") if isinstance(raw_message, dict) else None
-        if not raw_tool_calls:
-            raw_tool_calls = [
+        kept_raw = (
+            [tc for tc in raw_tool_calls if isinstance(tc, dict) and tc.get("id") in keep]
+            if raw_tool_calls
+            else []
+        )
+        if not kept_raw:
+            kept_raw = [
                 {
                     "id": c.id,
                     "type": "function",
                     "function": {"name": c.name, "arguments": json.dumps(c.arguments, default=str)},
                 }
-                for c in completion.tool_calls
+                for c in calls
             ]
-        return {"role": "assistant", "content": completion.content or "", "tool_calls": raw_tool_calls}
+        return {"role": "assistant", "content": completion.content or "", "tool_calls": kept_raw}
 
     @staticmethod
     def _tool_message(tool_call_id: str, name: str, outcome: dict[str, Any]) -> dict[str, Any]:

@@ -50,6 +50,9 @@ export default function OrchestratorRunPage() {
 
   const [goal, setGoal] = useState('');
   const [useSubAgents, setUseSubAgents] = useState(true);
+  // Independent of useSubAgents: this governs whether ANY agent in the run may call a tool.
+  // Both off = a plain chatbot (no planner, no roster, no tools).
+  const [useTools, setUseTools] = useState(true);
   const [costBudget, setCostBudget] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
@@ -117,6 +120,7 @@ export default function OrchestratorRunPage() {
       const resp = await submitOrchestration({
         goal: goal.trim(),
         mode,
+        use_tools: useTools,
         // Only send a strictly-positive budget — the backend validates gt=0, so 0/blank ⇒ omit (unlimited).
         cost_budget_usd: costBudget.trim() && Number.isFinite(budgetNum) && budgetNum > 0 ? budgetNum : undefined,
       });
@@ -181,6 +185,18 @@ export default function OrchestratorRunPage() {
                     label="Use Sub-Agents"
                     hint="On = decompose + delegate to sub-agents. Off = the orchestrator answers alone."
                   />
+                  <Switch
+                    checked={useTools}
+                    onChange={setUseTools}
+                    label="Use Tools"
+                    hint="On = agents may call their tools; the LLM decides when. Off = no tool is offered or invoked."
+                  />
+                  {!useTools && !useSubAgents ? (
+                    <p className="text-xs text-muted">
+                      Plain chat: no planner, no sub-agents, no tools — the orchestrator answers from its own
+                      knowledge.
+                    </p>
+                  ) : null}
                 </div>
                 <Input
                   label="Cost budget (USD)"
@@ -197,6 +213,7 @@ export default function OrchestratorRunPage() {
                     Run
                   </Button>
                   {useSubAgents ? <Badge tone="info">sub-agents</Badge> : <Badge>solo</Badge>}
+                  {useTools ? <Badge tone="info">tools</Badge> : <Badge>no tools</Badge>}
                 </div>
                 {error ? <ErrorBanner error={error} /> : null}
               </form>

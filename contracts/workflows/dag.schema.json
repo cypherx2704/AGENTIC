@@ -110,7 +110,7 @@
         },
         "preset": {
           "type": "string",
-          "description": "Name of an agent preset (xagent.agent_presets) bundling {system prompt, tool allowlist, scope subset, model tier} for this node."
+          "description": "The NAME of the agent the planner chose to run this node — resolved against the orchestrator's live roster of sub-agents, plus the reserved name 'orchestrator' meaning no delegation (the orchestrator answers the step itself). It is not a lookup into a preset/bundle table: the planner routes on each sub-agent's own description and attached tools. A name that is not in the roster is an error (UNKNOWN_AGENT) — it is never substituted for another agent."
         },
         "input_bindings": {
           "type": "object",

@@ -69,8 +69,17 @@ def should_emulate(body: ChatCompletionRequest, model_id: str, settings: Setting
     * master switch off                  -> never.
     * tool_mode == "native"              -> never.
     * tool_mode == "emulated"            -> always.
-    * tool_mode == "auto" (the default)  -> emulate iff the model is KNOWN non-native;
-      an unknown model follows ``emulate_tools_when_unknown`` (default: native).
+    * tool_mode == "auto" (the default)  -> emulate iff the model is NOT known-native; an unknown
+      model follows ``emulate_tools_when_unknown`` (default: EMULATE — see below).
+
+    NOTE an explicit ``native``/``emulated`` short-circuits BEFORE the capability lookup, pinning one
+    mode for every model the caller sends. That is almost never what you want: the mode is a property
+    of the MODEL. Leave ``tool_mode`` at "auto" and let this function derive it per model.
+
+    The unknown-model default is EMULATE because the two mistakes are not symmetric: emulating a
+    model that could have gone native costs a few prompt tokens, whereas driving a model natively
+    that cannot do it is a hard failure (Groq answers 400 ``tool_use_failed`` and the caller's whole
+    task dies). Unknown is also the common case — tenant BYOK models arrive with no capability row.
     """
     if not body.tools:
         return False
@@ -84,7 +93,10 @@ def should_emulate(body: ChatCompletionRequest, model_id: str, settings: Setting
     # auto
     native = capability_registry.native_tool_use(model_id)
     if native is None:
-        return bool(getattr(settings, "emulate_tools_when_unknown", False))
+        # Default True — and it MUST match Settings.emulate_tools_when_unknown. A getattr default
+        # is a second place the policy is written down; if the two ever disagree, an object without
+        # the attribute silently reverts to the OLD unsafe behaviour (native-on-unknown).
+        return bool(getattr(settings, "emulate_tools_when_unknown", True))
     return native is False
 
 

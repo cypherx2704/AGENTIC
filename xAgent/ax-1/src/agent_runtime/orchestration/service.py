@@ -79,6 +79,7 @@ class OrchestrationCoordinator:
         *,
         goal: str,
         mode: str = "subagents",
+        use_tools: bool = True,
         cost_budget_usd: float | None = None,
         timeout_seconds: int | None = None,
     ) -> repo.WorkflowRow:
@@ -90,6 +91,7 @@ class OrchestrationCoordinator:
             root_agent_id=orchestrator.agent_id or "",
             goal=goal.strip(),
             mode=mode,
+            use_tools=use_tools,
             cost_budget_usd=cost_budget_usd,
             timeout_seconds=timeout_seconds,
         )
@@ -132,8 +134,19 @@ class OrchestrationCoordinator:
             # mis-described agent take work it has no tool for and fabricate an answer; tools alone
             # cannot tell two toolless agents apart. `SubAgentRef.purpose` falls back to the system
             # prompt for agents registered before the description column existed.
+            #
+            # A tools-OFF run advertises NO tools, for anyone. The roster is the planner's whole view
+            # of the world, so showing a tool that TOOL_LOOP will then refuse to run would invite the
+            # one plan guaranteed to fail: a step routed to an agent FOR a capability that is switched
+            # off, which cannot fetch anything and can only fabricate. Seeing an all-toolless roster,
+            # the planner's existing rules already do the right thing — they tell it to answer from
+            # general knowledge when no agent can fetch what the goal needs.
             capabilities = [
-                AgentCapability(name=r.name, purpose=r.purpose, tools=tuple(r.allowed_tools))
+                AgentCapability(
+                    name=r.name,
+                    purpose=r.purpose,
+                    tools=tuple(r.allowed_tools) if workflow.use_tools else (),
+                )
                 for r in refs
             ]
 

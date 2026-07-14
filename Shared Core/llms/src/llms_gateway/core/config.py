@@ -252,9 +252,22 @@ class Settings(BaseSettings):
     #   * master switch — OFF makes "auto"/"emulated" behave as "native" (no shim).
     tool_emulation_enabled: bool = True
     #   * "auto" decision for a model with NO capability row (unknown native_tool_use):
-    #     default False = treat unknown as native (frontier-safe; don't wrap a model
-    #     we can't classify). Set True to emulate unknown models too.
-    emulate_tools_when_unknown: bool = False
+    #     default True = treat unknown as NON-native and emulate.
+    #
+    #     This defaults to the SAFE direction, not the optimistic one. Emulating a model that
+    #     could have done native tool-calling costs some prompt tokens; calling a model natively
+    #     that CANNOT do it is a hard failure — the provider rejects the request outright (Groq:
+    #     400 tool_use_failed) and the caller's whole task dies. The two errors are not
+    #     symmetric, so the unknown case must fall to the recoverable side.
+    #
+    #     "Unknown" is also the COMMON case, not an edge case: every tenant BYOK model arrives
+    #     with no capability row (qwen3.6-27b, gemma-4-31b-it, laguna-xs-2.1 all have none), and
+    #     tenants add small/free models precisely because they are cheap — exactly the models
+    #     least able to hold up the native tool protocol.
+    #
+    #     Set False only if a fleet is known to be all-frontier: then an unclassified model is
+    #     more likely native than not.
+    emulate_tools_when_unknown: bool = True
     # Hard ceiling on the number of tool schemas injected into an emulated prompt
     # (keeps a small model's context + decision space bounded). Extra tools beyond
     # this are dropped from the offered set (the caller should pre-select).
